@@ -1,14 +1,15 @@
-# Antigravity 多开管理器 0.3.5
+# Aether Antigravity Multiplexer 0.3.6
 
 适用：Apple Silicon（M 系列）Mac，macOS 13 或更新版本。本工具是本机图形化管理器；安装包不包含 Google Antigravity 程序。
 
 ## 安装与使用
 
-从 [Releases](https://github.com/bcblr1993/antigravity-multiplexer/releases) 下载 Apple Silicon 安装包，解压后将 `Antigravity 多开管理器.app` 放入“应用程序”。电脑还需安装官方 Apple Silicon 版 `Antigravity.app`。打开管理器后：
+从 [Releases](https://github.com/bcblr1993/aether-antigravity-multiplexer/releases) 下载 Apple Silicon 安装包，解压后将 `Aether Antigravity Multiplexer.app` 放入“应用程序”。电脑还需安装官方 Apple Silicon 版 `Antigravity.app`。打开管理器后：
 
 - “创建实例”：按原来的 Second、Third…英文序数命名。新实例有自己的 `.gemini-N`、窗口缓存、日志、凭据标识、应用与 Helper 身份、登录回调。创建完成会打开独立登录页；Google 登录由你在新窗口完成。
 - “升级全部副本”：直接以本机 `/Applications/Antigravity.app` 为源复制程序，不从网络重新下载；已领先主实例的副本不会被降级。工具先构建并验签全部新程序，再关闭待升级副本，为每个副本备份旧程序、`.gemini-N` 和窗口数据，最后逐个替换程序。账号目录保持原路径，凭据标识及 Bundle ID 保持不变。请先保存各副本中的工作。多个管理器窗口不能同时创建或升级副本。
 - “管理备份”：按升级批次查看备份时间、压缩包数量与占用空间，可在访达中查看，或手动选择一个批次永久删除。删除前会再次确认；升级进行中无法删除，目录含非备份文件时也会拒绝。备份位于 `~/Library/Application Support/Antigravity Multiplexer/Backups/`。确认升级后账号和项目正常之前，请保留备份。
+- 每个副本右侧“…”可选择“清空工作空间”。仅在该副本未运行时允许，输入完整实例名称后，永久清空对应 `~/.gemini-N` 目录内全部数据（含隐藏文件），保留目录本身、实例应用、其他资料目录、独立登录文件和升级备份。此操作不等于退出账号。
 - 每个副本右侧“…”可选择“销毁实例”。管理器会展示将删除的应用、独立账号资料、窗口数据及日志，要求输入完整实例名后才允许永久销毁；同时移除该实例的独立登录文件和管理清单。运行中的实例必须先保存工作并退出。主实例、其他副本与已有升级备份保留；如需清除旧备份，可另在“管理备份”中手动操作。
 - 每个实例右侧“…”可定位应用、查看日志。管理器保存新实例的版本与人工登录验收状态，不保存账号凭据。
 - “管理器更新”可随时在线查看管理器自身的新版本；默认每天自动检查、下载并在适当时机安装。齿轮按钮可以关闭自动更新。此功能只替换管理器应用，不改写 Antigravity 副本或账号目录。

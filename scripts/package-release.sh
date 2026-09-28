@@ -5,8 +5,8 @@ cd "${0:A:h}/.."
 : "${SIGN_IDENTITY:?Set SIGN_IDENTITY to a Developer ID Application identity}"
 : "${NOTARY_PROFILE:?Set NOTARY_PROFILE to a notarytool keychain profile}"
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)"
-APP='Antigravity 多开管理器.app'
-NAME="Antigravity-Multiplexer-v${VERSION}-macos-arm64"
+APP='Aether Antigravity Multiplexer.app'
+NAME="Aether-Antigravity-Multiplexer-v${VERSION}-macos-arm64"
 ACCOUNT='AntigravityMultiplexer'
 GENERATOR='.build/artifacts/sparkle/Sparkle/bin/generate_appcast'
 mkdir -p dist
@@ -51,7 +51,7 @@ trap 'rm -rf "$STAGE"' EXIT
 cp "$ARCHIVE" "$STAGE/"
 cp RELEASE_NOTES.md "$STAGE/${NAME}.md"
 "$GENERATOR" --account "$ACCOUNT" --embed-release-notes \
-  --download-url-prefix "https://github.com/bcblr1993/antigravity-multiplexer/releases/download/v${VERSION}/" \
+  --download-url-prefix "https://github.com/bcblr1993/aether-antigravity-multiplexer/releases/download/v${VERSION}/" \
   "$STAGE"
 cp "$STAGE/appcast.xml" dist/appcast.xml
 python3 - "$VERSION" "$NAME" <<'PY'
@@ -65,7 +65,7 @@ item=items[0]
 assert item.findtext('s:shortVersionString',namespaces=ns)==version
 enclosure=item.find('enclosure')
 assert enclosure.get('{'+ns['s']+'}edSignature')
-assert enclosure.get('url')==f'https://github.com/bcblr1993/antigravity-multiplexer/releases/download/v{version}/{name}.zip'
+assert enclosure.get('url')==f'https://github.com/bcblr1993/aether-antigravity-multiplexer/releases/download/v{version}/{name}.zip'
 print('Appcast version, URL and EdDSA signature verified')
 PY
 ".build/artifacts/sparkle/Sparkle/bin/sign_update" --account "$ACCOUNT" --verify dist/appcast.xml
