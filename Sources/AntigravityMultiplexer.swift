@@ -657,12 +657,29 @@ private struct UpdateSettingsView: View {
     }
 }
 
+private struct MainWindowCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button("显示主窗口") {
+                openWindow(id: "main")
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            .keyboardShortcut("0")
+        }
+    }
+}
+
 @main struct AntigravityMultiplexerApp: App {
     private let updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
     var body: some Scene {
-        WindowGroup { ContentView(updaterController: updaterController).preferredColorScheme(.light) }
+        Window("Aether Antigravity Multiplexer", id: "main") {
+            ContentView(updaterController: updaterController).preferredColorScheme(.light)
+        }
             .windowStyle(.titleBar).windowToolbarStyle(.unifiedCompact)
             .commands {
+                MainWindowCommands()
                 CommandGroup(after: .appInfo) {
                     Button("检查多开管理器更新…") { updaterController.checkForUpdates(nil) }
                 }
