@@ -32,7 +32,7 @@ class CompatibilityTests(unittest.TestCase):
             resources.mkdir(parents=True)
             (source / "Contents/Info.plist").write_bytes(plistlib.dumps({
                 "CFBundleIdentifier": "com.google.antigravity",
-                "CFBundleShortVersionString": "2.17.0",
+                "CFBundleShortVersionString": "2.18.1",
             }))
             (resources / "app.asar").write_bytes(b"changed official source")
             with patch("upgrade_all.run") as run:
