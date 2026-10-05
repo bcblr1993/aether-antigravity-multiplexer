@@ -201,6 +201,22 @@ struct BackupBatch: Decodable, Identifiable {
                   starting: "正在核对并清空 \(item.name) 的独立工作空间…\n")
     }
 
+    func quit(_ item: ManagedInstance) {
+        guard !busy else { return }
+        let expected = item.path.resolvingSymlinksInPath().standardizedFileURL
+        let apps = NSRunningApplication.runningApplications(withBundleIdentifier: item.bundleID).filter {
+            !$0.isTerminated && $0.bundleURL?.resolvingSymlinksInPath().standardizedFileURL == expected
+        }
+        guard !apps.isEmpty else { refreshRunningStates(); return }
+        if apps.map({ $0.terminate() }).contains(false) {
+            error = "无法正常退出 \(item.name)，请在该实例中选择“退出”后重试。"
+        }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            refreshRunningStates()
+        }
+    }
+
     private func runScript(_ script: URL, arguments: [String], starting: String) {
         busy = true
         error = nil
@@ -235,7 +251,9 @@ struct BackupBatch: Decodable, Identifiable {
 struct InstanceCard: View {
     let item: ManagedInstance
     let sourceVersion: String
+    let busy: Bool
     let open: () -> Void
+    let quit: () -> Void
     let reveal: () -> Void
     let logs: () -> Void
     let verify: () -> Void
@@ -254,6 +272,7 @@ struct InstanceCard: View {
                     Text(item.running ? "运行中" : "未运行")
                         .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(item.running ? Color.green : Color.secondary)
+                        .help("关闭窗口后应用可能仍在后台运行。点击“退出”才能结束实例并清空工作空间。")
                 }
                 Text("v\(item.version)  ·  \(item.profile)")
                     .font(.system(size: 12)).foregroundStyle(.secondary)
@@ -278,6 +297,11 @@ struct InstanceCard: View {
                 }
             } label: { Image(systemName: "ellipsis").frame(width: 18, height: 18) }
                 .menuStyle(.borderlessButton).frame(width: 28)
+            if item.running {
+                Button("退出", action: quit).buttonStyle(.bordered)
+                    .help("正常退出实例；请先保存未完成的工作。")
+                    .disabled(busy)
+            }
             Button("打开", action: open).buttonStyle(.borderedProminent).tint(accent)
         }
         .padding(16)
@@ -331,7 +355,8 @@ struct ContentView: View {
                         Text("凭据留在各自的数据目录中").font(.system(size: 11)).foregroundStyle(.secondary)
                     }
                     ForEach(store.instances) { item in
-                        InstanceCard(item: item, sourceVersion: store.sourceVersion, open: { store.open(item) }, reveal: { store.reveal(item) },
+                        InstanceCard(item: item, sourceVersion: store.sourceVersion, busy: store.busy,
+                                     open: { store.open(item) }, quit: { store.quit(item) }, reveal: { store.reveal(item) },
                                      logs: { store.showLogs(item) }, verify: { store.toggleVerified(item) },
                                      clearWorkspace: { pendingClear = item },
                                      destroy: { pendingDestroy = item })
