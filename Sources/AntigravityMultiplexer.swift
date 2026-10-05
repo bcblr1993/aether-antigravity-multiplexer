@@ -515,6 +515,29 @@ struct ContentView: View {
     }
 }
 
+private struct InstanceNameConfirmation: View {
+    let name: String
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("此操作无法撤销。请输入完整实例名称以确认：")
+                .font(.system(size: 12))
+            HStack(spacing: 10) {
+                Text(name).font(.system(size: 13, weight: .semibold)).textSelection(.enabled)
+                Spacer()
+                Button {
+                    let pasteboard = NSPasteboard.general
+                    pasteboard.clearContents()
+                    copied = pasteboard.setString(name, forType: .string)
+                } label: {
+                    Label(copied ? "已复制" : "复制实例名", systemImage: copied ? "checkmark" : "doc.on.doc")
+                }.buttonStyle(.bordered)
+            }
+        }
+    }
+}
+
 private struct ClearWorkspaceView: View {
     let item: ManagedInstance
     let busy: Bool
@@ -534,8 +557,7 @@ private struct ClearWorkspaceView: View {
                 Text("实例仍在运行。请先保存工作并退出，然后刷新列表重试。")
                     .font(.system(size: 12)).foregroundStyle(.orange)
             }
-            Text("此操作无法撤销。请输入完整实例名称以确认：\(item.name)")
-                .font(.system(size: 12))
+            InstanceNameConfirmation(name: item.name)
             TextField("实例名称", text: $confirmation).textFieldStyle(.roundedBorder)
             HStack {
                 Spacer()
@@ -571,8 +593,7 @@ private struct DestroyInstanceView: View {
                 Text("实例仍在运行。请先保存工作并退出，然后刷新列表重试。")
                     .font(.system(size: 12)).foregroundStyle(.orange)
             }
-            Text("此操作无法撤销。请输入完整实例名称以确认：\(item.name)")
-                .font(.system(size: 12))
+            InstanceNameConfirmation(name: item.name)
             TextField("实例名称", text: $confirmation)
                 .textFieldStyle(.roundedBorder)
             HStack {
