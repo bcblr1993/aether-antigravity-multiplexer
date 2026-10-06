@@ -2,6 +2,7 @@
 set -euo pipefail
 cd "${0:A:h}"
 APP='Aether Antigravity Multiplexer.app'
+./scripts/build-icon.sh
 swift build -c release --triple arm64-apple-macosx13.0
 BIN_DIR="$(swift build -c release --triple arm64-apple-macosx13.0 --show-bin-path)"
 SPARKLE='.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework'

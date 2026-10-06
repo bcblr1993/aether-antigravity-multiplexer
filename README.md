@@ -1,4 +1,4 @@
-# Aether Antigravity Multiplexer 0.3.11
+# Aether Antigravity Multiplexer 0.4.0
 
 适用：Apple Silicon（M 系列）Mac，macOS 13 或更新版本。本工具是本机图形化管理器；安装包不包含 Google Antigravity 程序。
 
@@ -15,6 +15,7 @@
 - 每个副本右侧“…”可选择“销毁实例”。管理器会展示将删除的应用、独立账号资料、窗口数据及日志，要求输入完整实例名后才允许永久销毁；同时移除该实例的独立登录文件和管理清单。运行中的实例必须先保存工作并退出。主实例、其他副本与已有升级备份保留；如需清除旧备份，可另在“管理备份”中手动操作。
 - 每个实例右侧“…”可定位应用、查看日志。管理器保存新实例的版本与人工登录验收状态，不保存账号凭据。
 - “管理器更新”可随时在线查看管理器自身的新版本；默认每天自动检查、下载并在适当时机安装。齿轮按钮可以关闭自动更新。此功能只替换管理器应用，不改写 Antigravity 副本或账号目录。
+- 界面跟随 macOS 浅色、深色、Liquid Glass 色调和“降低透明度”设置；不需要在管理器内另设外观开关。
 
 从 0.2.1 升级到 0.3.0 或更高版本需要手动安装一次；之后可通过应用内的更新入口升级。若管理器在 `/Applications` 中，安装更新时 macOS 可能要求授权。
 
@@ -35,7 +36,7 @@
 
 Google 当前条款限制复制或修改其软件；此工具只打包自有管理器代码和本机适配逻辑，不附带也不分发 Google 程序。对外分发或商用前，请先确认 Google 授权与当前条款：https://policies.google.com/terms?hl=en 、https://antigravity.google/terms 。
 
-仓库包含 SwiftUI 界面、Python 创建/升级引擎、图标与 `build.sh`。在源码目录执行 `./build.sh` 可本地重建；设置 `SIGN_IDENTITY` 环境变量可指定自己的代码签名身份。构建需要 Xcode 命令行工具和 SwiftPM；运行管理器需要 `/usr/bin/python3`、`codesign` 和 `ditto`。在线更新使用 [Sparkle 2](https://sparkle-project.org/)；公开的 Release 包由 Developer ID 与 Sparkle EdDSA 双重签名，私钥仅存于发布者的钥匙串。
+仓库包含 SwiftUI 界面、Python 创建/升级引擎、可重复生成的图标源码与 `build.sh`。构建时 `scripts/build-icon.sh` 会从 `make_icon.swift` 生成高清 PNG 和 macOS ICNS。在源码目录执行 `./build.sh` 可本地重建；设置 `SIGN_IDENTITY` 环境变量可指定自己的代码签名身份。构建需要 Xcode 命令行工具和 SwiftPM；运行管理器需要 `/usr/bin/python3`、`codesign` 和 `ditto`。在线更新使用 [Sparkle 2](https://sparkle-project.org/)；公开的 Release 包由 Developer ID 与 Sparkle EdDSA 双重签名，私钥仅存于发布者的钥匙串。
 
 ## 发布后续版本
 

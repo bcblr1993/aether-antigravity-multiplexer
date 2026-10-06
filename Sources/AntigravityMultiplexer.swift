@@ -2,8 +2,28 @@ import AppKit
 import SwiftUI
 import Sparkle
 
-private let accent = Color(red: 0.31, green: 0.38, blue: 0.94)
-private let pane = Color(red: 0.965, green: 0.971, blue: 0.988)
+private let accent = Color.accentColor
+
+// Native materials follow the system's Liquid Glass appearance and accessibility settings.
+private struct SystemSurface: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    let radius: CGFloat
+
+    func body(content: Content) -> some View {
+        content.background {
+            if reduceTransparency {
+                RoundedRectangle(cornerRadius: radius).fill(Color(nsColor: .controlBackgroundColor))
+            } else {
+                RoundedRectangle(cornerRadius: radius).fill(.regularMaterial)
+            }
+        }
+        .overlay(RoundedRectangle(cornerRadius: radius).strokeBorder(.separator.opacity(0.35)))
+    }
+}
+
+private extension View {
+    func systemSurface(radius: CGFloat) -> some View { modifier(SystemSurface(radius: radius)) }
+}
 
 struct ManagedInstance: Identifiable, Hashable {
     let id: String
@@ -302,11 +322,10 @@ struct InstanceCard: View {
                     .help("正常退出实例；请先保存未完成的工作。")
                     .disabled(busy)
             }
-            Button("打开", action: open).buttonStyle(.borderedProminent).tint(accent)
+            Button("打开", action: open).buttonStyle(.borderedProminent)
         }
         .padding(16)
-        .background(.white, in: RoundedRectangle(cornerRadius: 17))
-        .overlay(RoundedRectangle(cornerRadius: 17).stroke(Color.black.opacity(0.045)))
+        .systemSurface(radius: 17)
     }
 }
 
@@ -321,16 +340,23 @@ struct ContentView: View {
     @State private var pendingClear: ManagedInstance?
     @State private var destination = URL(fileURLWithPath: "/Applications")
     var body: some View {
-        ZStack { pane.ignoresSafeArea()
+        ZStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    HStack(alignment: .top) {
-                        VStack(alignment: .leading, spacing: 7) {
-                            Text("Aether Antigravity Multiplexer").font(.system(size: 27, weight: .bold))
-                            Text("在这台 Apple Silicon Mac 上管理独立实例。")
-                                .font(.system(size: 13)).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack(alignment: .center) {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text("Aether Antigravity Multiplexer")
+                                    .font(.system(size: 22, weight: .semibold))
+                                    .lineLimit(1).minimumScaleFactor(0.8)
+                                Text("在这台 Apple Silicon Mac 上管理独立实例。")
+                                    .font(.system(size: 13)).foregroundStyle(.secondary)
+                            }
+                            Spacer(minLength: 16)
+                            Button { showCreate = true } label: { Label("创建实例", systemImage: "plus") }
+                                .buttonStyle(.borderedProminent).disabled(store.busy)
                         }
-                        Spacer()
+                        HStack(spacing: 8) {
                         Button { updaterController.checkForUpdates(nil) } label: { Label("管理器更新", systemImage: "arrow.down.circle") }
                             .buttonStyle(.bordered)
                         Button { showUpdateSettings = true } label: { Image(systemName: "gearshape") }
@@ -341,8 +367,8 @@ struct ContentView: View {
                             .buttonStyle(.bordered)
                         Button { showUpgrade = true } label: { Label("升级全部副本", systemImage: "arrow.up.circle") }
                             .buttonStyle(.bordered).disabled(store.busy || store.pendingUpgrades.isEmpty || store.compatibility != "已支持本机版本")
-                        Button { showCreate = true } label: { Label("创建实例", systemImage: "plus") }
-                            .buttonStyle(.borderedProminent).tint(accent).disabled(store.busy)
+                        Spacer(minLength: 0)
+                        }
                     }
                     HStack(spacing: 12) {
                         statusTile(title: "已发现实例", value: "\(store.instances.count)", symbol: "square.stack.3d.up")
@@ -367,7 +393,7 @@ struct ContentView: View {
                             Text("未发现 Antigravity").font(.system(size: 14, weight: .semibold))
                             Text("请先安装官方 Apple Silicon 版本。").font(.system(size: 12)).foregroundStyle(.secondary)
                         }.frame(maxWidth: .infinity).padding(28)
-                            .background(.white, in: RoundedRectangle(cornerRadius: 17))
+                            .systemSurface(radius: 17)
                     }
                     if store.busy || !store.output.isEmpty {
                         VStack(alignment: .leading, spacing: 9) {
@@ -375,11 +401,12 @@ struct ContentView: View {
                                 if store.busy { ProgressView().controlSize(.small) } }
                             Text(store.output).font(.system(size: 11, design: .monospaced))
                                 .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                        }.padding(16).background(.white, in: RoundedRectangle(cornerRadius: 16))
+                        }.padding(16).systemSurface(radius: 16)
                     }
                 }.padding(26)
             }
         }
+        .background(.regularMaterial)
         .frame(minWidth: 760, minHeight: 590)
         .onAppear { store.refresh() }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didLaunchApplicationNotification)) { _ in
@@ -409,7 +436,7 @@ struct ContentView: View {
                     detailRow("独立数据", "~/.gemini-\(store.nextIndex - 1)")
                     detailRow("专属回调", "antigravity-\(store.nextIndex)")
                     detailRow("源版本", store.sourceVersion)
-                }.padding(16).background(pane, in: RoundedRectangle(cornerRadius: 13))
+                }.padding(16).systemSurface(radius: 13)
                 HStack {
                     Text("安装位置").font(.system(size: 12)).foregroundStyle(.secondary)
                     Picker("", selection: $destination) {
@@ -424,7 +451,7 @@ struct ContentView: View {
                     Button("创建并打开") {
                         store.create(index: store.nextIndex, destination: destination)
                         showCreate = false
-                    }.buttonStyle(.borderedProminent).tint(accent).disabled(store.compatibility != "已支持本机版本")
+                    }.buttonStyle(.borderedProminent).disabled(store.compatibility != "已支持本机版本")
                 }
             }.padding(24).frame(width: 510)
         }
@@ -441,13 +468,13 @@ struct ContentView: View {
                                 .font(.system(size: 12))
                         }
                     }.padding(16)
-                }.frame(maxHeight: 230).background(pane, in: RoundedRectangle(cornerRadius: 13))
+                }.frame(maxHeight: 230).systemSurface(radius: 13)
                 Text("直接复制本机主实例，不从网络下载安装包。请先保存这些副本中的工作。工具会备份每个应用、账号目录和窗口数据，再逐个安装适配后的副本；账号目录保持原路径。")
                     .font(.system(size: 11)).foregroundStyle(.secondary)
                 HStack { Spacer()
                     Button("取消") { showUpgrade = false }
                     Button("从主实例复制并升级") { store.upgradeAll(); showUpgrade = false }
-                        .buttonStyle(.borderedProminent).tint(accent)
+                        .buttonStyle(.borderedProminent)
                 }
             }.padding(24).frame(width: 520)
         }
@@ -507,7 +534,7 @@ struct ContentView: View {
             }
             Spacer(minLength: 0)
         }.padding(14).frame(maxWidth: .infinity)
-            .background(.white, in: RoundedRectangle(cornerRadius: 15))
+            .systemSurface(radius: 15)
     }
     private func detailRow(_ label: String, _ value: String) -> some View {
         HStack { Text(label).foregroundStyle(.secondary); Spacer(); Text(value).fontWeight(.medium) }
@@ -552,7 +579,7 @@ private struct ClearWorkspaceView: View {
                 .font(.system(size: 12)).foregroundStyle(.secondary)
             Text(item.profile).font(.system(size: 12, design: .monospaced))
                 .padding(14).frame(maxWidth: .infinity, alignment: .leading)
-                .background(pane, in: RoundedRectangle(cornerRadius: 12))
+                .systemSurface(radius: 12)
             if item.running {
                 Text("实例仍在运行。请先保存工作并退出，然后刷新列表重试。")
                     .font(.system(size: 12)).foregroundStyle(.orange)
@@ -588,7 +615,7 @@ private struct DestroyInstanceView: View {
                 Text("~/Library/Logs/\(item.name)")
             }.font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
                 .padding(14).frame(maxWidth: .infinity, alignment: .leading)
-                .background(pane, in: RoundedRectangle(cornerRadius: 12))
+                .systemSurface(radius: 12)
             if item.running {
                 Text("实例仍在运行。请先保存工作并退出，然后刷新列表重试。")
                     .font(.system(size: 12)).foregroundStyle(.orange)
@@ -647,7 +674,7 @@ private struct BackupManagementView: View {
                                 Button("永久删除", role: .destructive) { pendingDeletion = batch }
                                     .disabled(store.busy || !batch.deletable)
                             }
-                            .padding(13).background(pane, in: RoundedRectangle(cornerRadius: 12))
+                            .padding(13).systemSurface(radius: 12)
                         }
                     }
                 }.frame(maxHeight: 350)
@@ -721,7 +748,7 @@ private struct MainWindowCommands: Commands {
     private let updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
     var body: some Scene {
         Window("Aether Antigravity Multiplexer", id: "main") {
-            ContentView(updaterController: updaterController).preferredColorScheme(.light)
+            ContentView(updaterController: updaterController)
         }
             .windowStyle(.titleBar).windowToolbarStyle(.unifiedCompact)
             .commands {
