@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import Sparkle
+import WebKit
 
 private let accent = Color.accentColor
 
@@ -36,6 +37,18 @@ struct ManagedInstance: Identifiable, Hashable {
     let verified: Bool
     var isOriginal: Bool { bundleID == "com.google.antigravity" }
     var profile: String { isOriginal ? "~/.gemini" : "~/.gemini-\(max(index - 1, 1))" }
+}
+
+struct SourceReleaseNotes: Decodable, Identifiable {
+    let version: String
+    let highlights: [String]
+    var id: String { version }
+    static let bundled: [SourceReleaseNotes] = {
+        guard let url = Bundle.main.url(forResource: "source_release_notes", withExtension: "json"),
+              let data = try? Data(contentsOf: url),
+              let notes = try? JSONDecoder().decode([SourceReleaseNotes].self, from: data) else { return [] }
+        return notes
+    }()
 }
 
 struct BackupBatch: Decodable, Identifiable {
@@ -184,13 +197,14 @@ struct BackupBatch: Decodable, Identifiable {
         catch { self.error = "无法保存验证状态：\(error.localizedDescription)" }
     }
 
-    func upgradeAll() {
-        guard !busy else { return }
+    func upgrade(_ selected: [ManagedInstance]) {
+        guard !busy && !selected.isEmpty && selected.allSatisfy({ pendingUpgrades.contains($0) }) else { return }
         guard let script = Bundle.main.url(forResource: "upgrade_all", withExtension: "py") else {
             error = "应用缺少升级组件。"; return
         }
-        runScript(script, arguments: ["--source", "/Applications/Antigravity.app"],
-                  starting: "正在检查本机主实例和全部副本；此操作不下载程序…\n")
+        runScript(script, arguments: ["--source", "/Applications/Antigravity.app",
+                                      "--only-indices", selected.map { String($0.index) }.joined(separator: ",")],
+                  starting: "正在检查本机主实例和选定副本；此操作不下载程序…\n")
     }
 
     func create(index: Int, destination: URL) {
@@ -272,6 +286,8 @@ struct InstanceCard: View {
     let item: ManagedInstance
     let sourceVersion: String
     let busy: Bool
+    let canUpgrade: Bool
+    let upgrade: () -> Void
     let open: () -> Void
     let quit: () -> Void
     let reveal: () -> Void
@@ -299,7 +315,8 @@ struct InstanceCard: View {
             }
             Spacer(minLength: 12)
             if !item.isOriginal && item.version.compare(sourceVersion, options: .numeric) == .orderedAscending {
-                Text("待升级").font(.system(size: 11, weight: .medium)).foregroundStyle(.orange)
+                Button("升级…", action: upgrade).buttonStyle(.bordered)
+                    .disabled(busy || !canUpgrade)
             }
             if item.verified { Label("已验证", systemImage: "checkmark.seal.fill").font(.system(size: 11)).foregroundStyle(.green) }
             Menu {
@@ -329,11 +346,140 @@ struct InstanceCard: View {
     }
 }
 
+struct OfficialReleaseNotesView: NSViewRepresentable {
+    let fromVersions: [String]
+    let targetVersion: String
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeNSView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = false
+        let view = WKWebView(frame: .zero, configuration: configuration)
+        view.navigationDelegate = context.coordinator
+        view.setValue(false, forKey: "drawsBackground")
+        view.loadHTMLString(Self.page("<p>正在读取官方更新日志…</p>"), baseURL: nil)
+        let request = URLRequest(url: URL(string: "https://www.antigravity.google/docs/changelog?tab=hub")!, timeoutInterval: 20)
+        URLSession.shared.dataTask(with: request) { [weak view] data, response, error in
+            let content: String
+            if error == nil, (response as? HTTPURLResponse)?.statusCode == 200,
+               let data, let html = String(data: data, encoding: .utf8) {
+                content = Self.extract(html, from: fromVersions, to: targetVersion)
+            } else {
+                content = "<p>官方日志加载失败。可查看下方中文摘要，或通过官方链接查看完整日志。</p>"
+            }
+            DispatchQueue.main.async { view?.loadHTMLString(Self.page(content), baseURL: request.url) }
+        }.resume()
+        return view
+    }
+    func updateNSView(_ view: WKWebView, context: Context) {}
+
+    static func extract(_ html: String, from versions: [String], to target: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: #"<article\b[^>]*id="rel-hub-([0-9.]+)"[^>]*>[\s\S]*?</article>"#) else { return "" }
+        let source = html as NSString
+        let rows = regex.matches(in: html, range: NSRange(location: 0, length: source.length)).filter { match in
+            let version = source.substring(with: match.range(at: 1))
+            return version.compare(target, options: .numeric) != .orderedDescending &&
+                versions.contains { $0.compare(version, options: .numeric) == .orderedAscending }
+        }.map { source.substring(with: $0.range) }
+        guard !rows.isEmpty else { return "<p>官方页面暂未提供此版本区间的日志，请查看下方中文摘要或官方链接。</p>" }
+        return rows.joined().replacingOccurrences(of: "<details ", with: "<details open ")
+            .replacingOccurrences(of: #"<svg\b[\s\S]*?</svg>"#, with: "", options: .regularExpression)
+    }
+    static func page(_ content: String) -> String {
+        """
+        <!doctype html><html><head><meta name="color-scheme" content="light dark">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
+        <style>
+        body{margin:0;background:transparent;color:#222;font:12px -apple-system;line-height:1.6}
+        @media(prefers-color-scheme:dark){body{color:#eee}}
+        article{padding:0 12px 12px 0}article+article{border-top:1px solid #8885;padding-top:16px}
+        h3{margin:8px 0;font-size:14px}p{margin:8px 0}ul{padding-left:20px}li{margin:7px 0}
+        time,.rn-latest-tag{opacity:.65;font-size:11px}a{color:inherit;text-decoration:none}
+        summary{font-weight:600;margin-top:12px}.rn-count{margin-left:5px}
+        </style></head><body>\(content)</body></html>
+        """
+    }
+    final class Coordinator: NSObject, WKNavigationDelegate {
+        func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction,
+                     decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            if action.navigationType == .linkActivated, let url = action.request.url,
+               url.scheme == "https", url.host == "www.antigravity.google" || url.host == "antigravity.google" {
+                NSWorkspace.shared.open(url); decisionHandler(.cancel)
+            } else { decisionHandler(.allow) }
+        }
+    }
+}
+
+struct UpgradeRequest: Identifiable {
+    let id = UUID()
+    let instances: [ManagedInstance]
+}
+
+struct UpgradeConfirmationView: View {
+    let instances: [ManagedInstance]
+    let targetVersion: String
+    let busy: Bool
+    let cancel: () -> Void
+    let confirm: () -> Void
+    private var notes: [SourceReleaseNotes] {
+        SourceReleaseNotes.bundled.filter { note in
+            note.version.compare(targetVersion, options: .numeric) != .orderedDescending &&
+            instances.contains { $0.version.compare(note.version, options: .numeric) == .orderedAscending }
+        }.sorted { $0.version.compare($1.version, options: .numeric) == .orderedDescending }
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(instances.count == 1 ? "升级指定副本" : "升级全部副本")
+                .font(.system(size: 21, weight: .bold))
+            Text("本机主实例 v\(targetVersion) · 待升级 \(instances.count) 个")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(instances) { item in
+                            HStack { Text(item.name); Spacer(); Text("v\(item.version) → v\(targetVersion)")
+                                .foregroundStyle(.secondary) }.font(.system(size: 12))
+                        }
+                    }.padding(14).systemSurface(radius: 13)
+                    Text("官方更新日志（原文）").font(.system(size: 15, weight: .semibold))
+                    Text("联网读取官方原文，保留完整新增功能和修复条目。")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                    OfficialReleaseNotesView(fromVersions: instances.map(\.version), targetVersion: targetVersion)
+                        .frame(height: 300)
+                    Text("中文重点摘要").font(.system(size: 15, weight: .semibold))
+                    if notes.isEmpty {
+                        Text("尚未收录此版本区间的更新摘要，可查看官方完整更新日志。")
+                            .font(.system(size: 12)).foregroundStyle(.secondary)
+                    }
+                    ForEach(notes) { note in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("v\(note.version)").font(.system(size: 13, weight: .semibold))
+                            ForEach(note.highlights, id: \.self) { text in
+                                Text("• " + text).font(.system(size: 12)).fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                    Text("显示所选副本到目标版本之间已收录的重点变化；不同起始版本获得的变化不同。摘要来自官方更新日志，完整条目请查看原文。")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                    Link("查看官方完整更新日志 ↗", destination: URL(string: "https://www.antigravity.google/docs/changelog?tab=hub")!)
+                        .font(.system(size: 12))
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(.trailing, 8)
+            }.frame(height: 400)
+            Text("请先保存选定副本中的工作。工具会从本机主实例复制程序，备份这些副本的应用、账号目录和窗口数据后安装；账号目录保持原路径。")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+            HStack { Spacer()
+                Button("取消", action: cancel)
+                Button("备份并升级", action: confirm).buttonStyle(.borderedProminent).disabled(busy || instances.isEmpty)
+            }
+        }.padding(24).frame(width: 570)
+    }
+}
+
 struct ContentView: View {
     let updaterController: SPUStandardUpdaterController
     @StateObject private var store = InstanceStore()
     @State private var showCreate = false
-    @State private var showUpgrade = false
+    @State private var upgradeRequest: UpgradeRequest?
     @State private var showBackupManager = false
     @State private var showUpdateSettings = false
     @State private var pendingDestroy: ManagedInstance?
@@ -365,7 +511,7 @@ struct ContentView: View {
                             .buttonStyle(.bordered).help("刷新列表")
                         Button { store.refreshBackups(); showBackupManager = true } label: { Label("管理备份", systemImage: "externaldrive") }
                             .buttonStyle(.bordered)
-                        Button { showUpgrade = true } label: { Label("升级全部副本", systemImage: "arrow.up.circle") }
+                        Button { upgradeRequest = UpgradeRequest(instances: store.pendingUpgrades) } label: { Label("升级全部副本", systemImage: "arrow.up.circle") }
                             .buttonStyle(.bordered).disabled(store.busy || store.pendingUpgrades.isEmpty || store.compatibility != "已支持本机版本")
                         Spacer(minLength: 0)
                         }
@@ -382,6 +528,8 @@ struct ContentView: View {
                     }
                     ForEach(store.instances) { item in
                         InstanceCard(item: item, sourceVersion: store.sourceVersion, busy: store.busy,
+                                     canUpgrade: store.compatibility == "已支持本机版本",
+                                     upgrade: { upgradeRequest = UpgradeRequest(instances: [item]) },
                                      open: { store.open(item) }, quit: { store.quit(item) }, reveal: { store.reveal(item) },
                                      logs: { store.showLogs(item) }, verify: { store.toggleVerified(item) },
                                      clearWorkspace: { pendingClear = item },
@@ -455,28 +603,11 @@ struct ContentView: View {
                 }
             }.padding(24).frame(width: 510)
         }
-        .sheet(isPresented: $showUpgrade) {
-            VStack(alignment: .leading, spacing: 17) {
-                Text("从本机主实例升级全部副本").font(.system(size: 21, weight: .bold))
-                Text("/Applications/Antigravity.app · v\(store.sourceVersion) · 待升级 \(store.pendingUpgrades.count) 个")
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(store.pendingUpgrades) { item in
-                            HStack { Text(item.name); Spacer(); Text("v\(item.version) → v\(store.sourceVersion)")
-                                .foregroundStyle(.secondary) }
-                                .font(.system(size: 12))
-                        }
-                    }.padding(16)
-                }.frame(maxHeight: 230).systemSurface(radius: 13)
-                Text("直接复制本机主实例，不从网络下载安装包。请先保存这些副本中的工作。工具会备份每个应用、账号目录和窗口数据，再逐个安装适配后的副本；账号目录保持原路径。")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-                HStack { Spacer()
-                    Button("取消") { showUpgrade = false }
-                    Button("从主实例复制并升级") { store.upgradeAll(); showUpgrade = false }
-                        .buttonStyle(.borderedProminent)
-                }
-            }.padding(24).frame(width: 520)
+        .sheet(item: $upgradeRequest) { request in
+            UpgradeConfirmationView(instances: request.instances, targetVersion: store.sourceVersion,
+                                    busy: store.busy,
+                                    cancel: { upgradeRequest = nil },
+                                    confirm: { store.upgrade(request.instances); upgradeRequest = nil })
         }
         .sheet(isPresented: $showUpdateSettings) {
             UpdateSettingsView(updater: updaterController.updater)
