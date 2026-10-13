@@ -1,4 +1,4 @@
-# Aether Antigravity Multiplexer 0.4.4
+# Aether Antigravity Multiplexer 0.5.0
 
 适用：Apple Silicon（M 系列）Mac，macOS 13 或更新版本。本工具是本机图形化管理器；安装包不包含 Google Antigravity 程序。
 

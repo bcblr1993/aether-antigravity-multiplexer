@@ -76,6 +76,7 @@ def patch_asar(source, target, name, data_dir, scheme):
                 f"electron_1.app.setName({json.dumps(name)});\n"
                 f"electron_1.app.setPath('userData', require('path').join(electron_1.app.getPath('appData'), {json.dumps(name)}));\n"
                 f"electron_1.app.setAppLogsPath(require('path').join(require('os').homedir(), 'Library', 'Logs', {json.dumps(name)}));\n"
+                f"electron_1.app.on('browser-window-created', (_event, win) => {{ win.on('close', (e) => {{ if (!isQuitting) {{ e.preventDefault(); electron_1.app.hide(); }} }}); }});\n"
             )
             content = replace_once(content, anchor, setup + anchor, "single-instance setup")
             content = replace_once(content, "await (0, ideInstall_1.maybeShowIdeInstallWizard)(storageManager);",
@@ -244,6 +245,12 @@ def create(index, source, destination):
     run("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
         "-f", str(app))
     APP_SUPPORT.mkdir(parents=True, exist_ok=True)
+    instance_support = APP_SUPPORT.parent / name
+    instance_support.mkdir(parents=True, exist_ok=True)
+    storage_file = instance_support / "app_storage.json"
+    storage_data = json.loads(storage_file.read_text()) if storage_file.exists() else {}
+    storage_data["runInBackground"] = "true"
+    storage_file.write_text(json.dumps(storage_data, ensure_ascii=False, indent=2))
     manifest = APP_SUPPORT / f"instance-{index}.json"
     manifest.write_text(json.dumps({"index": index, "name": name, "app": str(app), "profile": str(profile),
                                     "version": version, "scheme": scheme, "source_asar_sha256": expected["asar"],

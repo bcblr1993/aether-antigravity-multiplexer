@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import Sparkle
 import WebKit
+import UserNotifications
 
 private let accent = Color.accentColor
 
@@ -259,7 +260,56 @@ private struct PulsingStatusDot: View {
     }
 }
 
-// MARK: - Data Models & Store
+// MARK: - Data Models & Telemetry
+
+enum TaskRunState: Equatable {
+    case stopped
+    case runningTask
+    case needsAttention
+    case idle
+    case error
+
+    var label: String {
+        switch self {
+        case .stopped: return "未启动"
+        case .runningTask: return "任务执行中"
+        case .needsAttention: return "等待确认"
+        case .idle: return "空闲就绪"
+        case .error: return "任务异常"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .stopped: return .secondary
+        case .runningTask: return Color(red: 0.15, green: 0.82, blue: 0.96)
+        case .needsAttention: return .orange
+        case .idle: return .green
+        case .error: return .red
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .stopped: return "poweroff"
+        case .runningTask: return "bolt.horizontal.circle.fill"
+        case .needsAttention: return "bell.badge.fill"
+        case .idle: return "checkmark.circle.fill"
+        case .error: return "exclamationmark.triangle.fill"
+        }
+    }
+}
+
+struct InstanceActivity: Equatable {
+    var state: TaskRunState = .stopped
+    var currentAction: String = "点击缩略图启动实例"
+    var workspace: String = ""
+    var lastUpdatedLabel: String = ""
+    var stepIndex: Int = 0
+    var latestConversationID: String = ""
+
+    static let stopped = InstanceActivity()
+}
 
 struct ManagedInstance: Identifiable, Hashable {
     let id: String
@@ -269,9 +319,14 @@ struct ManagedInstance: Identifiable, Hashable {
     let version: String
     let index: Int
     let running: Bool
+    let isHidden: Bool
     let verified: Bool
     var isOriginal: Bool { bundleID == "com.google.antigravity" }
     var profile: String { isOriginal ? "~/.gemini" : "~/.gemini-\(max(index - 1, 1))" }
+    var profileURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(isOriginal ? ".gemini" : ".gemini-\(max(index - 1, 1))")
+    }
     var callbackScheme: String {
         if isOriginal { return "antigravity" }
         if index >= 8 { return "antigravity-\(index)" }
@@ -308,14 +363,287 @@ struct BackupBatch: Decodable, Identifiable {
     var sizeLabel: String { ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
 }
 
+// MARK: - Background Transcript & Window Scanner
+
+private enum TelemetryScanner {
+    static func scan(instances: [ManagedInstance]) -> [String: InstanceActivity] {
+        var results: [String: InstanceActivity] = [:]
+        for item in instances {
+            if !item.running {
+                var stopped = InstanceActivity.stopped
+                if let latest = latestTranscript(in: item.profileURL) {
+                    let parsed = parseTranscriptTail(at: latest.url, modDate: latest.date, isRunning: false, convID: latest.convID)
+                    stopped.workspace = parsed.workspace
+                    stopped.lastUpdatedLabel = parsed.lastUpdatedLabel
+                    if !parsed.currentAction.isEmpty {
+                        stopped.currentAction = "上次：\(parsed.currentAction)"
+                    }
+                }
+                results[item.id] = stopped
+            } else if let latest = latestTranscript(in: item.profileURL) {
+                results[item.id] = parseTranscriptTail(at: latest.url, modDate: latest.date, isRunning: true, convID: latest.convID)
+            } else {
+                results[item.id] = InstanceActivity(
+                    state: .idle,
+                    currentAction: "等待新对话指令",
+                    workspace: item.profile,
+                    lastUpdatedLabel: "刚刚",
+                    stepIndex: 0
+                )
+            }
+        }
+        return results
+    }
+
+    private static func latestTranscript(in profileURL: URL) -> (url: URL, date: Date, convID: String)? {
+        let fm = FileManager.default
+        guard let topDirs = try? fm.contentsOfDirectory(at: profileURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
+            return nil
+        }
+        var newestURL: URL?
+        var newestDate: Date = .distantPast
+        var newestConvID = ""
+        for dir in topDirs {
+            let brainDir = dir.appendingPathComponent("brain")
+            guard let convDirs = try? fm.contentsOfDirectory(at: brainDir, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) else {
+                continue
+            }
+            for conv in convDirs {
+                let transcript = conv.appendingPathComponent(".system_generated/logs/transcript.jsonl")
+                guard let values = try? transcript.resourceValues(forKeys: [.contentModificationDateKey]),
+                      let modDate = values.contentModificationDate else { continue }
+                if modDate > newestDate {
+                    newestDate = modDate
+                    newestURL = transcript
+                    newestConvID = conv.lastPathComponent
+                }
+            }
+        }
+        if let newestURL { return (newestURL, newestDate, newestConvID) }
+        return nil
+    }
+
+    private static func parseTranscriptTail(at url: URL, modDate: Date, isRunning: Bool, convID: String) -> InstanceActivity {
+        let age = max(0, Date().timeIntervalSince(modDate))
+        let ageLabel = formatRelativeAge(age)
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            return InstanceActivity(state: isRunning ? .idle : .stopped, currentAction: "已启动就绪", workspace: "", lastUpdatedLabel: ageLabel)
+        }
+        defer { try? handle.close() }
+        let fileSize = (try? handle.seekToEnd()) ?? 0
+        let readBytes: UInt64 = min(fileSize, 32_768)
+        try? handle.seek(toOffset: fileSize - readBytes)
+        let data = handle.readDataToEndOfFile()
+        guard let text = String(data: data, encoding: .utf8) else {
+            return InstanceActivity(state: isRunning ? .idle : .stopped, currentAction: "已启动就绪", workspace: "", lastUpdatedLabel: ageLabel)
+        }
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
+        let tailLines = lines.suffix(8)
+        var parsedSteps: [[String: Any]] = []
+        for line in tailLines {
+            if let lineData = line.data(using: .utf8),
+               let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any] {
+                parsedSteps.append(obj)
+            }
+        }
+        guard let last = parsedSteps.last else {
+            return InstanceActivity(state: isRunning ? .idle : .stopped, currentAction: "等待新对话指令", workspace: "", lastUpdatedLabel: ageLabel)
+        }
+
+        // Extract workspace name from recent tool calls
+        var workspace = ""
+        for step in parsedSteps.reversed() {
+            if let tools = step["tool_calls"] as? [[String: Any]] {
+                for tool in tools {
+                    if let args = tool["args"] as? [String: Any] {
+                        for key in ["Cwd", "TargetFile", "AbsolutePath"] {
+                            if let raw = args[key] as? String {
+                                let cleaned = raw.trimmingCharacters(in: CharacterSet(charactersIn: "\"' "))
+                                if cleaned.hasPrefix("/") {
+                                    let urlPath = URL(fileURLWithPath: cleaned)
+                                    workspace = key == "Cwd" ? urlPath.lastPathComponent : urlPath.deletingLastPathComponent().lastPathComponent
+                                    break
+                                }
+                            }
+                        }
+                    }
+                    if !workspace.isEmpty { break }
+                }
+            }
+            if !workspace.isEmpty { break }
+        }
+
+        let stepIndex = last["step_index"] as? Int ?? 0
+        let lastType = last["type"] as? String ?? ""
+        let lastStatus = last["status"] as? String ?? ""
+        let hasRunningStep = parsedSteps.contains { ($0["status"] as? String) == "RUNNING" }
+
+        func withConv(_ act: InstanceActivity) -> InstanceActivity {
+            var a = act
+            a.latestConversationID = convID
+            return a
+        }
+
+        // Extract latest human-readable action or message
+        var actionText = ""
+        if let tools = last["tool_calls"] as? [[String: Any]], let firstTool = tools.first {
+            let toolName = firstTool["name"] as? String ?? "tool"
+            if let args = firstTool["args"] as? [String: Any] {
+                let rawAction = (args["toolAction"] as? String) ?? (args["toolSummary"] as? String) ?? ""
+                actionText = rawAction.trimmingCharacters(in: CharacterSet(charactersIn: "\"' "))
+            }
+            if actionText.isEmpty { actionText = "调用工具 \(toolName)" }
+            if isRunning && toolName == "ask_question" && age < 1800 {
+                return withConv(InstanceActivity(
+                    state: .needsAttention,
+                    currentAction: "等待确认问题选项：\(actionText)",
+                    workspace: workspace,
+                    lastUpdatedLabel: ageLabel,
+                    stepIndex: stepIndex
+                ))
+            }
+            if isRunning && age < 240 {
+                return withConv(InstanceActivity(
+                    state: .runningTask,
+                    currentAction: actionText,
+                    workspace: workspace,
+                    lastUpdatedLabel: ageLabel,
+                    stepIndex: stepIndex
+                ))
+            }
+        }
+
+        if isRunning && hasRunningStep && age < 600 {
+            return withConv(InstanceActivity(
+                state: .runningTask,
+                currentAction: actionText.isEmpty ? "正在后台执行命令任务…" : actionText,
+                workspace: workspace,
+                lastUpdatedLabel: ageLabel,
+                stepIndex: stepIndex
+            ))
+        }
+
+        if isRunning && age < 180 {
+            if lastType == "USER_INPUT" {
+                let prompt = cleanSnippet(last["content"] as? String ?? "")
+                return withConv(InstanceActivity(
+                    state: .runningTask,
+                    currentAction: prompt.isEmpty ? "正在思考并规划任务…" : "正在处理：\(prompt)",
+                    workspace: workspace,
+                    lastUpdatedLabel: ageLabel,
+                    stepIndex: stepIndex
+                ))
+            } else if lastType == "GENERIC" {
+                return withConv(InstanceActivity(
+                    state: .runningTask,
+                    currentAction: "正在分析工具执行结果…",
+                    workspace: workspace,
+                    lastUpdatedLabel: ageLabel,
+                    stepIndex: stepIndex
+                ))
+            }
+        }
+
+        if lastStatus == "ERROR" && isRunning && age < 600 {
+            return withConv(InstanceActivity(
+                state: .error,
+                currentAction: "步骤执行报错，请检查实例",
+                workspace: workspace,
+                lastUpdatedLabel: ageLabel,
+                stepIndex: stepIndex
+            ))
+        }
+
+        let summary = cleanSnippet(last["content"] as? String ?? "")
+        let displayAction = !summary.isEmpty ? summary : (!actionText.isEmpty ? actionText : "任务已完成 · 等待新指令")
+        return withConv(InstanceActivity(
+            state: isRunning ? .idle : .stopped,
+            currentAction: displayAction,
+            workspace: workspace,
+            lastUpdatedLabel: ageLabel,
+            stepIndex: stepIndex
+        ))
+    }
+
+    private static func cleanSnippet(_ raw: String) -> String {
+        let stripped = raw
+            .replacingOccurrences(of: "<USER_REQUEST>", with: "")
+            .replacingOccurrences(of: "</USER_REQUEST>", with: "")
+            .replacingOccurrences(of: #"<!--[\s\S]*?-->"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"[#*`>-]+"#, with: " ", options: .regularExpression)
+        let firstLine = stripped
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { !$0.isEmpty && !$0.hasPrefix("Created At:") && !$0.hasPrefix("The current local time") } ?? ""
+        return String(firstLine.prefix(48))
+    }
+
+    private static func formatRelativeAge(_ seconds: TimeInterval) -> String {
+        if seconds < 15 { return "刚刚" }
+        if seconds < 60 { return "\(Int(seconds))秒前" }
+        if seconds < 3600 { return "\(Int(seconds / 60))分钟前" }
+        if seconds < 86400 { return "\(Int(seconds / 3600))小时前" }
+        return "\(Int(seconds / 86400))天前"
+    }
+}
+
+// MARK: - Notification Delegate
+
+final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
+    static let shared = AppNotificationDelegate()
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound])
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
+        let userInfo = response.notification.request.content.userInfo
+        if let bundleID = userInfo["bundleID"] as? String {
+            Task { @MainActor in
+                InstanceStore.current?.openInstance(byBundleID: bundleID)
+            }
+        }
+        completionHandler()
+    }
+}
+
+// MARK: - Instance Store & Window / HUD Coordinator
+
 @MainActor final class InstanceStore: ObservableObject {
+    static weak var current: InstanceStore?
+
     @Published var instances: [ManagedInstance] = []
+    @Published var activities: [String: InstanceActivity] = [:]
+    @Published var thumbnails: [String: NSImage] = [:]
     @Published var backups: [BackupBatch] = []
     @Published var busy = false
     @Published var output = ""
     @Published var error: String?
     @Published var sourceVersion = "—"
     @Published var compatibility = "检查中"
+    @Published var hasScreenCapturePermission = false
+    @Published var soloFocusMode: Bool = UserDefaults.standard.object(forKey: "soloFocusMode") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(soloFocusMode, forKey: "soloFocusMode") }
+    }
+    @Published var floatingHUDEnabled: Bool = UserDefaults.standard.object(forKey: "floatingHUDEnabled") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(floatingHUDEnabled, forKey: "floatingHUDEnabled")
+            updateFloatingHUDVisibility()
+        }
+    }
+    @Published var notificationsEnabled: Bool = UserDefaults.standard.object(forKey: "notificationsEnabled") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(notificationsEnabled, forKey: "notificationsEnabled") }
+    }
+    @Published var activeInstanceName: String? = nil
+    @Published var activeConversationURLs: [String: String] = [:]
+
+    private var hudPanel: NSPanel?
+    private var statusItem: NSStatusItem?
+    private var lastOpenWindowBundles: Set<String> = []
+    private var lastFrontmostAntigravityBundle: String? = nil
+    private var hasInitializedActivityBaseline = false
+    private var lastNotifiedStates: [String: (state: TaskRunState, stepIndex: Int)] = [:]
+
     private let support = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/Antigravity Multiplexer")
     private let supportedVersions: Set<String> = {
@@ -326,7 +654,44 @@ struct BackupBatch: Decodable, Identifiable {
     }()
     private let names = ["Second": 2, "Third": 3, "Fourth": 4, "Fifth": 5, "Sixth": 6, "Seventh": 7, "Eighth": 8]
 
+    init() {
+        Self.current = self
+        hasScreenCapturePermission = CGPreflightScreenCaptureAccess()
+        setupStatusBarItem()
+        setupNotifications()
+    }
+
+    private func isInstanceCollapsed(_ app: NSRunningApplication?) -> Bool {
+        guard let app else { return false }
+        return app.isHidden || app.activationPolicy != .regular
+    }
+
+    /// Ensures `"runInBackground": "true"` in `~/Library/Application Support/<InstanceName>/app_storage.json`
+    /// so clicking the macOS red close button (✕) never quits the instance or interrupts running Agent tasks,
+    /// and instead detaches the window and hides its Dock icon (`app.dock.hide()`).
+    private func enforceRunInBackgroundSetting(for items: [ManagedInstance]) {
+        let appSupportRoot = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support")
+        for item in items {
+            let dir = appSupportRoot.appendingPathComponent(item.name)
+            guard FileManager.default.fileExists(atPath: dir.path) else { continue }
+            let storageFile = dir.appendingPathComponent("app_storage.json")
+            var json: [String: Any] = [:]
+            if let data = try? Data(contentsOf: storageFile),
+               let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                json = parsed
+            }
+            if (json["runInBackground"] as? String) != "true" {
+                json["runInBackground"] = "true"
+                if let encoded = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]) {
+                    try? encoded.write(to: storageFile, options: .atomic)
+                }
+            }
+        }
+    }
+
     func refresh() {
+        hasScreenCapturePermission = CGPreflightScreenCaptureAccess()
         let fm = FileManager.default
         let roots = [URL(fileURLWithPath: "/Applications"), fm.homeDirectoryForCurrentUser.appendingPathComponent("Applications")]
         var found: [ManagedInstance] = []
@@ -344,13 +709,19 @@ struct BackupBatch: Decodable, Identifiable {
                 let manifest = manifestPath(index: index)
                 let record = (try? Data(contentsOf: manifest)).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
                 let verified = record?["login_verified"] as? Bool ?? false
-                let running = isInstanceRunning(bundleID: bundle, path: app)
+                let runningApp = runningApplication(bundleID: bundle, path: app)
+                let running = runningApp != nil
+                let isHidden = isInstanceCollapsed(runningApp)
                 found.append(ManagedInstance(id: bundle, name: name, path: app, bundleID: bundle,
-                                             version: version, index: index, running: running, verified: verified))
+                                             version: version, index: index, running: running,
+                                             isHidden: isHidden, verified: verified))
             }
         }
+        let sorted = found.sorted { $0.index < $1.index }
+        enforceRunInBackgroundSetting(for: sorted)
+        lastOpenWindowBundles = Set(sorted.filter { $0.running && !$0.isHidden }.map(\.bundleID))
         withAnimation(.spring(response: 0.32, dampingFraction: 0.84)) {
-            instances = found.sorted { $0.index < $1.index }
+            instances = sorted
             if let source = instances.first(where: { $0.isOriginal }) {
                 sourceVersion = source.version
                 compatibility = supportedVersions.contains(source.version) ? "已支持本机版本" : "版本待适配"
@@ -360,24 +731,202 @@ struct BackupBatch: Decodable, Identifiable {
             }
         }
         refreshBackups()
+        refreshTelemetryAndThumbnails()
     }
 
-    private func isInstanceRunning(bundleID: String, path: URL) -> Bool {
+    private func runningApplication(bundleID: String, path: URL) -> NSRunningApplication? {
         let expected = path.resolvingSymlinksInPath().standardizedFileURL
-        return NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).contains { app in
+        return NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first { app in
             !app.isTerminated && app.bundleURL?.resolvingSymlinksInPath().standardizedFileURL == expected
         }
     }
 
     func refreshRunningStates() {
+        hasScreenCapturePermission = CGPreflightScreenCaptureAccess()
         let updated = instances.map { item in
-            ManagedInstance(id: item.id, name: item.name, path: item.path, bundleID: item.bundleID,
-                            version: item.version, index: item.index,
-                            running: isInstanceRunning(bundleID: item.bundleID, path: item.path), verified: item.verified)
+            let app = runningApplication(bundleID: item.bundleID, path: item.path)
+            return ManagedInstance(id: item.id, name: item.name, path: item.path, bundleID: item.bundleID,
+                                   version: item.version, index: item.index,
+                                   running: app != nil, isHidden: isInstanceCollapsed(app), verified: item.verified)
         }
+        let currentOpenBundles = Set(updated.filter { $0.running && !$0.isHidden }.map(\.bundleID))
+        // Detect if the user just clicked the red close (✕) button on the active Antigravity window:
+        // The instance stays running (`running == true`), its window closes & Dock icon hides (`isHidden == true`),
+        // so we automatically return focus to the Aether Antigravity Multiplexer Monitor Wall!
+        if let lastFront = lastFrontmostAntigravityBundle,
+           lastOpenWindowBundles.contains(lastFront),
+           !currentOpenBundles.contains(lastFront),
+           updated.first(where: { $0.bundleID == lastFront })?.running == true {
+            lastFrontmostAntigravityBundle = nil
+            bringMonitorWallToFront()
+        }
+        lastOpenWindowBundles = currentOpenBundles
+
         if updated != instances {
             withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
                 instances = updated
+            }
+        }
+        updateActiveFrontmostInstance()
+        refreshTelemetryAndThumbnails()
+    }
+
+    func refreshTelemetryAndThumbnails() {
+        let snapshot = instances
+        Task.detached(priority: .utility) {
+            let scanned = TelemetryScanner.scan(instances: snapshot)
+            let cdpData = await Self.captureCDPScreenshots(for: snapshot)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.processActivityChangesAndNotify(newActivities: scanned)
+                if self.activities != scanned {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        self.activities = scanned
+                    }
+                }
+                for (id, image) in cdpData.thumbnails {
+                    self.thumbnails[id] = image
+                }
+                for (id, url) in cdpData.urls {
+                    self.activeConversationURLs[id] = url
+                }
+                self.captureWindowThumbnails()
+                self.updateStatusBarMenu()
+            }
+        }
+    }
+
+    /// Zero-permission live window screenshot capture via Chromium DevTools Protocol (`DevToolsActivePort`).
+    /// Captures live UI screenshots of all running instances in real-time and remembers the active conversation URL!
+    private nonisolated static func captureCDPScreenshots(for items: [ManagedInstance]) async -> (thumbnails: [String: NSImage], urls: [String: String]) {
+        var results: [String: NSImage] = [:]
+        var urls: [String: String] = [:]
+        let appSupportRoot = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support")
+
+        for item in items where item.running {
+            let portFile = appSupportRoot.appendingPathComponent(item.name).appendingPathComponent("DevToolsActivePort")
+            guard let content = try? String(contentsOf: portFile, encoding: .utf8),
+                  let firstLine = content.components(separatedBy: .newlines).first,
+                  let port = Int(firstLine.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  let listURL = URL(string: "http://127.0.0.1:\(port)/json/list") else { continue }
+
+            var req = URLRequest(url: listURL)
+            req.timeoutInterval = 0.8
+            guard let (data, _) = try? await URLSession.shared.data(for: req),
+                  let targets = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { continue }
+
+            guard let mainTarget = targets.first(where: { t in
+                guard (t["type"] as? String) == "page",
+                      let u = t["url"] as? String else { return false }
+                return u.hasPrefix("https://127.0.0.1:") || u.hasPrefix("http://127.0.0.1:")
+            }),
+            let currentURL = mainTarget["url"] as? String,
+            let wsString = mainTarget["webSocketDebuggerUrl"] as? String,
+            let wsURL = URL(string: wsString) else { continue }
+
+            if currentURL.contains("/c/") {
+                urls[item.id] = currentURL
+            }
+
+            if let image = await fetchCDPScreenshot(wsURL: wsURL) {
+                results[item.id] = image
+            }
+        }
+        return (results, urls)
+    }
+
+    private nonisolated static func fetchCDPScreenshot(wsURL: URL) async -> NSImage? {
+        let task = URLSession.shared.webSocketTask(with: wsURL)
+        task.resume()
+        defer { task.cancel(with: .goingAway, reason: nil) }
+        let payload = "{\"id\":1,\"method\":\"Page.captureScreenshot\",\"params\":{\"format\":\"jpeg\",\"quality\":62}}"
+        do {
+            try await task.send(.string(payload))
+            let message = try await task.receive()
+            guard case .string(let text) = message,
+                  let data = text.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let res = obj["result"] as? [String: Any],
+                  let b64 = res["data"] as? String,
+                  let imgData = Data(base64Encoded: b64),
+                  let image = NSImage(data: imgData) else { return nil }
+            return image
+        } catch {
+            return nil
+        }
+    }
+
+    /// Closes open BrowserWindow targets via `DevToolsActivePort` so Electron triggers `window-all-closed`
+    /// with `runInBackground=true`, which hides the macOS Dock icon (`app.dock.hide()`) while keeping
+    /// `language_server` and all Agent tasks running in the background.
+    private nonisolated static func closeCDPWindows(for instanceName: String) async -> Bool {
+        let portFile = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support")
+            .appendingPathComponent(instanceName)
+            .appendingPathComponent("DevToolsActivePort")
+        guard let content = try? String(contentsOf: portFile, encoding: .utf8),
+              let firstLine = content.components(separatedBy: .newlines).first,
+              let port = Int(firstLine.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let listURL = URL(string: "http://127.0.0.1:\(port)/json/list") else { return false }
+
+        var req = URLRequest(url: listURL)
+        req.timeoutInterval = 0.6
+        guard let (data, _) = try? await URLSession.shared.data(for: req),
+              let targets = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return false }
+
+        let pageTargets = targets.filter { ($0["type"] as? String) == "page" }
+        guard !pageTargets.isEmpty else { return false }
+        var closedAny = false
+        for target in pageTargets {
+            guard let id = target["id"] as? String,
+                  let closeURL = URL(string: "http://127.0.0.1:\(port)/json/close/\(id)") else { continue }
+            var closeReq = URLRequest(url: closeURL)
+            closeReq.timeoutInterval = 0.6
+            if let _ = try? await URLSession.shared.data(for: closeReq) {
+                closedAny = true
+            }
+        }
+        return closedAny
+    }
+
+    func requestScreenCapturePermission() {
+        _ = CGRequestScreenCaptureAccess()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            self.hasScreenCapturePermission = CGPreflightScreenCaptureAccess()
+            self.captureWindowThumbnails()
+        }
+    }
+
+    func captureWindowThumbnails(specificBundleID: String? = nil) {
+        guard CGPreflightScreenCaptureAccess() else { return }
+        guard let windowList = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else { return }
+
+        for item in instances where item.running {
+            if let specificBundleID, item.bundleID != specificBundleID { continue }
+            guard let app = runningApplication(bundleID: item.bundleID, path: item.path) else { continue }
+            // Only capture when not hidden/collapsed so we don't overwrite a good snapshot with an empty frame
+            if isInstanceCollapsed(app) && thumbnails[item.id] != nil { continue }
+            let pid = app.processIdentifier
+            let candidateWindows = windowList.filter { info in
+                guard (info[kCGWindowOwnerPID as String] as? pid_t) == pid,
+                      (info[kCGWindowLayer as String] as? Int) == 0,
+                      let bounds = info[kCGWindowBounds as String] as? [String: CGFloat],
+                      let width = bounds["Width"], let height = bounds["Height"],
+                      width >= 480, height >= 320 else { return false }
+                return true
+            }
+            // Pick largest window for this PID
+            guard let bestWindow = candidateWindows.max(by: { a, b in
+                let ba = a[kCGWindowBounds as String] as? [String: CGFloat] ?? [:]
+                let bb = b[kCGWindowBounds as String] as? [String: CGFloat] ?? [:]
+                return (ba["Width"] ?? 0) * (ba["Height"] ?? 0) < (bb["Width"] ?? 0) * (bb["Height"] ?? 0)
+            }),
+            let windowID = bestWindow[kCGWindowNumber as String] as? CGWindowID else { continue }
+
+            if let cgImage = CGWindowListCreateImage(.null, .optionIncludingWindow, windowID, [.boundsIgnoreFraming, .nominalResolution]),
+               cgImage.width > 100 && cgImage.height > 100 {
+                thumbnails[item.id] = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
             }
         }
     }
@@ -396,6 +945,324 @@ struct BackupBatch: Decodable, Identifiable {
     var primaryInstance: ManagedInstance? { instances.first(where: { $0.isOriginal }) }
     var cloneInstances: [ManagedInstance] { instances.filter { !$0.isOriginal } }
     var runningCount: Int { instances.filter(\.running).count }
+    var activeTaskCount: Int {
+        instances.filter { item in
+            guard item.running, let state = activities[item.id]?.state else { return false }
+            return state == .runningTask || state == .needsAttention
+        }.count
+    }
+
+    func activity(for item: ManagedInstance) -> InstanceActivity {
+        activities[item.id] ?? (item.running ? InstanceActivity(state: .idle, currentAction: "已启动就绪") : .stopped)
+    }
+
+    // MARK: - Window Focus, Solo Mode & Dock-Detached Collapse to Monitor Wall
+
+    func openInstance(byBundleID bundleID: String) {
+        if let item = instances.first(where: { $0.bundleID == bundleID }) {
+            open(item)
+        }
+    }
+
+    func open(_ item: ManagedInstance) {
+        enforceRunInBackgroundSetting(for: [item])
+        if soloFocusMode {
+            hideOtherInstances(except: item.bundleID)
+        }
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        if let app = runningApplication(bundleID: item.bundleID, path: item.path) {
+            app.unhide()
+            app.activate(options: [.activateIgnoringOtherApps])
+        }
+        let act = activity(for: item)
+        let savedConvURL = activeConversationURLs[item.id]
+        let itemName = item.name
+        // Always invoke openApplication as well so that if the instance was in Dock-detached
+        // accessory mode (0 windows after clicking ✕ or collapsing), Electron receives `activate`
+        // (`kAEReopenApplication`) and immediately recreates the window connected to `language_server`.
+        NSWorkspace.shared.openApplication(at: item.path, configuration: config) { [weak self] app, _ in
+            Task { @MainActor in
+                app?.unhide()
+                app?.activate(options: [.activateIgnoringOtherApps])
+                self?.activeInstanceName = item.name
+                self?.lastFrontmostAntigravityBundle = item.bundleID
+                self?.updateFloatingHUDVisibility()
+                try? await Task.sleep(nanoseconds: 350_000_000)
+                self?.refreshRunningStates()
+                Task.detached(priority: .userInitiated) {
+                    await Self.restoreActiveConversationIfNeeded(
+                        instanceName: itemName,
+                        preferredURL: savedConvURL,
+                        fallbackConvID: act.latestConversationID
+                    )
+                }
+            }
+        }
+    }
+
+    private nonisolated static func restoreActiveConversationIfNeeded(
+        instanceName: String,
+        preferredURL: String?,
+        fallbackConvID: String
+    ) async {
+        let appSupportRoot = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support")
+        let portFile = appSupportRoot.appendingPathComponent(instanceName).appendingPathComponent("DevToolsActivePort")
+        guard let content = try? String(contentsOf: portFile, encoding: .utf8),
+              let firstLine = content.components(separatedBy: .newlines).first,
+              let port = Int(firstLine.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let listURL = URL(string: "http://127.0.0.1:\(port)/json/list") else { return }
+
+        for _ in 0..<4 {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            var req = URLRequest(url: listURL)
+            req.timeoutInterval = 0.8
+            guard let (data, _) = try? await URLSession.shared.data(for: req),
+                  let targets = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+                  let mainTarget = targets.first(where: { t in
+                      guard (t["type"] as? String) == "page",
+                            let u = t["url"] as? String else { return false }
+                      return u.hasPrefix("https://127.0.0.1:") || u.hasPrefix("http://127.0.0.1:")
+                  }),
+                  let currentURL = mainTarget["url"] as? String,
+                  let wsString = mainTarget["webSocketDebuggerUrl"] as? String,
+                  let wsURL = URL(string: wsString) else { continue }
+
+            if currentURL.contains("/c/") {
+                return
+            }
+
+            let targetToNavigate: String
+            if let preferredURL, preferredURL.contains("/c/") {
+                targetToNavigate = preferredURL
+            } else if !fallbackConvID.isEmpty {
+                if let u = URL(string: currentURL), let p = u.port {
+                    targetToNavigate = "\(u.scheme ?? "https")://\(u.host ?? "127.0.0.1"):\(p)/c/\(fallbackConvID)"
+                } else {
+                    return
+                }
+            } else {
+                return
+            }
+
+            let task = URLSession.shared.webSocketTask(with: wsURL)
+            task.resume()
+            defer { task.cancel(with: .goingAway, reason: nil) }
+            let payload = "{\"id\":99,\"method\":\"Page.navigate\",\"params\":{\"url\":\"\(targetToNavigate)\"}}"
+            try? await task.send(.string(payload))
+            return
+        }
+    }
+
+    func hideInstance(_ item: ManagedInstance) {
+        guard let app = runningApplication(bundleID: item.bundleID, path: item.path) else { return }
+        enforceRunInBackgroundSetting(for: [item])
+        app.hide()
+        let itemID = item.id
+        Task {
+            let shots = await Self.captureCDPScreenshots(for: [item])
+            await MainActor.run {
+                if let img = shots.thumbnails[itemID] {
+                    self.thumbnails[itemID] = img
+                }
+                self.refreshRunningStates()
+            }
+        }
+    }
+
+    func hideOtherInstances(except keptBundleID: String?) {
+        for item in instances where item.running && item.bundleID != keptBundleID {
+            if let app = runningApplication(bundleID: item.bundleID, path: item.path), !isInstanceCollapsed(app) {
+                hideInstance(item)
+            }
+        }
+    }
+
+    private func bringMonitorWallToFront() {
+        NSApp.unhide(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        for window in NSApp.windows where window.canBecomeMain {
+            window.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    func collapseAllToMonitorWall() {
+        captureWindowThumbnails()
+        hideOtherInstances(except: nil)
+        lastFrontmostAntigravityBundle = nil
+        bringMonitorWallToFront()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            self.refreshRunningStates()
+        }
+    }
+
+    private func updateActiveFrontmostInstance() {
+        if let front = NSWorkspace.shared.frontmostApplication,
+           let bundle = front.bundleIdentifier,
+           bundle == "com.google.antigravity" || bundle.hasPrefix("local.antigravity.") {
+            activeInstanceName = instances.first(where: { $0.bundleID == bundle })?.name ?? front.localizedName
+            lastFrontmostAntigravityBundle = bundle
+        } else {
+            activeInstanceName = nil
+        }
+        updateFloatingHUDVisibility()
+    }
+
+    // MARK: - Floating Return HUD Pill & Status Bar Item
+
+    private func updateFloatingHUDVisibility() {
+        guard floatingHUDEnabled, activeInstanceName != nil else {
+            hudPanel?.orderOut(nil)
+            return
+        }
+        if hudPanel == nil {
+            let panel = NSPanel(
+                contentRect: NSRect(x: 0, y: 0, width: 260, height: 44),
+                styleMask: [.nonactivatingPanel, .borderless],
+                backing: .buffered,
+                defer: false
+            )
+            panel.isFloatingPanel = true
+            panel.level = .floating
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            panel.backgroundColor = .clear
+            panel.isOpaque = false
+            panel.hasShadow = true
+            panel.isMovableByWindowBackground = true
+            if let screen = NSScreen.main?.visibleFrame {
+                panel.setFrameOrigin(NSPoint(x: screen.maxX - 280, y: screen.minY + 28))
+            }
+            panel.contentView = NSHostingView(rootView: FloatingMonitorHUDView(store: self))
+            hudPanel = panel
+        }
+        hudPanel?.orderFrontRegardless()
+    }
+
+    // MARK: - System Notifications (UNUserNotificationCenter)
+
+    private func setupNotifications() {
+        UNUserNotificationCenter.current().delegate = AppNotificationDelegate.shared
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+    }
+
+    private func processActivityChangesAndNotify(newActivities: [String: InstanceActivity]) {
+        guard notificationsEnabled else { return }
+        guard hasInitializedActivityBaseline else {
+            for (id, act) in newActivities {
+                lastNotifiedStates[id] = (state: act.state, stepIndex: act.stepIndex)
+            }
+            hasInitializedActivityBaseline = true
+            return
+        }
+
+        let frontmostBundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+
+        for item in instances where item.running {
+            guard let newAct = newActivities[item.id] else { continue }
+            let prev = lastNotifiedStates[item.id]
+            let prevState = prev?.state ?? .stopped
+            let prevStep = prev?.stepIndex ?? -1
+
+            let isUserCurrentlyFocusingInstance = (frontmostBundle == item.bundleID)
+
+            if newAct.state == .needsAttention && (prevState != .needsAttention || newAct.stepIndex != prevStep) {
+                lastNotifiedStates[item.id] = (state: newAct.state, stepIndex: newAct.stepIndex)
+                if !isUserCurrentlyFocusingInstance {
+                    sendSystemNotification(
+                        identifier: "needs-attention-\(item.id)-\(newAct.stepIndex)",
+                        title: "\(item.name) · 等待确认",
+                        subtitle: newAct.workspace.isEmpty ? "Agent 需要用户选择或确认操作" : "工作区: \(newAct.workspace)",
+                        body: newAct.currentAction,
+                        bundleID: item.bundleID
+                    )
+                }
+            } else if prevState == .runningTask && newAct.state == .idle {
+                lastNotifiedStates[item.id] = (state: newAct.state, stepIndex: newAct.stepIndex)
+                if !isUserCurrentlyFocusingInstance {
+                    let cleanedAction = newAct.currentAction.hasPrefix("上次：") ? String(newAct.currentAction.dropFirst(3)) : newAct.currentAction
+                    sendSystemNotification(
+                        identifier: "task-completed-\(item.id)-\(newAct.stepIndex)",
+                        title: "\(item.name) · 任务已完成",
+                        subtitle: newAct.workspace.isEmpty ? "Agent 当前步骤已顺利完成" : "工作区: \(newAct.workspace)",
+                        body: cleanedAction.isEmpty ? "所有指令已执行完毕，等待下一步操作" : cleanedAction,
+                        bundleID: item.bundleID
+                    )
+                }
+            } else if newAct.state == .error && prevState != .error {
+                lastNotifiedStates[item.id] = (state: newAct.state, stepIndex: newAct.stepIndex)
+                if !isUserCurrentlyFocusingInstance {
+                    sendSystemNotification(
+                        identifier: "task-error-\(item.id)-\(newAct.stepIndex)",
+                        title: "\(item.name) · 任务执行异常",
+                        subtitle: newAct.workspace.isEmpty ? "执行步骤报错" : "工作区: \(newAct.workspace)",
+                        body: newAct.currentAction,
+                        bundleID: item.bundleID
+                    )
+                }
+            } else if prev == nil || prevState != newAct.state || prevStep != newAct.stepIndex {
+                lastNotifiedStates[item.id] = (state: newAct.state, stepIndex: newAct.stepIndex)
+            }
+        }
+    }
+
+    private func sendSystemNotification(identifier: String, title: String, subtitle: String, body: String, bundleID: String) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        if !subtitle.isEmpty {
+            content.subtitle = subtitle
+        }
+        content.body = body
+        content.sound = .default
+        content.userInfo = ["bundleID": bundleID]
+
+        let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error {
+                print("Notification delivery failed: \(error)")
+            }
+        }
+    }
+
+    private func setupStatusBarItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if let button = item.button {
+            button.image = NSImage(systemSymbolName: "square.grid.2x2.fill", accessibilityDescription: "Antigravity 监控台")
+            button.imagePosition = .imageLeading
+        }
+        statusItem = item
+        updateStatusBarMenu()
+    }
+
+    private func updateStatusBarMenu() {
+        guard let statusItem else { return }
+        if let button = statusItem.button {
+            let tasks = activeTaskCount
+            button.title = tasks > 0 ? " \(tasks)" : ""
+        }
+        let menu = NSMenu()
+        let collapseItem = NSMenuItem(title: "收起所有实例并打开监控台", action: #selector(StatusBarTarget.collapseAll), keyEquivalent: "0")
+        collapseItem.target = StatusBarTarget.shared
+        StatusBarTarget.shared.store = self
+        menu.addItem(collapseItem)
+        menu.addItem(.separator())
+
+        for item in instances {
+            let act = activity(for: item)
+            let statePrefix = !item.running ? "⏹" : (act.state == .runningTask ? "⚡" : (act.state == .needsAttention ? "🔔" : "🟢"))
+            let menuItem = NSMenuItem(
+                title: "\(statePrefix) \(item.name) · \(act.state.label)",
+                action: #selector(StatusBarTarget.openInstance(_:)),
+                keyEquivalent: ""
+            )
+            menuItem.representedObject = item.id
+            menuItem.target = StatusBarTarget.shared
+            menu.addItem(menuItem)
+        }
+        statusItem.menu = menu
+    }
+
+    // MARK: - Existing Instance & Backup Operations
 
     func refreshBackups() {
         guard let script = Bundle.main.url(forResource: "manage_backups", withExtension: "py") else {
@@ -429,10 +1296,6 @@ struct BackupBatch: Decodable, Identifiable {
         runScript(script, arguments: ["delete", batch.name], starting: "正在删除选定备份批次…\n")
     }
 
-    func open(_ item: ManagedInstance) {
-        NSWorkspace.shared.open(item.path)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.refresh() }
-    }
     func reveal(_ item: ManagedInstance) { NSWorkspace.shared.activateFileViewerSelecting([item.path]) }
     func showLogs(_ item: ManagedInstance) {
         let path = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/\(item.name)")
@@ -547,15 +1410,564 @@ struct BackupBatch: Decodable, Identifiable {
     }
 }
 
-// MARK: - Instance Card View
+@MainActor private final class StatusBarTarget: NSObject {
+    static let shared = StatusBarTarget()
+    weak var store: InstanceStore?
+
+    @objc func collapseAll() {
+        store?.collapseAllToMonitorWall()
+    }
+
+    @objc func openInstance(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let item = store?.instances.first(where: { $0.id == id }) else { return }
+        store?.open(item)
+    }
+}
+
+// MARK: - Floating Return to Monitor HUD View
+
+private struct FloatingMonitorHUDView: View {
+    @ObservedObject var store: InstanceStore
+    @State private var hovered = false
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            HStack(alignment: .center, spacing: 6) {
+                PulsingStatusDot(
+                    active: true,
+                    activeColor: store.activeTaskCount > 0 ? Color(red: 0.15, green: 0.82, blue: 0.96) : .green
+                )
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(store.activeInstanceName ?? "Antigravity")
+                        .font(.system(size: 11.5, weight: .bold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    Text(store.activeTaskCount > 0 ? "\(store.activeTaskCount) 个实例正在跑任务" : "所有运行实例空闲")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.75))
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 4)
+
+            Button {
+                store.collapseAllToMonitorWall()
+            } label: {
+                HStack(alignment: .center, spacing: 4) {
+                    Image(systemName: "square.grid.2x2.fill")
+                        .font(.system(size: 10.5, weight: .semibold))
+                    Text("收起回监控台")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10)
+                .frame(height: 26)
+                .background(Capsule().fill(accent))
+            }
+            .buttonStyle(.plain)
+            .help("隐藏当前实例窗口并返回缩略图监控墙（后台任务继续运行）")
+        }
+        .padding(.horizontal, 12)
+        .frame(width: 260, height: 42)
+        .background {
+            Capsule()
+                .fill(Color(red: 0.09, green: 0.10, blue: 0.14).opacity(0.92))
+        }
+        .overlay {
+            Capsule()
+                .strokeBorder(Color.white.opacity(hovered ? 0.28 : 0.16), lineWidth: 1)
+        }
+        .scaleEffect(hovered ? 1.02 : 1.0)
+        .animation(.spring(response: 0.22, dampingFraction: 0.78), value: hovered)
+        .onHover { hovered = $0 }
+    }
+}
+
+// MARK: - Thumbnail Grid Tile Card (Remote-Desktop / Mission-Control Style)
+
+struct InstanceThumbnailTile: View {
+    let item: ManagedInstance
+    let activity: InstanceActivity
+    let thumbnail: NSImage?
+    let sourceVersion: String
+    let busy: Bool
+    let canUpgrade: Bool
+    let open: () -> Void
+    let hideWindow: () -> Void
+    let quit: () -> Void
+    let upgrade: () -> Void
+    let reveal: () -> Void
+    let logs: () -> Void
+    let verify: () -> Void
+    let clearWorkspace: () -> Void
+    let destroy: () -> Void
+
+    @State private var hovered = false
+    @State private var showMorePopover = false
+    @State private var scanProgress = false
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var hasPendingUpgrade: Bool {
+        !item.isOriginal && item.version.compare(sourceVersion, options: .numeric) == .orderedAscending
+    }
+
+    private var borderTint: Color {
+        if !item.running { return .primary }
+        switch activity.state {
+        case .runningTask: return Color(red: 0.15, green: 0.82, blue: 0.96)
+        case .needsAttention: return .orange
+        case .error: return .red
+        case .idle: return .green
+        case .stopped: return .secondary
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .center, spacing: 10) {
+            // 16:10 Miniature Monitor Screen Container
+            ZStack {
+                // Screen Background & Content
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color(red: 0.08, green: 0.09, blue: 0.13),
+                                Color(red: 0.12, green: 0.14, blue: 0.20)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+
+                if item.running, let thumbnail {
+                    Image(nsImage: thumbnail)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(height: 158)
+                        .clipped()
+                        .opacity(item.running ? 0.96 : 0.72)
+                } else if item.running {
+                    syntheticLiveScreen
+                } else {
+                    stoppedScreen
+                }
+
+                // Top-Left & Top-Right Screen Overlay Bar
+                VStack {
+                    HStack(alignment: .center, spacing: 6) {
+                        // Top-left state badge
+                        HStack(alignment: .center, spacing: 5) {
+                            PulsingStatusDot(active: item.running, activeColor: activity.state.color)
+                            Text(item.running ? (item.isHidden ? "\(activity.state.label) · 后台实时" : activity.state.label) : "未启动")
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundStyle(.white)
+                        }
+                        .padding(.horizontal, 8)
+                        .frame(height: 22)
+                        .background(Capsule().fill(Color.black.opacity(0.62)))
+                        .overlay(Capsule().strokeBorder(activity.state.color.opacity(0.45), lineWidth: 1))
+
+                        if hasPendingUpgrade {
+                            Text("可升 v\(sourceVersion)")
+                                .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                                .foregroundStyle(.orange)
+                                .padding(.horizontal, 6.5)
+                                .frame(height: 20)
+                                .background(Capsule().fill(Color.black.opacity(0.65)))
+                                .overlay(Capsule().strokeBorder(Color.orange.opacity(0.45), lineWidth: 1))
+                        }
+
+                        Spacer()
+
+                        // Top-Right [...] Menu Button (matching user screenshot)
+                        Button {
+                            showMorePopover.toggle()
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(.white.opacity(hovered || showMorePopover ? 0.98 : 0.75))
+                                .frame(width: 26, height: 26)
+                                .background {
+                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                        .fill(Color.black.opacity(hovered || showMorePopover ? 0.72 : 0.45))
+                                }
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                        .strokeBorder(Color.white.opacity(hovered || showMorePopover ? 0.35 : 0.18), lineWidth: 1)
+                                }
+                        }
+                        .buttonStyle(.plain)
+                        .popover(isPresented: $showMorePopover, arrowEdge: .bottom) {
+                            tilePopoverMenu
+                        }
+                    }
+                    .padding(10)
+
+                    Spacer()
+
+                    // Bottom Live Task Telemetry Caption Bar
+                    HStack(alignment: .center, spacing: 6) {
+                        Image(systemName: activity.state.symbol)
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .foregroundStyle(activity.state.color)
+                            .frame(width: 13, height: 13, alignment: .center)
+
+                        Text(activity.currentAction)
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.92))
+                            .lineLimit(1)
+
+                        Spacer(minLength: 4)
+
+                        if !activity.lastUpdatedLabel.isEmpty {
+                            Text(activity.lastUpdatedLabel)
+                                .font(.system(size: 9.5, design: .monospaced))
+                                .foregroundStyle(.white.opacity(0.60))
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(height: 28)
+                    .background(Color.black.opacity(0.68))
+                }
+
+                // Center Play / Switch Action Overlay (Matches screenshot play button!)
+                centerPlayOverlay
+            }
+            .frame(height: 158)
+            .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .strokeBorder(
+                        item.running
+                            ? borderTint.opacity(hovered ? 0.85 : (activity.state == .runningTask || activity.state == .needsAttention ? 0.65 : 0.35))
+                            : Color.primary.opacity(hovered ? 0.30 : 0.12),
+                        lineWidth: (hovered || activity.state == .runningTask || activity.state == .needsAttention) ? 1.6 : 1
+                    )
+            }
+            .shadow(
+                color: (item.running && activity.state == .runningTask)
+                    ? borderTint.opacity(0.22)
+                    : Color.black.opacity(hovered ? 0.25 : 0.12),
+                radius: hovered ? 12 : 6,
+                x: 0,
+                y: hovered ? 5 : 2
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .onTapGesture {
+                open()
+            }
+
+            // Bottom Instance Name Pill (Matches bottom IP/Instance label in screenshot!)
+            HStack(alignment: .center, spacing: 6) {
+                Text(item.isOriginal ? "MAIN" : "#\(String(format: "%02d", item.index))")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(item.isOriginal ? .white : (item.running ? borderTint : accent))
+                    .padding(.horizontal, 5.5)
+                    .frame(height: 17)
+                    .background {
+                        RoundedRectangle(cornerRadius: 4.5, style: .continuous)
+                            .fill(item.isOriginal ? accent : (item.running ? borderTint.opacity(0.16) : accent.opacity(0.12)))
+                    }
+
+                Text(item.name)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+
+                if !activity.workspace.isEmpty {
+                    Text("· \(activity.workspace)")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .padding(.horizontal, 11)
+            .frame(height: 26)
+            .background {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.05))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(hovered ? 0.18 : 0.07), lineWidth: 1)
+            }
+        }
+        .scaleEffect(hovered ? 1.018 : 1.0)
+        .animation(.spring(response: 0.24, dampingFraction: 0.78), value: hovered)
+        .onHover { hovered = $0 }
+    }
+
+    // Center Play / Focus Overlay
+    @ViewBuilder
+    private var centerPlayOverlay: some View {
+        if !item.running {
+            // Stopped: Prominent Play Button over Instance Emblem (exact match to screenshot)
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.black.opacity(hovered ? 0.78 : 0.58))
+                    .frame(width: 54, height: 40)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .strokeBorder(Color.white.opacity(hovered ? 0.35 : 0.18), lineWidth: 1)
+                    }
+                Image(systemName: "play.fill")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundStyle(.white.opacity(hovered ? 1.0 : 0.82))
+                    .offset(x: 1)
+            }
+            .scaleEffect(hovered ? 1.08 : 1.0)
+        } else if hovered {
+            // Running & Hovered: Quick Focus + Collapse/Hide buttons
+            HStack(alignment: .center, spacing: 8) {
+                Button(action: open) {
+                    HStack(alignment: .center, spacing: 5) {
+                        Image(systemName: "macwindow.on.rectangle")
+                            .font(.system(size: 11.5, weight: .semibold))
+                        Text(item.isHidden ? "恢复窗口" : "调出实例")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12)
+                    .frame(height: 32)
+                    .background(Capsule().fill(accent))
+                    .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
+                }
+                .buttonStyle(.plain)
+
+                if !item.isHidden {
+                    Button(action: hideWindow) {
+                        HStack(alignment: .center, spacing: 4) {
+                            Image(systemName: "eye.slash.fill")
+                                .font(.system(size: 11, weight: .semibold))
+                            Text("收起")
+                                .font(.system(size: 11.5, weight: .semibold))
+                        }
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 10)
+                        .frame(height: 32)
+                        .background(Capsule().fill(Color.black.opacity(0.75)))
+                        .overlay(Capsule().strokeBorder(Color.white.opacity(0.25), lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .help("隐藏窗口回到缩略图监控台（后台任务继续运行）")
+                }
+            }
+            .transition(.opacity.combined(with: .scale(scale: 0.95)))
+        }
+    }
+
+    // Stopped Screen Backdrop
+    private var stoppedScreen: some View {
+        ZStack {
+            // Subtle perspective window panes (echoing the screenshot's geometric window icon)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: item.isOriginal
+                            ? [Color(red: 0.20, green: 0.44, blue: 0.92).opacity(0.45), Color(red: 0.36, green: 0.25, blue: 0.85).opacity(0.25)]
+                            : [accent.opacity(0.32), Color.indigo.opacity(0.18)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .frame(width: 86, height: 68)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .strokeBorder(Color.white.opacity(0.16), lineWidth: 1)
+                }
+                .offset(y: -4)
+        }
+    }
+
+    // Synthetic Live IDE Screen when running without screen recording or before first capture
+    private var syntheticLiveScreen: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Spacer().frame(height: 28)
+            HStack(alignment: .center, spacing: 6) {
+                Circle().fill(Color.red.opacity(0.75)).frame(width: 6, height: 6)
+                Circle().fill(Color.yellow.opacity(0.75)).frame(width: 6, height: 6)
+                Circle().fill(Color.green.opacity(0.75)).frame(width: 6, height: 6)
+                Text(activity.workspace.isEmpty ? item.profile : activity.workspace)
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.78))
+                    .lineLimit(1)
+                Spacer()
+                if activity.stepIndex > 0 {
+                    Text("Step #\(activity.stepIndex)")
+                        .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                        .foregroundStyle(activity.state.color)
+                }
+            }
+            .padding(.horizontal, 12)
+
+            // Simulated live agent workspace lines
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(activity.state.color.opacity(0.85))
+                        .frame(width: 3, height: 28)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(activity.state == .runningTask ? "AGENT EXECUTING TASK" : (activity.state == .needsAttention ? "WAITING FOR USER INPUT" : "AGENT READY"))
+                            .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                            .foregroundStyle(activity.state.color)
+                        Text(activity.currentAction)
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.88))
+                            .lineLimit(1)
+                    }
+                }
+
+                if activity.state == .runningTask {
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(Color.white.opacity(0.10)).frame(height: 3)
+                            Capsule()
+                                .fill(
+                                    LinearGradient(
+                                        colors: [activity.state.color.opacity(0.3), activity.state.color, .white],
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    )
+                                )
+                                .frame(width: geo.size.width * 0.45, height: 3)
+                                .offset(x: scanProgress ? geo.size.width * 0.55 : 0)
+                        }
+                    }
+                    .frame(height: 3)
+                    .onAppear {
+                        withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
+                            scanProgress = true
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+            }
+            .padding(.horizontal, 10)
+
+            Spacer()
+        }
+    }
+
+    private var tilePopoverMenu: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            tileMenuItem(
+                title: item.running ? (item.isHidden ? "恢复并调出窗口" : "调出并置顶窗口") : "启动此实例",
+                symbol: item.running ? "macwindow.on.rectangle" : "play.fill"
+            ) {
+                showMorePopover = false
+                open()
+            }
+
+            if item.running && !item.isHidden {
+                tileMenuItem(title: "收起回监控台（后台继续跑）", symbol: "eye.slash") {
+                    showMorePopover = false
+                    hideWindow()
+                }
+            }
+
+            Divider().padding(.vertical, 3)
+
+            if hasPendingUpgrade {
+                tileMenuItem(title: "升级至 v\(sourceVersion)…", symbol: "arrow.up.circle") {
+                    showMorePopover = false
+                    upgrade()
+                }
+            }
+
+            tileMenuItem(title: "在访达中显示", symbol: "folder") {
+                showMorePopover = false
+                reveal()
+            }
+
+            tileMenuItem(title: "查看运行日志", symbol: "doc.text.magnifyingglass") {
+                showMorePopover = false
+                logs()
+            }
+
+            if item.index >= 8 && !item.isOriginal {
+                tileMenuItem(
+                    title: item.verified ? "取消登录验证标记" : "标记已完成登录验证",
+                    symbol: item.verified ? "xmark.seal" : "checkmark.seal"
+                ) {
+                    showMorePopover = false
+                    verify()
+                }
+            }
+
+            if item.running {
+                Divider().padding(.vertical, 3)
+                tileMenuItem(title: "正常退出实例", symbol: "stop.circle", destructive: true) {
+                    showMorePopover = false
+                    quit()
+                }
+            }
+
+            if !item.isOriginal && (2...9999).contains(item.index) {
+                Divider().padding(.vertical, 3)
+                tileMenuItem(
+                    title: "清空工作空间…",
+                    symbol: "eraser.line.dashed",
+                    destructive: true,
+                    disabled: item.running
+                ) {
+                    showMorePopover = false
+                    clearWorkspace()
+                }
+                tileMenuItem(title: "销毁实例…", symbol: "trash", destructive: true) {
+                    showMorePopover = false
+                    destroy()
+                }
+            }
+        }
+        .padding(6)
+        .frame(width: 196)
+    }
+
+    private func tileMenuItem(
+        title: String,
+        symbol: String,
+        destructive: Bool = false,
+        disabled: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(alignment: .center, spacing: 8) {
+                Image(systemName: symbol)
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(width: 15, height: 15, alignment: .center)
+                Text(title)
+                    .font(.system(size: 12.5, weight: .medium))
+                Spacer()
+            }
+            .foregroundStyle(destructive ? Color.red : Color.primary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .opacity(disabled ? 0.4 : 1.0)
+    }
+}
+
+// MARK: - Detailed List Instance Card View
 
 struct InstanceCard: View {
     let item: ManagedInstance
+    let activity: InstanceActivity
     let sourceVersion: String
     let busy: Bool
     let canUpgrade: Bool
     let upgrade: () -> Void
     let open: () -> Void
+    let hideWindow: () -> Void
     let quit: () -> Void
     let reveal: () -> Void
     let logs: () -> Void
@@ -580,7 +1992,7 @@ struct InstanceCard: View {
             )
         } else if item.running {
             return LinearGradient(
-                colors: [Color.green.opacity(0.20), accent.opacity(0.14)],
+                colors: [activity.state.color.opacity(0.22), accent.opacity(0.14)],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
@@ -605,7 +2017,7 @@ struct InstanceCard: View {
                             .strokeBorder(
                                 item.isOriginal
                                     ? Color.white.opacity(0.28)
-                                    : (item.running ? Color.green.opacity(0.45) : accent.opacity(0.22)),
+                                    : (item.running ? activity.state.color.opacity(0.45) : accent.opacity(0.22)),
                                 lineWidth: 1.2
                             )
                     }
@@ -623,7 +2035,7 @@ struct InstanceCard: View {
                     VStack(spacing: 0.5) {
                         Text("#\(String(format: "%02d", item.index))")
                             .font(.system(size: 14.5, weight: .bold, design: .rounded))
-                            .foregroundStyle(item.running ? Color.green : accent)
+                            .foregroundStyle(item.running ? activity.state.color : accent)
                         Text("CLONE")
                             .font(.system(size: 7.5, weight: .semibold, design: .rounded))
                             .tracking(0.5)
@@ -634,32 +2046,31 @@ struct InstanceCard: View {
 
             // Center Metadata & Badges (Exact 48pt height: 22pt top row + 4pt gap + 22pt bottom row)
             VStack(alignment: .leading, spacing: 4) {
-                // Top Row: Title + Status Pill + Role/Verified Pill
+                // Top Row: Title + Live Task Status Pill + Role/Verified Pill
                 HStack(alignment: .center, spacing: 8) {
                     Text(item.name)
                         .font(.system(size: 14.5, weight: .semibold))
                         .foregroundStyle(.primary)
 
-                    // Live Running Status Pill (Fixed 20pt height)
+                    // Live Task State Pill (Fixed 20pt height)
                     HStack(alignment: .center, spacing: 5) {
-                        PulsingStatusDot(active: item.running)
-                        Text(item.running ? "运行中" : "已停止")
+                        PulsingStatusDot(active: item.running, activeColor: activity.state.color)
+                        Text(item.running ? (item.isHidden ? "\(activity.state.label) · 已收起" : activity.state.label) : "未启动")
                             .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(item.running ? Color.green : Color.secondary)
+                            .foregroundStyle(item.running ? activity.state.color : Color.secondary)
                     }
                     .padding(.horizontal, 8)
                     .frame(height: 20)
                     .background {
                         Capsule()
                             .fill(item.running
-                                  ? Color.green.opacity(colorScheme == .dark ? 0.14 : 0.10)
+                                  ? activity.state.color.opacity(colorScheme == .dark ? 0.14 : 0.10)
                                   : Color.primary.opacity(colorScheme == .dark ? 0.07 : 0.045))
                     }
                     .overlay {
                         Capsule()
-                            .strokeBorder(item.running ? Color.green.opacity(0.30) : Color.primary.opacity(0.08), lineWidth: 1)
+                            .strokeBorder(item.running ? activity.state.color.opacity(0.30) : Color.primary.opacity(0.08), lineWidth: 1)
                     }
-                    .help("关闭窗口后应用可能仍在后台运行。点击“退出”才能结束实例并清空工作空间。")
 
                     if item.isOriginal {
                         Text("官方主实例源")
@@ -682,6 +2093,13 @@ struct InstanceCard: View {
                         .frame(height: 20)
                         .background(Capsule().fill(Color.green.opacity(0.11)))
                         .overlay(Capsule().strokeBorder(Color.green.opacity(0.25), lineWidth: 1))
+                    }
+
+                    if item.running {
+                        Text(activity.currentAction)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
                 }
                 .frame(height: 22)
@@ -746,11 +2164,13 @@ struct InstanceCard: View {
                     .disabled(busy || !canUpgrade)
                 }
 
-                // Quick Reveal & Logs Icon Buttons (30x30)
+                if item.running && !item.isHidden {
+                    IconActionButton(symbol: "eye.slash", tooltip: "收起隐藏窗口（后台继续跑任务）", size: 30, action: hideWindow)
+                }
+
                 IconActionButton(symbol: "folder", tooltip: "在访达中显示应用", size: 30, action: reveal)
                 IconActionButton(symbol: "doc.text.magnifyingglass", tooltip: "查看运行日志", size: 30, action: logs)
 
-                // More Actions Button (30x30, identical box to IconActionButton, no misaligned disclosure chevron)
                 if !item.isOriginal && (2...9999).contains(item.index) {
                     IconActionButton(symbol: "ellipsis", tooltip: "更多实例操作", size: 30) {
                         showMorePopover.toggle()
@@ -810,7 +2230,7 @@ struct InstanceCard: View {
                         Image(systemName: item.running ? "macwindow.on.rectangle" : "play.fill")
                             .font(.system(size: 10.5, weight: .semibold))
                             .frame(width: 12, height: 12, alignment: .center)
-                        Text(item.running ? "切换" : "打开")
+                        Text(item.running ? (item.isHidden ? "恢复" : "切换") : "打开")
                     }
                 }
                 .buttonStyle(ModernButtonStyle(variant: .primary, compact: true))
@@ -821,7 +2241,7 @@ struct InstanceCard: View {
         .systemSurface(
             radius: 16,
             isHighlighted: hovered || item.isOriginal,
-            tint: item.isOriginal ? accent : (item.running ? .green : nil)
+            tint: item.isOriginal ? accent : (item.running ? activity.state.color : nil)
         )
         .scaleEffect(hovered ? 1.003 : 1.0)
         .animation(.spring(response: 0.24, dampingFraction: 0.80), value: hovered)
@@ -994,7 +2414,6 @@ struct UpgradeConfirmationView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    // Target Instances List
                     VStack(alignment: .leading, spacing: 8) {
                         Text("将要升级的实例")
                             .font(.system(size: 12, weight: .semibold))
@@ -1018,7 +2437,6 @@ struct UpgradeConfirmationView: View {
                     .padding(14)
                     .systemSurface(radius: 13)
 
-                    // Chinese Highlights Section
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(alignment: .center) {
                             HStack(alignment: .center, spacing: 6) {
@@ -1060,7 +2478,6 @@ struct UpgradeConfirmationView: View {
                         }
                     }
 
-                    // Official Changelog WebView
                     VStack(alignment: .leading, spacing: 8) {
                         Text("官方更新日志（原文）")
                             .font(.system(size: 14, weight: .semibold))
@@ -1104,9 +2521,22 @@ struct UpgradeConfirmationView: View {
 
 // MARK: - Main Content View
 
+private enum ViewMode: String, CaseIterable, Identifiable {
+    case grid = "缩略图墙"
+    case list = "详细列表"
+    var id: String { rawValue }
+    var symbol: String {
+        switch self {
+        case .grid: return "square.grid.2x2.fill"
+        case .list: return "list.bullet.rectangle.fill"
+        }
+    }
+}
+
 private enum InstanceFilter: String, CaseIterable, Identifiable {
-    case all = "全部副本"
+    case all = "全部"
     case running = "运行中"
+    case busyTask = "跑任务中"
     case upgradable = "可升级"
     var id: String { rawValue }
 }
@@ -1114,6 +2544,7 @@ private enum InstanceFilter: String, CaseIterable, Identifiable {
 struct ContentView: View {
     let updaterController: SPUStandardUpdaterController
     @StateObject private var store = InstanceStore()
+    @State private var viewMode: ViewMode = .grid
     @State private var showCreate = false
     @State private var upgradeRequest: UpgradeRequest?
     @State private var showBackupManager = false
@@ -1128,18 +2559,29 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.4.4"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.5.0"
+    }
+
+    private func matchesFilter(_ item: ManagedInstance) -> Bool {
+        switch selectedFilter {
+        case .all:
+            return true
+        case .running:
+            return item.running
+        case .busyTask:
+            let state = store.activity(for: item).state
+            return item.running && (state == .runningTask || state == .needsAttention)
+        case .upgradable:
+            return !item.isOriginal && item.version.compare(store.sourceVersion, options: .numeric) == .orderedAscending
+        }
+    }
+
+    private var filteredInstances: [ManagedInstance] {
+        store.instances.filter(matchesFilter)
     }
 
     private var filteredClones: [ManagedInstance] {
-        switch selectedFilter {
-        case .all:
-            return store.cloneInstances
-        case .running:
-            return store.cloneInstances.filter(\.running)
-        case .upgradable:
-            return store.pendingUpgrades
-        }
+        store.cloneInstances.filter(matchesFilter)
     }
 
     private var compatibilityColor: Color {
@@ -1152,7 +2594,6 @@ struct ContentView: View {
 
     var body: some View {
         ZStack(alignment: .bottom) {
-            // Subtle Ambient Background Layer
             ZStack {
                 Rectangle().fill(.regularMaterial)
                 LinearGradient(
@@ -1169,18 +2610,20 @@ struct ContentView: View {
 
             VStack(spacing: 0) {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 18) {
                         headerDashboard
                         metricsStrip
+                        controlToolbar
 
-                        if let primary = store.primaryInstance {
-                            primarySection(primary)
-                        }
-
-                        if !store.instances.isEmpty {
-                            clonesSection
-                        } else {
+                        if store.instances.isEmpty {
                             emptyStateView
+                        } else if viewMode == .grid {
+                            thumbnailWallSection
+                        } else {
+                            if let primary = store.primaryInstance {
+                                primarySection(primary)
+                            }
+                            clonesSection
                         }
                     }
                     .padding(.horizontal, 26)
@@ -1194,7 +2637,7 @@ struct ContentView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .frame(minWidth: 820, minHeight: 620)
+        .frame(minWidth: 860, minHeight: 640)
         .onAppear {
             store.refresh()
             withAnimation(.spring(response: 0.45, dampingFraction: 0.82)) {
@@ -1207,10 +2650,19 @@ struct ContentView: View {
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didTerminateApplicationNotification)) { _ in
             store.refreshRunningStates()
         }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didActivateApplicationNotification)) { _ in
+            store.refreshRunningStates()
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didHideApplicationNotification)) { _ in
+            store.refreshRunningStates()
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didUnhideApplicationNotification)) { _ in
+            store.refreshRunningStates()
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             store.refreshRunningStates()
         }
-        .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
+        .onReceive(Timer.publish(every: 2.2, on: .main, in: .common).autoconnect()) { _ in
             store.refreshRunningStates()
         }
         .sheet(isPresented: $showCreate) {
@@ -1252,7 +2704,6 @@ struct ContentView: View {
 
     private var headerDashboard: some View {
         HStack(alignment: .center, spacing: 16) {
-            // Brand Emblem + Title
             HStack(alignment: .center, spacing: 14) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 13, style: .continuous)
@@ -1283,7 +2734,7 @@ struct ContentView: View {
                             .background(Capsule().fill(accent.opacity(0.12)))
                             .overlay(Capsule().strokeBorder(accent.opacity(0.22), lineWidth: 1))
                     }
-                    Text("Apple Silicon 多实例隔离工作台 · 独立账号、凭据标识与专属回调")
+                    Text("Apple Silicon 多实例监控与隔离工作台 · 实时任务感知与一键调出")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
@@ -1293,9 +2744,24 @@ struct ContentView: View {
 
             // Action Toolbar (All controls strictly 34pt height)
             HStack(alignment: .center, spacing: 8) {
+                if store.runningCount > 0 {
+                    Button {
+                        store.collapseAllToMonitorWall()
+                    } label: {
+                        HStack(alignment: .center, spacing: 5) {
+                            Image(systemName: "arrow.down.right.and.arrow.up.left")
+                                .font(.system(size: 11.5, weight: .semibold))
+                                .frame(width: 13, height: 13, alignment: .center)
+                            Text("收起全部窗口")
+                        }
+                    }
+                    .buttonStyle(ModernButtonStyle(variant: .secondary))
+                    .help("隐藏所有正在显示的 Antigravity 窗口并回到缩略图监控墙（后台任务继续运行）")
+                }
+
                 IconActionButton(
                     symbol: "arrow.clockwise",
-                    tooltip: "刷新实例与状态",
+                    tooltip: "刷新实例与任务状态",
                     size: 34,
                     rotation: refreshSpin
                 ) {
@@ -1368,13 +2834,16 @@ struct ContentView: View {
     private var metricsStrip: some View {
         HStack(alignment: .center, spacing: 12) {
             metricTile(
-                title: "本机实例概览",
-                value: "\(store.instances.count) 个实例",
-                subtitle: store.runningCount > 0 ? "\(store.runningCount) 个实例正在后台或前台运行" : "所有实例当前均未运行",
-                symbol: "square.stack.3d.up.fill",
-                tint: accent,
+                title: "实时运行与任务监控",
+                value: "\(store.runningCount) / \(store.instances.count) 运行中",
+                subtitle: store.activeTaskCount > 0 ? "⚡ 当前有 \(store.activeTaskCount) 个实例正在执行 Agent 任务" : "所有已启动实例均处于空闲就绪状态",
+                symbol: "waveform.path.ecg.rectangle.fill",
+                tint: store.activeTaskCount > 0 ? Color(red: 0.15, green: 0.82, blue: 0.96) : accent,
                 leadingIndicator: {
-                    AnyView(PulsingStatusDot(active: store.runningCount > 0))
+                    AnyView(PulsingStatusDot(
+                        active: store.runningCount > 0,
+                        activeColor: store.activeTaskCount > 0 ? Color(red: 0.15, green: 0.82, blue: 0.96) : .green
+                    ))
                 }
             )
 
@@ -1445,7 +2914,252 @@ struct ContentView: View {
         .systemSurface(radius: 15)
     }
 
-    // MARK: - Primary Instance Section
+    // MARK: - Control Toolbar (Filter Pills + Solo Mode + View Switcher)
+
+    private var controlToolbar: some View {
+        HStack(alignment: .center, spacing: 10) {
+            // Segmented Filter Bar
+            HStack(alignment: .center, spacing: 3) {
+                ForEach(InstanceFilter.allCases) { filter in
+                    let count = filterCount(filter)
+                    let active = selectedFilter == filter
+                    Button {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.80)) {
+                            selectedFilter = filter
+                        }
+                    } label: {
+                        HStack(alignment: .center, spacing: 4.5) {
+                            Text(filter.rawValue)
+                                .font(.system(size: 11.5, weight: active ? .semibold : .medium))
+                            Text("\(count)")
+                                .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                                .opacity(active ? 0.95 : 0.65)
+                        }
+                        .foregroundStyle(active ? Color.primary : Color.secondary)
+                        .padding(.horizontal, 10)
+                        .frame(height: 26)
+                        .background {
+                            if active {
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .fill(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.09))
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(3)
+            .background {
+                RoundedRectangle(cornerRadius: 9.5, style: .continuous)
+                    .fill(Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.035))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 9.5, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
+            }
+
+            Spacer()
+
+            // Managed Background Keep-Alive Indicator Badge
+            HStack(alignment: .center, spacing: 5) {
+                Image(systemName: "shield.checkered")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.green)
+                    .frame(width: 13, height: 13, alignment: .center)
+                Text("关闭即转后台托管")
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.green.opacity(colorScheme == .dark ? 0.10 : 0.07))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color.green.opacity(0.22), lineWidth: 1)
+            }
+            .help("已接管所有实例后台保活：在实例窗口点击左上角红色关闭按钮 (✕) 不会退出软件或中断任务，而是自动脱离 macOS Dock 并回到此监控台；仅在此处点击「停止」才会真正退出实例。")
+
+            // Solo Focus Mode Toggle Pill
+            Button {
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                    store.soloFocusMode.toggle()
+                }
+            } label: {
+                HStack(alignment: .center, spacing: 5) {
+                    Image(systemName: store.soloFocusMode ? "viewfinder.circle.fill" : "viewfinder.circle")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(store.soloFocusMode ? accent : .secondary)
+                        .frame(width: 14, height: 14, alignment: .center)
+                    Text("专注单窗口")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(store.soloFocusMode ? .primary : .secondary)
+                }
+                .padding(.horizontal, 10)
+                .frame(height: 30)
+                .background {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(store.soloFocusMode
+                              ? accent.opacity(colorScheme == .dark ? 0.16 : 0.10)
+                              : Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.035))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(store.soloFocusMode ? accent.opacity(0.35) : Color.primary.opacity(0.08), lineWidth: 1)
+                }
+            }
+            .buttonStyle(.plain)
+            .help("开启后，点击缩略图调出某实例时会自动隐藏其他实例窗口，桌面始终只保留当前操作的窗口")
+
+            // Floating HUD Return Pill Toggle
+            Button {
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                    store.floatingHUDEnabled.toggle()
+                }
+            } label: {
+                HStack(alignment: .center, spacing: 5) {
+                    Image(systemName: store.floatingHUDEnabled ? "pip.enter" : "pip")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(store.floatingHUDEnabled ? accent : .secondary)
+                        .frame(width: 14, height: 14, alignment: .center)
+                    Text("悬浮返回条")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(store.floatingHUDEnabled ? .primary : .secondary)
+                }
+                .padding(.horizontal, 10)
+                .frame(height: 30)
+                .background {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(store.floatingHUDEnabled
+                              ? accent.opacity(colorScheme == .dark ? 0.16 : 0.10)
+                              : Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.035))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(store.floatingHUDEnabled ? accent.opacity(0.35) : Color.primary.opacity(0.08), lineWidth: 1)
+                }
+            }
+            .buttonStyle(.plain)
+            .help("开启后，切换到任意 Antigravity 实例时屏幕右下角会浮现快捷胶囊，点一下即可收起当前实例并回到缩略图监控台")
+
+            // Task System Notification Toggle Pill
+            Button {
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
+                    store.notificationsEnabled.toggle()
+                }
+            } label: {
+                HStack(alignment: .center, spacing: 5) {
+                    Image(systemName: store.notificationsEnabled ? "bell.badge.fill" : "bell.slash")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(store.notificationsEnabled ? Color.orange : .secondary)
+                        .frame(width: 14, height: 14, alignment: .center)
+                    Text("任务系统通知")
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(store.notificationsEnabled ? .primary : .secondary)
+                }
+                .padding(.horizontal, 10)
+                .frame(height: 30)
+                .background {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(store.notificationsEnabled
+                              ? Color.orange.opacity(colorScheme == .dark ? 0.16 : 0.10)
+                              : Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.035))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(store.notificationsEnabled ? Color.orange.opacity(0.35) : Color.primary.opacity(0.08), lineWidth: 1)
+                }
+            }
+            .buttonStyle(.plain)
+            .help("开启后，当后台实例的 Agent 任务执行完成或遇到问题需用户确认（如 ask_question）时，自动发送 macOS 系统横幅与提示音；点击通知直接呼出对应实例窗口。")
+
+            // Grid / List View Switcher
+            HStack(alignment: .center, spacing: 3) {
+                ForEach(ViewMode.allCases) { mode in
+                    let active = viewMode == mode
+                    Button {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                            viewMode = mode
+                        }
+                    } label: {
+                        HStack(alignment: .center, spacing: 4.5) {
+                            Image(systemName: mode.symbol)
+                                .font(.system(size: 11, weight: .semibold))
+                                .frame(width: 13, height: 13, alignment: .center)
+                            Text(mode.rawValue)
+                                .font(.system(size: 11.5, weight: active ? .semibold : .medium))
+                        }
+                        .foregroundStyle(active ? Color.primary : Color.secondary)
+                        .padding(.horizontal, 9.5)
+                        .frame(height: 26)
+                        .background {
+                            if active {
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .fill(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.09))
+                            }
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(3)
+            .background {
+                RoundedRectangle(cornerRadius: 9.5, style: .continuous)
+                    .fill(Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.035))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 9.5, style: .continuous)
+                    .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
+            }
+        }
+    }
+
+    // MARK: - Thumbnail Monitor Wall View (Grid Mode)
+
+    private var thumbnailWallSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if filteredInstances.isEmpty {
+                filteredEmptyView
+            } else {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 250, maximum: 330), spacing: 18)],
+                    spacing: 20
+                ) {
+                    ForEach(Array(filteredInstances.enumerated()), id: \.element.id) { idx, item in
+                        InstanceThumbnailTile(
+                            item: item,
+                            activity: store.activity(for: item),
+                            thumbnail: store.thumbnails[item.id],
+                            sourceVersion: store.sourceVersion,
+                            busy: store.busy,
+                            canUpgrade: store.compatibility == "已支持本机版本",
+                            open: { store.open(item) },
+                            hideWindow: { store.hideInstance(item) },
+                            quit: { store.quit(item) },
+                            upgrade: { upgradeRequest = UpgradeRequest(instances: [item]) },
+                            reveal: { store.reveal(item) },
+                            logs: { store.showLogs(item) },
+                            verify: { store.toggleVerified(item) },
+                            clearWorkspace: { pendingClear = item },
+                            destroy: { pendingDestroy = item }
+                        )
+                        .opacity(appeared ? 1 : 0)
+                        .offset(y: appeared ? 0 : 12)
+                        .animation(
+                            .spring(response: 0.36, dampingFraction: 0.82).delay(Double(idx) * 0.03),
+                            value: appeared
+                        )
+                    }
+                }
+                .padding(18)
+                .systemSurface(radius: 18)
+            }
+        }
+    }
+
+    // MARK: - Detailed List Sections (List Mode)
 
     private func primarySection(_ primary: ManagedInstance) -> some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -1468,11 +3182,13 @@ struct ContentView: View {
 
             InstanceCard(
                 item: primary,
+                activity: store.activity(for: primary),
                 sourceVersion: store.sourceVersion,
                 busy: store.busy,
                 canUpgrade: false,
                 upgrade: {},
                 open: { store.open(primary) },
+                hideWindow: { store.hideInstance(primary) },
                 quit: { store.quit(primary) },
                 reveal: { store.reveal(primary) },
                 logs: { store.showLogs(primary) },
@@ -1482,8 +3198,6 @@ struct ContentView: View {
             )
         }
     }
-
-    // MARK: - Isolated Clones Section
 
     private var clonesSection: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1503,48 +3217,7 @@ struct ContentView: View {
                         .frame(height: 18)
                         .background(Capsule().fill(Color.primary.opacity(0.08)))
                 }
-
                 Spacer()
-
-                // Segmented Pill Filter
-                HStack(alignment: .center, spacing: 3) {
-                    ForEach(InstanceFilter.allCases) { filter in
-                        let count = filterCount(filter)
-                        let active = selectedFilter == filter
-                        Button {
-                            withAnimation(.spring(response: 0.28, dampingFraction: 0.80)) {
-                                selectedFilter = filter
-                            }
-                        } label: {
-                            HStack(alignment: .center, spacing: 4.5) {
-                                Text(filter.rawValue)
-                                    .font(.system(size: 11.5, weight: active ? .semibold : .medium))
-                                Text("\(count)")
-                                    .font(.system(size: 10.5, weight: .bold, design: .rounded))
-                                    .opacity(active ? 0.95 : 0.65)
-                            }
-                            .foregroundStyle(active ? Color.primary : Color.secondary)
-                            .padding(.horizontal, 10)
-                            .frame(height: 24)
-                            .background {
-                                if active {
-                                    RoundedRectangle(cornerRadius: 6.5, style: .continuous)
-                                        .fill(Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.09))
-                                }
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(3)
-                .background {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .fill(Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.035))
-                }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
-                }
             }
             .padding(.horizontal, 2)
 
@@ -1564,31 +3237,19 @@ struct ContentView: View {
                 }
                 .systemSurface(radius: 15)
             } else if filteredClones.isEmpty {
-                HStack {
-                    Spacer()
-                    VStack(spacing: 6) {
-                        Image(systemName: selectedFilter == .running ? "moon.zzz" : "checkmark.circle")
-                            .font(.system(size: 20))
-                            .foregroundStyle(.secondary)
-                        Text(selectedFilter == .running ? "当前没有正在运行的副本" : "所有副本均已是最新版本")
-                            .font(.system(size: 12.5, weight: .medium))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 26)
-                    Spacer()
-                }
-                .systemSurface(radius: 15)
-                .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                filteredEmptyView
             } else {
                 VStack(spacing: 10) {
                     ForEach(Array(filteredClones.enumerated()), id: \.element.id) { idx, item in
                         InstanceCard(
                             item: item,
+                            activity: store.activity(for: item),
                             sourceVersion: store.sourceVersion,
                             busy: store.busy,
                             canUpgrade: store.compatibility == "已支持本机版本",
                             upgrade: { upgradeRequest = UpgradeRequest(instances: [item]) },
                             open: { store.open(item) },
+                            hideWindow: { store.hideInstance(item) },
                             quit: { store.quit(item) },
                             reveal: { store.reveal(item) },
                             logs: { store.showLogs(item) },
@@ -1608,10 +3269,33 @@ struct ContentView: View {
         }
     }
 
+    private var filteredEmptyView: some View {
+        HStack {
+            Spacer()
+            VStack(spacing: 6) {
+                Image(systemName: selectedFilter == .busyTask ? "bolt.slash" : (selectedFilter == .running ? "moon.zzz" : "checkmark.circle"))
+                    .font(.system(size: 20))
+                    .foregroundStyle(.secondary)
+                Text(
+                    selectedFilter == .busyTask
+                        ? "当前没有正在执行任务的实例"
+                        : (selectedFilter == .running ? "当前没有正在运行的实例" : "所有副本均已是最新版本")
+                )
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(.secondary)
+            }
+            .padding(.vertical, 32)
+            Spacer()
+        }
+        .systemSurface(radius: 15)
+        .transition(.opacity.combined(with: .scale(scale: 0.98)))
+    }
+
     private func filterCount(_ filter: InstanceFilter) -> Int {
         switch filter {
-        case .all: return store.cloneInstances.count
-        case .running: return store.cloneInstances.filter(\.running).count
+        case .all: return store.instances.count
+        case .running: return store.runningCount
+        case .busyTask: return store.activeTaskCount
         case .upgradable: return store.pendingUpgrades.count
         }
     }
@@ -1907,7 +3591,7 @@ private struct ClearWorkspaceView: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 12))
                         .frame(width: 14, height: 14, alignment: .center)
-                    Text("实例仍在运行。请先保存工作并点击卡片上的“退出”后再试。")
+                    Text("实例仍在运行。请先保存工作并点击“退出”后再试。")
                 }
                 .font(.system(size: 12))
                 .foregroundStyle(.orange)
