@@ -2120,8 +2120,15 @@ final class QuickSwitcherPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
+    var onDismiss: (() -> Void)?
+
     override func cancelOperation(_ sender: Any?) {
         orderOut(nil)
+    }
+
+    override func orderOut(_ sender: Any?) {
+        super.orderOut(sender)
+        onDismiss?()
     }
 }
 
@@ -2217,7 +2224,7 @@ private struct QuickSwitcherView: View {
                                     isSelected: index == selectedIndex,
                                     shortcutNumber: shortcutNumber(for: item),
                                     onSelect: {
-                                        dismiss()
+                                        doDismiss()
                                         store.open(item)
                                     }
                                 )
@@ -2283,6 +2290,11 @@ private struct QuickSwitcherView: View {
         }
     }
 
+    private func doDismiss() {
+        removeKeyMonitor()
+        dismiss()
+    }
+
     private func shortcutNumber(for item: ManagedInstance) -> Int? {
         if item.isOriginal { return 1 }
         let clones = store.instances.filter { !$0.isOriginal }.sorted { $0.index < $1.index }
@@ -2307,9 +2319,14 @@ private struct QuickSwitcherView: View {
     }
 
     private func installKeyMonitor() {
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+        removeKeyMonitor()
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak store] event in
+            // CRITICAL: Only handle keyboard events if they are targeting the Quick Switcher panel!
+            guard let window = event.window, window is QuickSwitcherPanel, window.isVisible else {
+                return event
+            }
             if event.keyCode == 53 { // Esc
-                dismiss()
+                doDismiss()
                 return nil
             } else if event.keyCode == 126 { // Up
                 if selectedIndex > 0 {
@@ -2324,8 +2341,8 @@ private struct QuickSwitcherView: View {
             } else if event.keyCode == 36 || event.keyCode == 76 { // Return / Enter
                 if selectedIndex >= 0 && selectedIndex < filteredInstances.count {
                     let target = filteredInstances[selectedIndex]
-                    dismiss()
-                    store.open(target)
+                    doDismiss()
+                    store?.open(target)
                 }
                 return nil
             }
@@ -3914,6 +3931,7 @@ struct EditInstanceMetaSheet: View {
                 Spacer()
                 Button("取消", action: onDismiss)
                     .buttonStyle(ModernButtonStyle(variant: .secondary, compact: true))
+                    .keyboardShortcut(.cancelAction)
                 Button("保存备注与标签") {
                     onSave(InstanceUserMeta(
                         nickname: nickname.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -3923,7 +3941,8 @@ struct EditInstanceMetaSheet: View {
                     ))
                 }
                 .buttonStyle(ModernButtonStyle(variant: .primary, compact: true))
-                .keyboardShortcut(.defaultAction)
+                .keyboardShortcut(.return, modifiers: .command)
+                .help("保存修改 (快捷键: ⌘ + Enter)")
             }
         }
         .padding(22)
@@ -4149,7 +4168,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.5.7"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.5.8"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
