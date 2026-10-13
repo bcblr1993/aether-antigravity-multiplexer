@@ -829,6 +829,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     private var lastFrontmostAntigravityBundle: String? = nil
     private var hasInitializedActivityBaseline = false
     private var lastNotifiedStates: [String: (state: TaskRunState, stepIndex: Int)] = [:]
+    private var lastOpenTime: [String: Date] = [:]
 
     private let support = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/Antigravity Multiplexer")
@@ -1091,38 +1092,6 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         }
     }
 
-    /// Closes open BrowserWindow targets via `DevToolsActivePort` so Electron triggers `window-all-closed`
-    /// with `runInBackground=true`, which hides the macOS Dock icon (`app.dock.hide()`) while keeping
-    /// `language_server` and all Agent tasks running in the background.
-    private nonisolated static func closeCDPWindows(for instanceName: String) async -> Bool {
-        let portFile = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support")
-            .appendingPathComponent(instanceName)
-            .appendingPathComponent("DevToolsActivePort")
-        guard let content = try? String(contentsOf: portFile, encoding: .utf8),
-              let firstLine = content.components(separatedBy: .newlines).first,
-              let port = Int(firstLine.trimmingCharacters(in: .whitespacesAndNewlines)),
-              let listURL = URL(string: "http://127.0.0.1:\(port)/json/list") else { return false }
-
-        var req = URLRequest(url: listURL)
-        req.timeoutInterval = 0.6
-        guard let (data, _) = try? await URLSession.shared.data(for: req),
-              let targets = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return false }
-
-        let pageTargets = targets.filter { ($0["type"] as? String) == "page" }
-        guard !pageTargets.isEmpty else { return false }
-        var closedAny = false
-        for target in pageTargets {
-            guard let id = target["id"] as? String,
-                  let closeURL = URL(string: "http://127.0.0.1:\(port)/json/close/\(id)") else { continue }
-            var closeReq = URLRequest(url: closeURL)
-            closeReq.timeoutInterval = 0.6
-            if let _ = try? await URLSession.shared.data(for: closeReq) {
-                closedAny = true
-            }
-        }
-        return closedAny
-    }
 
     func requestScreenCapturePermission() {
         _ = CGRequestScreenCaptureAccess()
@@ -1199,93 +1168,43 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     }
 
     func open(_ item: ManagedInstance) {
+        let now = Date()
+        if let last = lastOpenTime[item.id], now.timeIntervalSince(last) < 1.0 {
+            return
+        }
+        lastOpenTime[item.id] = now
+
         enforceRunInBackgroundSetting(for: [item])
         if soloFocusMode {
             hideOtherInstances(except: item.bundleID)
         }
-        let config = NSWorkspace.OpenConfiguration()
-        config.activates = true
+
+        self.activeInstanceName = item.name
+        self.lastFrontmostAntigravityBundle = item.bundleID
+        self.updateFloatingHUDVisibility()
+
         if let app = runningApplication(bundleID: item.bundleID, path: item.path) {
+            // Already running: activate and unhide existing instance directly.
+            // Do NOT call NSWorkspace.openApplication because LaunchServices can
+            // trigger Electron to spawn a duplicate window.
             app.unhide()
             app.activate(options: [.activateIgnoringOtherApps])
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                self.refreshRunningStates()
+            }
+            return
         }
-        let act = activity(for: item)
-        let savedConvURL = activeConversationURLs[item.id]
-        let itemName = item.name
-        // Always invoke openApplication as well so that if the instance was in Dock-detached
-        // accessory mode (0 windows after clicking ✕ or collapsing), Electron receives `activate`
-        // (`kAEReopenApplication`) and immediately recreates the window connected to `language_server`.
+
+        // Cold start: Instance is not currently running. Launch cleanly once.
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
         NSWorkspace.shared.openApplication(at: item.path, configuration: config) { [weak self] app, _ in
             Task { @MainActor in
                 app?.unhide()
                 app?.activate(options: [.activateIgnoringOtherApps])
-                self?.activeInstanceName = item.name
-                self?.lastFrontmostAntigravityBundle = item.bundleID
-                self?.updateFloatingHUDVisibility()
-                try? await Task.sleep(nanoseconds: 350_000_000)
+                try? await Task.sleep(nanoseconds: 400_000_000)
                 self?.refreshRunningStates()
-                Task.detached(priority: .userInitiated) {
-                    await Self.restoreActiveConversationIfNeeded(
-                        instanceName: itemName,
-                        preferredURL: savedConvURL,
-                        fallbackConvID: act.latestConversationID
-                    )
-                }
             }
-        }
-    }
-
-    private nonisolated static func restoreActiveConversationIfNeeded(
-        instanceName: String,
-        preferredURL: String?,
-        fallbackConvID: String
-    ) async {
-        let appSupportRoot = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support")
-        let portFile = appSupportRoot.appendingPathComponent(instanceName).appendingPathComponent("DevToolsActivePort")
-        guard let content = try? String(contentsOf: portFile, encoding: .utf8),
-              let firstLine = content.components(separatedBy: .newlines).first,
-              let port = Int(firstLine.trimmingCharacters(in: .whitespacesAndNewlines)),
-              let listURL = URL(string: "http://127.0.0.1:\(port)/json/list") else { return }
-
-        for _ in 0..<4 {
-            try? await Task.sleep(nanoseconds: 300_000_000)
-            var req = URLRequest(url: listURL)
-            req.timeoutInterval = 0.8
-            guard let (data, _) = try? await URLSession.shared.data(for: req),
-                  let targets = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
-                  let mainTarget = targets.first(where: { t in
-                      guard (t["type"] as? String) == "page",
-                            let u = t["url"] as? String else { return false }
-                      return u.hasPrefix("https://127.0.0.1:") || u.hasPrefix("http://127.0.0.1:")
-                  }),
-                  let currentURL = mainTarget["url"] as? String,
-                  let wsString = mainTarget["webSocketDebuggerUrl"] as? String,
-                  let wsURL = URL(string: wsString) else { continue }
-
-            if currentURL.contains("/c/") {
-                return
-            }
-
-            let targetToNavigate: String
-            if let preferredURL, preferredURL.contains("/c/") {
-                targetToNavigate = preferredURL
-            } else if !fallbackConvID.isEmpty {
-                if let u = URL(string: currentURL), let p = u.port {
-                    targetToNavigate = "\(u.scheme ?? "https")://\(u.host ?? "127.0.0.1"):\(p)/c/\(fallbackConvID)"
-                } else {
-                    return
-                }
-            } else {
-                return
-            }
-
-            let task = URLSession.shared.webSocketTask(with: wsURL)
-            task.resume()
-            defer { task.cancel(with: .goingAway, reason: nil) }
-            let payload = "{\"id\":99,\"method\":\"Page.navigate\",\"params\":{\"url\":\"\(targetToNavigate)\"}}"
-            try? await task.send(.string(payload))
-            return
         }
     }
 
@@ -1886,17 +1805,23 @@ struct InstanceThumbnailTile: View {
                     )
                 )
 
-            if item.running, let thumbnail {
-                Image(nsImage: thumbnail)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(height: 154)
-                    .clipped()
-                    .opacity(item.running ? 0.96 : 0.72)
-            } else if item.running {
-                syntheticLiveScreen
-            } else {
-                stoppedScreen
+            Group {
+                if item.running, let thumbnail {
+                    Image(nsImage: thumbnail)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(height: 154)
+                        .clipped()
+                        .opacity(item.running ? 0.96 : 0.72)
+                } else if item.running {
+                    syntheticLiveScreen
+                } else {
+                    stoppedScreen
+                }
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                open()
             }
 
             // Screen Overlay: Bottom Status Dot & Resource Metric
@@ -1946,10 +1871,6 @@ struct InstanceThumbnailTile: View {
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.8)
-        }
-        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .onTapGesture {
-            open()
         }
     }
 
@@ -2014,19 +1935,22 @@ struct InstanceThumbnailTile: View {
     private var centerPlayOverlay: some View {
         if !item.running {
             // Stopped: Prominent Play Button over Instance Emblem (exact match to screenshot)
-            ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.black.opacity(hovered ? 0.78 : 0.58))
-                    .frame(width: 54, height: 40)
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .strokeBorder(Color.white.opacity(hovered ? 0.35 : 0.18), lineWidth: 1)
-                    }
-                Image(systemName: "play.fill")
-                    .font(.system(size: 18, weight: .bold))
-                    .foregroundStyle(.white.opacity(hovered ? 1.0 : 0.82))
-                    .offset(x: 1)
+            Button(action: open) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.black.opacity(hovered ? 0.78 : 0.58))
+                        .frame(width: 54, height: 40)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(Color.white.opacity(hovered ? 0.35 : 0.18), lineWidth: 1)
+                        }
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(.white.opacity(hovered ? 1.0 : 0.82))
+                        .offset(x: 1)
+                }
             }
+            .buttonStyle(.plain)
             .scaleEffect(hovered ? 1.08 : 1.0)
         } else if hovered {
             // Running & Hovered: Quick Focus + Collapse/Hide buttons
@@ -3111,7 +3035,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.5.1"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.5.2"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
