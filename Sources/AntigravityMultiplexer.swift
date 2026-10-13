@@ -3111,7 +3111,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.5.0"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.5.1"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
