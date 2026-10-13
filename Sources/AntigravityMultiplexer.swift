@@ -778,14 +778,15 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     static let shared = AppNotificationDelegate()
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        completionHandler([.banner, .sound])
+        completionHandler([.banner, .sound, .badge])
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
         let userInfo = response.notification.request.content.userInfo
-        if let bundleID = userInfo["bundleID"] as? String {
+        let targetBundle = (userInfo["bundleID"] as? String) ?? (userInfo["instanceID"] as? String)
+        if let targetBundle {
             Task { @MainActor in
-                InstanceStore.current?.openInstance(byBundleID: bundleID)
+                InstanceStore.current?.openInstance(byBundleID: targetBundle)
             }
         }
         completionHandler()
@@ -825,6 +826,12 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             updateGlobalHotkeysRegistration()
         }
     }
+    @Published var dockBadgeEnabled: Bool = UserDefaults.standard.object(forKey: "dockBadgeEnabled") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(dockBadgeEnabled, forKey: "dockBadgeEnabled")
+            updateDockBadge()
+        }
+    }
     @Published var activeInstanceName: String? = nil
     @Published var activeConversationURLs: [String: String] = [:]
     @Published var resourceMetrics: [String: InstanceResourceMetric] = [:]
@@ -856,6 +863,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         setupStatusBarItem()
         setupNotifications()
         setupGlobalHotKeys()
+        updateDockBadge()
     }
 
     func meta(for item: ManagedInstance) -> InstanceUserMeta {
@@ -1029,6 +1037,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 }
                 self.captureWindowThumbnails()
                 self.updateStatusBarMenu()
+                self.updateDockBadge()
             }
         }
     }
@@ -1203,6 +1212,10 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             // trigger Electron to spawn a duplicate window.
             app.unhide()
             app.activate(options: [.activateIgnoringOtherApps])
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                app.unhide()
+                app.activate(options: [.activateIgnoringOtherApps])
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                 self.refreshRunningStates()
             }
@@ -1334,7 +1347,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         }
     }
 
-    private func bringMonitorWallToFront() {
+    func bringMonitorWallToFront() {
         NSApp.unhide(nil)
         NSApp.activate(ignoringOtherApps: true)
         for window in NSApp.windows where window.canBecomeMain {
@@ -1394,11 +1407,25 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         hudPanel?.orderFrontRegardless()
     }
 
-    // MARK: - System Notifications (UNUserNotificationCenter)
+    // MARK: - System Notifications (UNUserNotificationCenter) & Dock/Status Bar Badges
 
     private func setupNotifications() {
-        UNUserNotificationCenter.current().delegate = AppNotificationDelegate.shared
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+        let center = UNUserNotificationCenter.current()
+        center.delegate = AppNotificationDelegate.shared
+
+        let openAction = UNNotificationAction(
+            identifier: "ACTION_OPEN_INSTANCE",
+            title: "立即调出窗口",
+            options: [.foreground]
+        )
+        let category = UNNotificationCategory(
+            identifier: "INSTANCE_NOTIFICATION_CATEGORY",
+            actions: [openAction],
+            intentIdentifiers: [],
+            options: [.customDismissAction]
+        )
+        center.setNotificationCategories([category])
+        center.requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
     }
 
     private func processActivityChangesAndNotify(newActivities: [String: InstanceActivity]) {
@@ -1420,15 +1447,18 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             let prevStep = prev?.stepIndex ?? -1
 
             let isUserCurrentlyFocusingInstance = (frontmostBundle == item.bundleID)
+            let meta = meta(for: item)
+            let displayName = meta.nickname.isEmpty ? item.name : "\(meta.nickname) (\(item.name))"
+            let isMainPrefix = item.isOriginal ? "👑 " : ""
 
             if newAct.state == .needsAttention && (prevState != .needsAttention || newAct.stepIndex != prevStep) {
                 lastNotifiedStates[item.id] = (state: newAct.state, stepIndex: newAct.stepIndex)
                 if !isUserCurrentlyFocusingInstance {
                     sendSystemNotification(
                         identifier: "needs-attention-\(item.id)-\(newAct.stepIndex)",
-                        title: "\(item.name) · 等待确认",
+                        title: "\(isMainPrefix)\(displayName) · 等待确认",
                         subtitle: newAct.workspace.isEmpty ? "Agent 需要用户选择或确认操作" : "工作区: \(newAct.workspace)",
-                        body: newAct.currentAction,
+                        body: newAct.currentAction.isEmpty ? "点击通知立即调出此实例窗口进行确认" : newAct.currentAction,
                         bundleID: item.bundleID
                     )
                 }
@@ -1438,9 +1468,9 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                     let cleanedAction = newAct.currentAction.hasPrefix("上次：") ? String(newAct.currentAction.dropFirst(3)) : newAct.currentAction
                     sendSystemNotification(
                         identifier: "task-completed-\(item.id)-\(newAct.stepIndex)",
-                        title: "\(item.name) · 任务已完成",
-                        subtitle: newAct.workspace.isEmpty ? "Agent 当前步骤已顺利完成" : "工作区: \(newAct.workspace)",
-                        body: cleanedAction.isEmpty ? "所有指令已执行完毕，等待下一步操作" : cleanedAction,
+                        title: "\(isMainPrefix)\(displayName) · 任务已完成",
+                        subtitle: newAct.workspace.isEmpty ? "Agent 步骤已顺利完成" : "工作区: \(newAct.workspace)",
+                        body: cleanedAction.isEmpty ? "所有指令已执行完毕，点击立即调出窗口" : cleanedAction,
                         bundleID: item.bundleID
                     )
                 }
@@ -1449,9 +1479,9 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 if !isUserCurrentlyFocusingInstance {
                     sendSystemNotification(
                         identifier: "task-error-\(item.id)-\(newAct.stepIndex)",
-                        title: "\(item.name) · 任务执行异常",
+                        title: "\(isMainPrefix)\(displayName) · 任务执行异常",
                         subtitle: newAct.workspace.isEmpty ? "执行步骤报错" : "工作区: \(newAct.workspace)",
-                        body: newAct.currentAction,
+                        body: newAct.currentAction.isEmpty ? "执行遇到错误，点击调出窗口查看详情" : newAct.currentAction,
                         bundleID: item.bundleID
                     )
                 }
@@ -1469,6 +1499,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         }
         content.body = body
         content.sound = .default
+        content.categoryIdentifier = "INSTANCE_NOTIFICATION_CATEGORY"
         content.userInfo = ["bundleID": bundleID]
 
         let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
@@ -1477,6 +1508,31 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 print("Notification delivery failed: \(error)")
             }
         }
+    }
+
+    func updateDockBadge() {
+        guard dockBadgeEnabled else {
+            NSApp.dockTile.badgeLabel = nil
+            NSApp.dockTile.display()
+            return
+        }
+
+        let attentionCount = instances.filter { item in
+            item.running && activities[item.id]?.state == .needsAttention
+        }.count
+
+        let runningTasks = instances.filter { item in
+            item.running && activities[item.id]?.state == .runningTask
+        }.count
+
+        if attentionCount > 0 {
+            NSApp.dockTile.badgeLabel = attentionCount > 1 ? "!\(attentionCount)" : "!"
+        } else if runningTasks > 0 {
+            NSApp.dockTile.badgeLabel = "\(runningTasks)"
+        } else {
+            NSApp.dockTile.badgeLabel = nil
+        }
+        NSApp.dockTile.display()
     }
 
     private func setupStatusBarItem() {
@@ -1489,12 +1545,30 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         updateStatusBarMenu()
     }
 
-    private func updateStatusBarMenu() {
+    func updateStatusBarMenu() {
         guard let statusItem else { return }
+
+        let attentionCount = instances.filter { item in
+            item.running && activities[item.id]?.state == .needsAttention
+        }.count
+
+        let runningTasks = instances.filter { item in
+            item.running && activities[item.id]?.state == .runningTask
+        }.count
+
         if let button = statusItem.button {
-            let tasks = activeTaskCount
-            button.title = tasks > 0 ? " \(tasks)" : ""
+            if attentionCount > 0 {
+                button.image = NSImage(systemSymbolName: "bell.badge.fill", accessibilityDescription: "有实例等待确认")
+                button.title = " \(attentionCount)待确认"
+            } else if runningTasks > 0 {
+                button.image = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: "正在运行任务")
+                button.title = " \(runningTasks)"
+            } else {
+                button.image = NSImage(systemSymbolName: "square.grid.2x2.fill", accessibilityDescription: "Antigravity 监控台")
+                button.title = ""
+            }
         }
+
         let menu = NSMenu()
         StatusBarTarget.shared.store = self
 
@@ -1505,15 +1579,54 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         let collapseItem = NSMenuItem(title: "收起所有实例并打开监控台", action: #selector(StatusBarTarget.collapseAll), keyEquivalent: "0")
         collapseItem.target = StatusBarTarget.shared
         menu.addItem(collapseItem)
+
+        let showMainWindowItem = NSMenuItem(title: "显示多开监控台主窗口", action: #selector(StatusBarTarget.showMainWindow), keyEquivalent: "")
+        showMainWindowItem.target = StatusBarTarget.shared
+        menu.addItem(showMainWindowItem)
+
+        let busyInstances = instances.filter { item in
+            guard item.running, let act = activities[item.id] else { return false }
+            return act.state == .runningTask || act.state == .needsAttention
+        }
+        if !busyInstances.isEmpty {
+            menu.addItem(.separator())
+            let headerItem = NSMenuItem(title: "⚡ 活跃任务 (\(busyInstances.count))", action: nil, keyEquivalent: "")
+            headerItem.isEnabled = false
+            menu.addItem(headerItem)
+
+            for item in busyInstances {
+                let act = activity(for: item)
+                let meta = meta(for: item)
+                let name = meta.nickname.isEmpty ? item.name : meta.nickname
+                let isMainPrefix = item.isOriginal ? "👑 " : ""
+                let icon = act.state == .needsAttention ? "🔔" : "⚡"
+                let detail = act.workspace.isEmpty ? act.currentAction : "\(act.workspace) · \(act.currentAction)"
+                let taskItem = NSMenuItem(
+                    title: "  \(icon) \(isMainPrefix)\(name) — \(detail)",
+                    action: #selector(StatusBarTarget.openInstance(_:)),
+                    keyEquivalent: ""
+                )
+                taskItem.representedObject = item.id
+                taskItem.target = StatusBarTarget.shared
+                taskItem.toolTip = "点击立即调出该实例窗口"
+                menu.addItem(taskItem)
+            }
+        }
+
         menu.addItem(.separator())
+        let listHeader = NSMenuItem(title: "所有实例列表 (\(runningCount) 运行中 / 共 \(instances.count))", action: nil, keyEquivalent: "")
+        listHeader.isEnabled = false
+        menu.addItem(listHeader)
 
         for item in instances {
             let act = activity(for: item)
+            let meta = meta(for: item)
+            let displayName = meta.nickname.isEmpty ? item.name : "\(meta.nickname) (\(item.name))"
             let statePrefix = !item.running ? "⏹" : (act.state == .runningTask ? "⚡" : (act.state == .needsAttention ? "🔔" : "🟢"))
             let shortcutHint = item.isOriginal ? "[⌥1]" : "[⌥\(item.index)]"
             let isMainPrefix = item.isOriginal ? "👑 " : ""
             let menuItem = NSMenuItem(
-                title: "\(statePrefix) \(isMainPrefix)\(item.name) \(shortcutHint) · \(act.state.label)",
+                title: "\(statePrefix) \(isMainPrefix)\(displayName) \(shortcutHint) · \(act.state.label)",
                 action: #selector(StatusBarTarget.openInstance(_:)),
                 keyEquivalent: ""
             )
@@ -1521,6 +1634,12 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             menuItem.target = StatusBarTarget.shared
             menu.addItem(menuItem)
         }
+
+        menu.addItem(.separator())
+        let quitItem = NSMenuItem(title: "退出多开管理器", action: #selector(StatusBarTarget.quitApp), keyEquivalent: "q")
+        quitItem.target = StatusBarTarget.shared
+        menu.addItem(quitItem)
+
         statusItem.menu = menu
     }
 
@@ -1684,10 +1803,18 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         store?.collapseAllToMonitorWall()
     }
 
+    @objc func showMainWindow() {
+        store?.bringMonitorWallToFront()
+    }
+
     @objc func openInstance(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String,
               let item = store?.instances.first(where: { $0.id == id }) else { return }
         store?.open(item)
+    }
+
+    @objc func quitApp() {
+        NSApp.terminate(nil)
     }
 }
 
@@ -3662,7 +3789,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.5.3"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.5.4"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
@@ -4286,9 +4413,20 @@ struct ContentView: View {
 
                 Toggle(isOn: $store.notificationsEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("任务系统通知")
+                        Text("任务系统通知 (精准调出)")
                             .font(.system(size: 12, weight: .semibold))
-                        Text("后台实例任务跑完或需要确认时，自动发送 macOS 系统横幅与提示音")
+                        Text("后台实例任务跑完或需要确认时发送通知，支持点击横幅立即精准调出对应窗口")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+
+                Toggle(isOn: $store.dockBadgeEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Dock 图标任务角标")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text("在程序坞图标实时显示后台正在跑任务或等待确认的实例数量")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }
