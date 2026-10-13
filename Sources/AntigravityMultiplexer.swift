@@ -316,10 +316,12 @@ struct InstanceUserMeta: Codable, Equatable, Hashable {
     var nickname: String = ""
     var tag: String = ""
     var tagColor: String = "blue"
+    var notes: String = ""
 
     var hasCustomContent: Bool {
         !nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-        !tag.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !tag.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+        !notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var color: Color {
@@ -331,6 +333,43 @@ struct InstanceUserMeta: Codable, Equatable, Hashable {
         case "indigo": return .indigo
         case "teal": return .teal
         default: return .blue
+        }
+    }
+}
+
+struct InstanceDiskUsage: Equatable {
+    var profileBytes: Int64 = 0
+    var userDataBytes: Int64 = 0
+    var appBundleBytes: Int64 = 0
+    var lastCalculated: Date? = nil
+
+    var totalDataBytes: Int64 {
+        profileBytes + userDataBytes
+    }
+
+    var totalBytes: Int64 {
+        profileBytes + userDataBytes + appBundleBytes
+    }
+
+    var formattedProfile: String { Self.formatBytes(profileBytes) }
+    var formattedUserData: String { Self.formatBytes(userDataBytes) }
+    var formattedAppBundle: String { Self.formatBytes(appBundleBytes) }
+    var formattedTotalData: String { Self.formatBytes(totalDataBytes) }
+    var formattedTotal: String { Self.formatBytes(totalBytes) }
+
+    static func formatBytes(_ bytes: Int64) -> String {
+        guard bytes > 0 else { return "0 B" }
+        let kb = Double(bytes) / 1024.0
+        let mb = kb / 1024.0
+        let gb = mb / 1024.0
+        if gb >= 1.0 {
+            return String(format: "%.2f GB", gb)
+        } else if mb >= 1.0 {
+            return String(format: "%.1f MB", mb)
+        } else if kb >= 1.0 {
+            return "\(Int(kb)) KB"
+        } else {
+            return "\(bytes) B"
         }
     }
 }
@@ -370,6 +409,16 @@ struct ManagedInstance: Identifiable, Hashable {
     var profileURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(isOriginal ? ".gemini" : ".gemini-\(max(index - 1, 1))")
+    }
+    var userDataURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support")
+            .appendingPathComponent(isOriginal ? "Antigravity" : name)
+    }
+    var logsURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs")
+            .appendingPathComponent(isOriginal ? "Antigravity" : name)
     }
     var callbackScheme: String {
         if isOriginal { return "antigravity" }
@@ -498,6 +547,47 @@ private enum TelemetryScanner {
             // Silently ignore ps error
         }
 
+        return results
+    }
+
+    static func calculateFolderBytes(at url: URL) -> Int64 {
+        guard FileManager.default.fileExists(atPath: url.path) else { return 0 }
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/du")
+        proc.arguments = ["-sk", url.path]
+        let pipe = Pipe()
+        proc.standardOutput = pipe
+        proc.standardError = FileHandle.nullDevice
+        do {
+            try proc.run()
+            proc.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            if let str = String(data: data, encoding: .utf8),
+               let firstWord = str.components(separatedBy: .whitespaces).first,
+               let kb = Int64(firstWord) {
+                return kb * 1024
+            }
+        } catch {}
+        return 0
+    }
+
+    static func scanDiskUsage(for item: ManagedInstance) -> InstanceDiskUsage {
+        let profileBytes = calculateFolderBytes(at: item.profileURL)
+        let userDataBytes = calculateFolderBytes(at: item.userDataURL) + calculateFolderBytes(at: item.logsURL)
+        let appBundleBytes = calculateFolderBytes(at: item.path)
+        return InstanceDiskUsage(
+            profileBytes: profileBytes,
+            userDataBytes: userDataBytes,
+            appBundleBytes: appBundleBytes,
+            lastCalculated: Date()
+        )
+    }
+
+    static func scanDiskUsages(instances: [ManagedInstance]) -> [String: InstanceDiskUsage] {
+        var results: [String: InstanceDiskUsage] = [:]
+        for item in instances {
+            results[item.id] = scanDiskUsage(for: item)
+        }
         return results
     }
 
@@ -836,6 +926,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     @Published var activeConversationURLs: [String: String] = [:]
     @Published var resourceMetrics: [String: InstanceResourceMetric] = [:]
     @Published var instanceMetas: [String: InstanceUserMeta] = [:]
+    @Published var diskUsages: [String: InstanceDiskUsage] = [:]
 
     private var hudPanel: NSPanel?
     private var quickSwitcherPanel: QuickSwitcherPanel?
@@ -872,6 +963,56 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
 
     func metric(for item: ManagedInstance) -> InstanceResourceMetric {
         resourceMetrics[item.id] ?? InstanceResourceMetric()
+    }
+
+    func diskUsage(for item: ManagedInstance) -> InstanceDiskUsage {
+        diskUsages[item.id] ?? InstanceDiskUsage()
+    }
+
+    var totalDiskUsageBytes: Int64 {
+        instances.reduce(0) { $0 + (diskUsages[$1.id]?.totalDataBytes ?? 0) }
+    }
+
+    var formattedTotalDiskUsage: String {
+        InstanceDiskUsage.formatBytes(totalDiskUsageBytes)
+    }
+
+    func recalculateDiskUsage(for item: ManagedInstance) {
+        Task.detached(priority: .utility) {
+            let usage = TelemetryScanner.scanDiskUsage(for: item)
+            await MainActor.run { [weak self] in
+                self?.diskUsages[item.id] = usage
+            }
+        }
+    }
+
+    func refreshDiskUsages() {
+        let snapshot = instances
+        guard !snapshot.isEmpty else { return }
+        Task.detached(priority: .utility) {
+            let usages = TelemetryScanner.scanDiskUsages(instances: snapshot)
+            await MainActor.run { [weak self] in
+                self?.diskUsages = usages
+            }
+        }
+    }
+
+    func revealProfile(_ item: ManagedInstance) {
+        let path = item.profileURL.path
+        if FileManager.default.fileExists(atPath: path) {
+            NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
+        } else {
+            error = "工作空间目录尚未生成（\(path)）"
+        }
+    }
+
+    func revealUserData(_ item: ManagedInstance) {
+        let path = item.userDataURL.path
+        if FileManager.default.fileExists(atPath: path) {
+            NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: path)
+        } else {
+            error = "应用数据目录尚未生成（\(path)）"
+        }
     }
 
     private func loadInstanceMetas() {
@@ -968,6 +1109,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         }
         refreshBackups()
         refreshTelemetryAndThumbnails()
+        refreshDiskUsages()
     }
 
     private func runningApplication(bundleID: String, path: URL) -> NSRunningApplication? {
@@ -2381,6 +2523,7 @@ struct InstanceThumbnailTile: View {
     let activity: InstanceActivity
     let meta: InstanceUserMeta
     let resourceMetric: InstanceResourceMetric
+    let diskUsage: InstanceDiskUsage
     let thumbnail: NSImage?
     let sourceVersion: String
     let busy: Bool
@@ -2390,6 +2533,7 @@ struct InstanceThumbnailTile: View {
     let quit: () -> Void
     let upgrade: () -> Void
     let reveal: () -> Void
+    let revealProfile: () -> Void
     let logs: () -> Void
     let verify: () -> Void
     let editMeta: () -> Void
@@ -2541,6 +2685,14 @@ struct InstanceThumbnailTile: View {
                                 .font(.system(size: 9.5, design: .monospaced))
                                 .foregroundStyle(.white.opacity(0.60))
                         }
+
+                        if diskUsage.totalDataBytes > 0 {
+                            Text("· 💾 \(diskUsage.formattedTotalData)")
+                                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.white.opacity(0.85))
+                                .lineLimit(1)
+                                .help("独立工作空间与数据占用：\(diskUsage.formattedTotalData)（工作空间 \(diskUsage.formattedProfile) · 缓存 \(diskUsage.formattedUserData) · 程序包 \(diskUsage.formattedAppBundle)）")
+                        }
                     }
                     .padding(.horizontal, 10)
                     .frame(height: 28)
@@ -2634,6 +2786,18 @@ struct InstanceThumbnailTile: View {
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                }
+
+                if !meta.notes.isEmpty {
+                    HStack(spacing: 3) {
+                        Image(systemName: "note.text")
+                            .font(.system(size: 9))
+                    }
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 4.5)
+                    .frame(height: 16)
+                    .background(Capsule().fill(Color.orange.opacity(0.18)))
+                    .help("备注：\(meta.notes)")
                 }
 
                 Button(action: editMeta) {
@@ -2862,6 +3026,11 @@ struct InstanceThumbnailTile: View {
                 reveal()
             }
 
+            tileMenuItem(title: "在访达中显示独立工作空间", symbol: "internaldrive") {
+                showMorePopover = false
+                revealProfile()
+            }
+
             tileMenuItem(title: "查看运行日志", symbol: "doc.text.magnifyingglass") {
                 showMorePopover = false
                 logs()
@@ -2940,6 +3109,7 @@ struct InstanceCard: View {
     let activity: InstanceActivity
     let meta: InstanceUserMeta
     let resourceMetric: InstanceResourceMetric
+    let diskUsage: InstanceDiskUsage
     let sourceVersion: String
     let busy: Bool
     let canUpgrade: Bool
@@ -2948,6 +3118,7 @@ struct InstanceCard: View {
     let hideWindow: () -> Void
     let quit: () -> Void
     let reveal: () -> Void
+    let revealProfile: () -> Void
     let logs: () -> Void
     let verify: () -> Void
     let editMeta: () -> Void
@@ -3096,6 +3267,22 @@ struct InstanceCard: View {
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
+
+                    if !meta.notes.isEmpty {
+                        HStack(spacing: 3.5) {
+                            Image(systemName: "note.text")
+                                .font(.system(size: 9.5))
+                            Text(meta.notes)
+                                .font(.system(size: 11))
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 6)
+                        .frame(height: 20)
+                        .background(Capsule().fill(Color.orange.opacity(0.12)))
+                        .overlay(Capsule().strokeBorder(Color.orange.opacity(0.25), lineWidth: 0.8))
+                        .help("实例备注：\(meta.notes)")
+                    }
                 }
                 .frame(height: 22)
 
@@ -3136,6 +3323,17 @@ struct InstanceCard: View {
                             background: Color.primary.opacity(colorScheme == .dark ? 0.045 : 0.03),
                             border: Color.primary.opacity(0.05)
                         )
+                    }
+
+                    if diskUsage.totalDataBytes > 0 {
+                        metaPill(
+                            icon: "internaldrive",
+                            text: "💾 \(diskUsage.formattedTotalData)",
+                            foreground: .secondary,
+                            background: Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.04),
+                            border: Color.primary.opacity(0.06)
+                        )
+                        .help("工作空间与存储：工作空间 \(diskUsage.formattedProfile) · 缓存 \(diskUsage.formattedUserData) · 程序包 \(diskUsage.formattedAppBundle)")
                     }
 
                     if item.running && resourceMetric.processCount > 0 {
@@ -3208,6 +3406,14 @@ struct InstanceCard: View {
                         ) {
                             showMorePopover = false
                             editMeta()
+                        }
+                        popoverMenuButton(
+                            title: "在访达中显示独立工作空间",
+                            symbol: "internaldrive",
+                            destructive: false
+                        ) {
+                            showMorePopover = false
+                            revealProfile()
                         }
                         Divider().padding(.vertical, 3)
 
@@ -3410,12 +3616,16 @@ struct OfficialReleaseNotesView: NSViewRepresentable {
 struct EditInstanceMetaSheet: View {
     let item: ManagedInstance
     let initialMeta: InstanceUserMeta
+    let diskUsage: InstanceDiskUsage
+    let onRecalculateDisk: () -> Void
     let onSave: (InstanceUserMeta) -> Void
     let onDismiss: () -> Void
 
     @State private var nickname: String = ""
     @State private var tag: String = ""
     @State private var selectedColor: String = "blue"
+    @State private var notes: String = ""
+    @State private var recalculatingDisk = false
     @Environment(\.colorScheme) private var colorScheme
 
     private let presetColors: [(id: String, name: String, color: Color)] = [
@@ -3430,18 +3640,28 @@ struct EditInstanceMetaSheet: View {
 
     private let presetTags = ["生产环境", "微服务后端", "前端 UI", "数据清洗", "核心架构", "算法评测", "学习调试"]
 
-    init(item: ManagedInstance, initialMeta: InstanceUserMeta, onSave: @escaping (InstanceUserMeta) -> Void, onDismiss: @escaping () -> Void) {
+    init(
+        item: ManagedInstance,
+        initialMeta: InstanceUserMeta,
+        diskUsage: InstanceDiskUsage,
+        onRecalculateDisk: @escaping () -> Void,
+        onSave: @escaping (InstanceUserMeta) -> Void,
+        onDismiss: @escaping () -> Void
+    ) {
         self.item = item
         self.initialMeta = initialMeta
+        self.diskUsage = diskUsage
+        self.onRecalculateDisk = onRecalculateDisk
         self.onSave = onSave
         self.onDismiss = onDismiss
         _nickname = State(initialValue: initialMeta.nickname)
         _tag = State(initialValue: initialMeta.tag)
         _selectedColor = State(initialValue: initialMeta.tagColor)
+        _notes = State(initialValue: initialMeta.notes)
     }
 
     var body: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 16) {
             // Header
             HStack(alignment: .center, spacing: 12) {
                 ZStack {
@@ -3453,7 +3673,7 @@ struct EditInstanceMetaSheet: View {
                         .foregroundStyle(accent)
                 }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("编辑实例项目备注与标签")
+                    Text("编辑实例项目标签、备注与磁盘")
                         .font(.system(size: 14.5, weight: .bold))
                     Text("\(item.name) · \(item.profile)")
                         .font(.system(size: 11.5, design: .monospaced))
@@ -3468,91 +3688,219 @@ struct EditInstanceMetaSheet: View {
                 .buttonStyle(.plain)
             }
 
-            VStack(alignment: .leading, spacing: 14) {
-                // Nickname
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("项目别名 / 备注名称")
-                        .font(.system(size: 12, weight: .medium))
-                    TextField("例如：核心后端微服务 / Web 前端开发", text: $nickname)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12.5))
-                }
+            ScrollView(.vertical, showsIndicators: true) {
+                VStack(alignment: .leading, spacing: 14) {
+                    // Nickname
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("项目别名 / 显示名称")
+                            .font(.system(size: 12, weight: .medium))
+                        TextField("例如：核心后端微服务 / Web 前端开发", text: $nickname)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 12.5))
+                    }
 
-                // Tag
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("分类标签")
-                        .font(.system(size: 12, weight: .medium))
-                    TextField("例如：生产 / 测试 / 开发", text: $tag)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 12.5))
+                    // Tag
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("分类标签")
+                            .font(.system(size: 12, weight: .medium))
+                        TextField("例如：生产 / 测试 / 开发", text: $tag)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 12.5))
 
-                    // Preset Tag Pills
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
-                            ForEach(presetTags, id: \.self) { preset in
+                        // Preset Tag Pills
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 6) {
+                                ForEach(presetTags, id: \.self) { preset in
+                                    Button {
+                                        tag = preset
+                                    } label: {
+                                        Text(preset)
+                                            .font(.system(size: 10.5))
+                                            .padding(.horizontal, 8)
+                                            .padding(.vertical, 3.5)
+                                            .background(Capsule().fill(Color.primary.opacity(tag == preset ? 0.14 : 0.05)))
+                                            .foregroundStyle(tag == preset ? Color.primary : Color.secondary)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            .padding(.vertical, 2)
+                        }
+                    }
+
+                    // Color Picker
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text("标签主题色")
+                            .font(.system(size: 12, weight: .medium))
+                        HStack(spacing: 12) {
+                            ForEach(presetColors, id: \.id) { preset in
                                 Button {
-                                    tag = preset
+                                    selectedColor = preset.id
                                 } label: {
-                                    Text(preset)
-                                        .font(.system(size: 10.5))
-                                        .padding(.horizontal, 8)
-                                        .padding(.vertical, 3.5)
-                                        .background(Capsule().fill(Color.primary.opacity(tag == preset ? 0.14 : 0.05)))
-                                        .foregroundStyle(tag == preset ? Color.primary : Color.secondary)
+                                    ZStack {
+                                        Circle()
+                                            .fill(preset.color)
+                                            .frame(width: 22, height: 22)
+                                        if selectedColor == preset.id {
+                                            Image(systemName: "checkmark")
+                                                .font(.system(size: 10, weight: .bold))
+                                                .foregroundStyle(.white)
+                                        }
+                                    }
                                 }
                                 .buttonStyle(.plain)
                             }
                         }
                         .padding(.vertical, 2)
                     }
-                }
 
-                // Color Picker
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("标签主题色")
-                        .font(.system(size: 12, weight: .medium))
-                    HStack(spacing: 12) {
-                        ForEach(presetColors, id: \.id) { preset in
+                    // Notes / Memo
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text("实例备注 / 备忘说明")
+                                .font(.system(size: 12, weight: .medium))
+                            Spacer()
+                            Text("可记录当前开发目标、Git 分支或配置细节")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.secondary)
+                        }
+                        ZStack(alignment: .topLeading) {
+                            if notes.isEmpty {
+                                Text("例如：负责支付网关重构；当前 Git 分支 feature/v2-pay；本地已映射 8080 端口；注意勿清空临时测试缓存...")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(Color.secondary.opacity(0.6))
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 8)
+                            }
+                            TextEditor(text: $notes)
+                                .font(.system(size: 12))
+                                .frame(height: 64)
+                                .padding(4)
+                                .background(Color.primary.opacity(colorScheme == .dark ? 0.04 : 0.02))
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.12), lineWidth: 1))
+                        }
+                    }
+
+                    // Disk Usage Analysis Section
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(alignment: .center) {
+                            HStack(spacing: 5) {
+                                Image(systemName: "internaldrive.fill")
+                                    .font(.system(size: 11.5, weight: .semibold))
+                                    .foregroundStyle(.cyan)
+                                Text("工作空间与存储空间占用")
+                                    .font(.system(size: 12, weight: .semibold))
+                            }
+                            Spacer()
                             Button {
-                                selectedColor = preset.id
-                            } label: {
-                                ZStack {
-                                    Circle()
-                                        .fill(preset.color)
-                                        .frame(width: 22, height: 22)
-                                    if selectedColor == preset.id {
-                                        Image(systemName: "checkmark")
-                                            .font(.system(size: 10, weight: .bold))
-                                            .foregroundStyle(.white)
-                                    }
+                                recalculatingDisk = true
+                                onRecalculateDisk()
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                                    recalculatingDisk = false
                                 }
+                            } label: {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "arrow.clockwise")
+                                        .font(.system(size: 10))
+                                        .rotationEffect(.degrees(recalculatingDisk ? 360 : 0))
+                                        .animation(recalculatingDisk ? .linear(duration: 0.8).repeatForever(autoreverses: false) : .default, value: recalculatingDisk)
+                                    Text("重新统计")
+                                        .font(.system(size: 10.5))
+                                }
+                                .foregroundStyle(.secondary)
                             }
                             .buttonStyle(.plain)
                         }
-                    }
-                    .padding(.vertical, 2)
-                }
-            }
 
-            // Preview Capsule
-            HStack(spacing: 8) {
-                Text("预览效果：")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.secondary)
-                if !tag.isEmpty {
-                    Text(tag)
-                        .font(.system(size: 10.5, weight: .bold))
-                        .foregroundStyle(InstanceUserMeta(tagColor: selectedColor).color)
-                        .padding(.horizontal, 6.5)
-                        .padding(.vertical, 2.5)
-                        .background(Capsule().fill(InstanceUserMeta(tagColor: selectedColor).color.opacity(0.15)))
+                        VStack(spacing: 6) {
+                            diskStorageRow(
+                                title: "独立工作空间",
+                                path: item.profile,
+                                sizeText: diskUsage.formattedProfile,
+                                icon: "folder.fill",
+                                color: .indigo,
+                                action: { NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: item.profileURL.path) }
+                            )
+
+                            diskStorageRow(
+                                title: "应用配置与缓存",
+                                path: "Application Support/\(item.isOriginal ? "Antigravity" : item.name)",
+                                sizeText: diskUsage.formattedUserData,
+                                icon: "externaldrive.fill",
+                                color: .teal,
+                                action: { NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: item.userDataURL.path) }
+                            )
+
+                            diskStorageRow(
+                                title: "应用程序包",
+                                path: item.path.lastPathComponent,
+                                sizeText: diskUsage.formattedAppBundle,
+                                icon: "macwindow",
+                                color: .secondary,
+                                action: { NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: item.path.path) }
+                            )
+                        }
+                        .padding(9)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.035)))
+                        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.07), lineWidth: 1))
+
+                        HStack(spacing: 8) {
+                            Text("合计数据占用：")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                            Text(diskUsage.formattedTotalData)
+                                .font(.system(size: 11.5, weight: .bold, design: .rounded))
+                                .foregroundStyle(.primary)
+                            Text("·")
+                                .foregroundStyle(.secondary)
+                            Text("含程序包总计：")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                            Text(diskUsage.formattedTotal)
+                                .font(.system(size: 11.5, weight: .bold, design: .rounded))
+                                .foregroundStyle(.cyan)
+                            Spacer()
+                        }
+                        .padding(.horizontal, 2)
+                    }
+
+                    // Preview Capsule
+                    HStack(spacing: 8) {
+                        Text("效果预览：")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                        if !tag.isEmpty {
+                            Text(tag)
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(InstanceUserMeta(tagColor: selectedColor).color)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(InstanceUserMeta(tagColor: selectedColor).color.opacity(0.15)))
+                        }
+                        Text(nickname.isEmpty ? item.name : nickname)
+                            .font(.system(size: 12, weight: .semibold))
+
+                        if !notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Image(systemName: "note.text")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.orange)
+                        }
+
+                        if diskUsage.totalDataBytes > 0 {
+                            Text("💾 \(diskUsage.formattedTotalData)")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+
+                        Spacer()
+                    }
+                    .padding(9)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
                 }
-                Text(nickname.isEmpty ? item.name : nickname)
-                    .font(.system(size: 12.5, weight: .semibold))
-                Spacer()
+                .padding(.horizontal, 1)
             }
-            .padding(10)
-            .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
+            .frame(maxHeight: 480)
 
             // Buttons
             HStack(spacing: 10) {
@@ -3565,17 +3913,46 @@ struct EditInstanceMetaSheet: View {
                 Spacer()
                 Button("取消", action: onDismiss)
                     .buttonStyle(ModernButtonStyle(variant: .secondary, compact: true))
-                Button("保存备注") {
-                    onSave(InstanceUserMeta(nickname: nickname.trimmingCharacters(in: .whitespacesAndNewlines),
-                                           tag: tag.trimmingCharacters(in: .whitespacesAndNewlines),
-                                           tagColor: selectedColor))
+                Button("保存备注与标签") {
+                    onSave(InstanceUserMeta(
+                        nickname: nickname.trimmingCharacters(in: .whitespacesAndNewlines),
+                        tag: tag.trimmingCharacters(in: .whitespacesAndNewlines),
+                        tagColor: selectedColor,
+                        notes: notes.trimmingCharacters(in: .whitespacesAndNewlines)
+                    ))
                 }
                 .buttonStyle(ModernButtonStyle(variant: .primary, compact: true))
                 .keyboardShortcut(.defaultAction)
             }
         }
         .padding(22)
-        .frame(width: 440)
+        .frame(width: 470)
+    }
+
+    private func diskStorageRow(title: String, path: String, sizeText: String, icon: String, color: Color, action: @escaping () -> Void) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(color)
+                .frame(width: 14)
+            Text(title)
+                .font(.system(size: 11.5, weight: .medium))
+            Text("(\(path))")
+                .font(.system(size: 10.5, design: .monospaced))
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+            Spacer()
+            Text(sizeText)
+                .font(.system(size: 11.5, weight: .bold, design: .rounded))
+                .foregroundStyle(.primary)
+            Button(action: action) {
+                Image(systemName: "arrow.up.right.square")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("在访达中显示该目录")
+        }
     }
 }
 
@@ -3746,6 +4123,7 @@ private enum InstanceFilter: String, CaseIterable, Identifiable {
     case all = "全部"
     case running = "运行中"
     case busyTask = "跑任务中"
+    case withTags = "带标签/备注"
     case upgradable = "可升级"
     var id: String { rawValue }
 }
@@ -3770,7 +4148,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.5.5"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.5.6"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
@@ -3782,6 +4160,8 @@ struct ContentView: View {
         case .busyTask:
             let state = store.activity(for: item).state
             return item.running && (state == .runningTask || state == .needsAttention)
+        case .withTags:
+            return store.meta(for: item).hasCustomContent
         case .upgradable:
             return !item.isOriginal && item.version.compare(store.sourceVersion, options: .numeric) == .orderedAscending
         }
@@ -3910,6 +4290,10 @@ struct ContentView: View {
             EditInstanceMetaSheet(
                 item: item,
                 initialMeta: store.meta(for: item),
+                diskUsage: store.diskUsage(for: item),
+                onRecalculateDisk: {
+                    store.recalculateDiskUsage(for: item)
+                },
                 onSave: { newMeta in
                     store.saveInstanceMeta(for: item.id, meta: newMeta)
                     editingMetaItem = nil
@@ -4053,7 +4437,7 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - 3-Column Metrics Strip
+    // MARK: - 4-Column Metrics Strip
 
     private var metricsStrip: some View {
         HStack(alignment: .center, spacing: 12) {
@@ -4077,6 +4461,14 @@ struct ContentView: View {
                 subtitle: "/Applications/Antigravity.app",
                 symbol: "checkmark.shield.fill",
                 tint: .indigo
+            )
+
+            metricTile(
+                title: "工作空间总磁盘占用",
+                value: store.totalDiskUsageBytes > 0 ? store.formattedTotalDiskUsage : "统计中…",
+                subtitle: "\(store.instances.count) 个实例独立数据与存储",
+                symbol: "internaldrive.fill",
+                tint: .cyan
             )
 
             metricTile(
@@ -4463,6 +4855,7 @@ struct ContentView: View {
                             activity: store.activity(for: item),
                             meta: store.meta(for: item),
                             resourceMetric: store.metric(for: item),
+                            diskUsage: store.diskUsage(for: item),
                             thumbnail: store.thumbnails[item.id],
                             sourceVersion: store.sourceVersion,
                             busy: store.busy,
@@ -4472,6 +4865,7 @@ struct ContentView: View {
                             quit: { store.quit(item) },
                             upgrade: { upgradeRequest = UpgradeRequest(instances: [item]) },
                             reveal: { store.reveal(item) },
+                            revealProfile: { store.revealProfile(item) },
                             logs: { store.showLogs(item) },
                             verify: { store.toggleVerified(item) },
                             editMeta: { editingMetaItem = item },
@@ -4518,6 +4912,7 @@ struct ContentView: View {
                 activity: store.activity(for: primary),
                 meta: store.meta(for: primary),
                 resourceMetric: store.metric(for: primary),
+                diskUsage: store.diskUsage(for: primary),
                 sourceVersion: store.sourceVersion,
                 busy: store.busy,
                 canUpgrade: false,
@@ -4526,6 +4921,7 @@ struct ContentView: View {
                 hideWindow: { store.hideInstance(primary) },
                 quit: { store.quit(primary) },
                 reveal: { store.reveal(primary) },
+                revealProfile: { store.revealProfile(primary) },
                 logs: { store.showLogs(primary) },
                 verify: {},
                 editMeta: { editingMetaItem = primary },
@@ -4582,6 +4978,7 @@ struct ContentView: View {
                             activity: store.activity(for: item),
                             meta: store.meta(for: item),
                             resourceMetric: store.metric(for: item),
+                            diskUsage: store.diskUsage(for: item),
                             sourceVersion: store.sourceVersion,
                             busy: store.busy,
                             canUpgrade: store.compatibility == "已支持本机版本",
@@ -4590,6 +4987,7 @@ struct ContentView: View {
                             hideWindow: { store.hideInstance(item) },
                             quit: { store.quit(item) },
                             reveal: { store.reveal(item) },
+                            revealProfile: { store.revealProfile(item) },
                             logs: { store.showLogs(item) },
                             verify: { store.toggleVerified(item) },
                             editMeta: { editingMetaItem = item },
@@ -4635,6 +5033,7 @@ struct ContentView: View {
         case .all: return store.instances.count
         case .running: return store.runningCount
         case .busyTask: return store.activeTaskCount
+        case .withTags: return store.instances.filter { store.meta(for: $0).hasCustomContent }.count
         case .upgradable: return store.pendingUpgrades.count
         }
     }
