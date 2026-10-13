@@ -3,6 +3,7 @@ import SwiftUI
 import Sparkle
 import WebKit
 import UserNotifications
+import Carbon
 
 private let accent = Color.accentColor
 
@@ -818,12 +819,19 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     @Published var notificationsEnabled: Bool = UserDefaults.standard.object(forKey: "notificationsEnabled") as? Bool ?? true {
         didSet { UserDefaults.standard.set(notificationsEnabled, forKey: "notificationsEnabled") }
     }
+    @Published var globalHotkeysEnabled: Bool = UserDefaults.standard.object(forKey: "globalHotkeysEnabled") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(globalHotkeysEnabled, forKey: "globalHotkeysEnabled")
+            updateGlobalHotkeysRegistration()
+        }
+    }
     @Published var activeInstanceName: String? = nil
     @Published var activeConversationURLs: [String: String] = [:]
     @Published var resourceMetrics: [String: InstanceResourceMetric] = [:]
     @Published var instanceMetas: [String: InstanceUserMeta] = [:]
 
     private var hudPanel: NSPanel?
+    private var quickSwitcherPanel: QuickSwitcherPanel?
     private var statusItem: NSStatusItem?
     private var lastOpenWindowBundles: Set<String> = []
     private var lastFrontmostAntigravityBundle: String? = nil
@@ -847,6 +855,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         loadInstanceMetas()
         setupStatusBarItem()
         setupNotifications()
+        setupGlobalHotKeys()
     }
 
     func meta(for item: ManagedInstance) -> InstanceUserMeta {
@@ -931,7 +940,12 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                                              isHidden: isHidden, verified: verified))
             }
         }
-        let sorted = found.sorted { $0.index < $1.index }
+        let sorted = found.sorted { a, b in
+            if a.isOriginal != b.isOriginal {
+                return a.isOriginal
+            }
+            return a.index < b.index
+        }
         enforceRunInBackgroundSetting(for: sorted)
         lastOpenWindowBundles = Set(sorted.filter { $0.running && !$0.isHidden }.map(\.bundleID))
         withAnimation(.spring(response: 0.32, dampingFraction: 0.84)) {
@@ -1208,6 +1222,94 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         }
     }
 
+    func togglePrimaryInstance() {
+        guard let primary = primaryInstance ?? instances.first else { return }
+        toggleInstance(primary)
+    }
+
+    func toggleInstance(byShortcutNumber number: Int) {
+        if number == 1 {
+            togglePrimaryInstance()
+            return
+        }
+        let clones = instances.filter { !$0.isOriginal }.sorted { $0.index < $1.index }
+        if let target = instances.first(where: { !$0.isOriginal && $0.index == number }) ?? (number - 2 >= 0 && number - 2 < clones.count ? clones[number - 2] : nil) {
+            toggleInstance(target)
+        }
+    }
+
+    func toggleInstance(_ item: ManagedInstance) {
+        hideQuickSwitcher()
+        let frontmostBundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let isFrontmost = (frontmostBundle == item.bundleID)
+        let isRunning = item.running
+
+        if isRunning && isFrontmost && !item.isHidden {
+            hideInstance(item)
+        } else {
+            open(item)
+        }
+    }
+
+    private func setupGlobalHotKeys() {
+        GlobalHotKeyManager.shared.setup(
+            onToggleQuickSwitcher: { [weak self] in
+                self?.toggleQuickSwitcher()
+            },
+            onToggleInstance: { [weak self] number in
+                self?.toggleInstance(byShortcutNumber: number)
+            }
+        )
+        if !globalHotkeysEnabled {
+            GlobalHotKeyManager.shared.unregister()
+        }
+    }
+
+    private func updateGlobalHotkeysRegistration() {
+        if globalHotkeysEnabled {
+            GlobalHotKeyManager.shared.register()
+        } else {
+            GlobalHotKeyManager.shared.unregister()
+        }
+    }
+
+    func toggleQuickSwitcher() {
+        if let panel = quickSwitcherPanel, panel.isVisible {
+            panel.orderOut(nil)
+            return
+        }
+        showQuickSwitcher()
+    }
+
+    func showQuickSwitcher() {
+        if quickSwitcherPanel == nil {
+            let panel = QuickSwitcherPanel(
+                contentRect: NSRect(x: 0, y: 0, width: 620, height: 420),
+                styleMask: [.borderless, .nonactivatingPanel],
+                backing: .buffered,
+                defer: false
+            )
+            panel.isFloatingPanel = true
+            panel.level = .floating
+            panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+            panel.backgroundColor = .clear
+            panel.isOpaque = false
+            panel.hasShadow = true
+            panel.contentView = NSHostingView(rootView: QuickSwitcherView(store: self, dismiss: { [weak panel] in
+                panel?.orderOut(nil)
+            }))
+            quickSwitcherPanel = panel
+        }
+        guard let panel = quickSwitcherPanel else { return }
+        panel.center()
+        panel.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func hideQuickSwitcher() {
+        quickSwitcherPanel?.orderOut(nil)
+    }
+
     func hideInstance(_ item: ManagedInstance) {
         guard let app = runningApplication(bundleID: item.bundleID, path: item.path) else { return }
         enforceRunInBackgroundSetting(for: [item])
@@ -1394,17 +1496,24 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             button.title = tasks > 0 ? " \(tasks)" : ""
         }
         let menu = NSMenu()
+        StatusBarTarget.shared.store = self
+
+        let switcherItem = NSMenuItem(title: "极速切换面板 (⌥Space)", action: #selector(StatusBarTarget.toggleQuickSwitcher), keyEquivalent: "")
+        switcherItem.target = StatusBarTarget.shared
+        menu.addItem(switcherItem)
+
         let collapseItem = NSMenuItem(title: "收起所有实例并打开监控台", action: #selector(StatusBarTarget.collapseAll), keyEquivalent: "0")
         collapseItem.target = StatusBarTarget.shared
-        StatusBarTarget.shared.store = self
         menu.addItem(collapseItem)
         menu.addItem(.separator())
 
         for item in instances {
             let act = activity(for: item)
             let statePrefix = !item.running ? "⏹" : (act.state == .runningTask ? "⚡" : (act.state == .needsAttention ? "🔔" : "🟢"))
+            let shortcutHint = item.isOriginal ? "[⌥1]" : "[⌥\(item.index)]"
+            let isMainPrefix = item.isOriginal ? "👑 " : ""
             let menuItem = NSMenuItem(
-                title: "\(statePrefix) \(item.name) · \(act.state.label)",
+                title: "\(statePrefix) \(isMainPrefix)\(item.name) \(shortcutHint) · \(act.state.label)",
                 action: #selector(StatusBarTarget.openInstance(_:)),
                 keyEquivalent: ""
             )
@@ -1567,6 +1676,10 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     static let shared = StatusBarTarget()
     weak var store: InstanceStore?
 
+    @objc func toggleQuickSwitcher() {
+        store?.toggleQuickSwitcher()
+    }
+
     @objc func collapseAll() {
         store?.collapseAllToMonitorWall()
     }
@@ -1638,6 +1751,502 @@ private struct FloatingMonitorHUDView: View {
     }
 }
 
+// MARK: - Global Carbon HotKey Manager
+
+final class GlobalHotKeyManager {
+    static let shared = GlobalHotKeyManager()
+
+    private var eventHandler: EventHandlerRef?
+    private var hotKeyRefs: [EventHotKeyRef] = []
+    private(set) var isRegistered = false
+
+    var onToggleQuickSwitcher: (() -> Void)?
+    var onToggleInstance: ((Int) -> Void)?
+
+    func setup(onToggleQuickSwitcher: @escaping () -> Void, onToggleInstance: @escaping (Int) -> Void) {
+        self.onToggleQuickSwitcher = onToggleQuickSwitcher
+        self.onToggleInstance = onToggleInstance
+        register()
+    }
+
+    func register() {
+        guard !isRegistered else { return }
+
+        var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+        let status = InstallEventHandler(GetEventDispatcherTarget(), { (_, event, _) -> OSStatus in
+            var hotKeyID = EventHotKeyID()
+            let err = GetEventParameter(
+                event,
+                EventParamName(kEventParamDirectObject),
+                EventParamType(typeEventHotKeyID),
+                nil,
+                MemoryLayout<EventHotKeyID>.size,
+                nil,
+                &hotKeyID
+            )
+            guard err == noErr else { return noErr }
+
+            let id = Int(hotKeyID.id)
+            DispatchQueue.main.async {
+                if id == 0 {
+                    GlobalHotKeyManager.shared.onToggleQuickSwitcher?()
+                } else if id >= 1 && id <= 9 {
+                    GlobalHotKeyManager.shared.onToggleInstance?(id)
+                }
+            }
+            return noErr
+        }, 1, &eventType, nil, &eventHandler)
+
+        guard status == noErr else { return }
+
+        // 1. Option + Space -> id = 0 (Toggle Quick Switcher)
+        registerHotKey(keyCode: UInt32(kVK_Space), modifiers: UInt32(optionKey), id: 0)
+
+        // 2. Option + 1~9 -> id = 1~9 (Toggle Instance 1..9, 1 is Main)
+        let numberKeys: [(Int, UInt32)] = [
+            (1, UInt32(kVK_ANSI_1)),
+            (2, UInt32(kVK_ANSI_2)),
+            (3, UInt32(kVK_ANSI_3)),
+            (4, UInt32(kVK_ANSI_4)),
+            (5, UInt32(kVK_ANSI_5)),
+            (6, UInt32(kVK_ANSI_6)),
+            (7, UInt32(kVK_ANSI_7)),
+            (8, UInt32(kVK_ANSI_8)),
+            (9, UInt32(kVK_ANSI_9)),
+        ]
+        for (num, code) in numberKeys {
+            registerHotKey(keyCode: code, modifiers: UInt32(optionKey), id: num)
+        }
+
+        isRegistered = true
+    }
+
+    private func registerHotKey(keyCode: UInt32, modifiers: UInt32, id: Int) {
+        var hkRef: EventHotKeyRef?
+        let hkID = EventHotKeyID(signature: OSType(0x4147594D), id: UInt32(id)) // 'AGYM'
+        let err = RegisterEventHotKey(keyCode, modifiers, hkID, GetEventDispatcherTarget(), 0, &hkRef)
+        if err == noErr, let hkRef {
+            hotKeyRefs.append(hkRef)
+        }
+    }
+
+    func unregister() {
+        guard isRegistered else { return }
+        for ref in hotKeyRefs {
+            UnregisterEventHotKey(ref)
+        }
+        hotKeyRefs.removeAll()
+        if let eventHandler {
+            RemoveEventHandler(eventHandler)
+            self.eventHandler = nil
+        }
+        isRegistered = false
+    }
+}
+
+// MARK: - Quick Switcher Floating Panel & View
+
+final class QuickSwitcherPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+
+    override func cancelOperation(_ sender: Any?) {
+        orderOut(nil)
+    }
+}
+
+private struct QuickSwitcherView: View {
+    @ObservedObject var store: InstanceStore
+    let dismiss: () -> Void
+
+    @State private var searchText: String = ""
+    @State private var selectedIndex: Int = 0
+    @FocusState private var isSearchFocused: Bool
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var keyMonitor: Any?
+
+    private var filteredInstances: [ManagedInstance] {
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if q.isEmpty { return store.instances }
+        return store.instances.filter { item in
+            let meta = store.meta(for: item)
+            let act = store.activity(for: item)
+            return item.name.lowercased().contains(q) ||
+                   meta.nickname.lowercased().contains(q) ||
+                   meta.tag.lowercased().contains(q) ||
+                   act.workspace.lowercased().contains(q) ||
+                   act.currentAction.lowercased().contains(q) ||
+                   String(item.index) == q
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // 1. Search Bar Header
+            HStack(spacing: 10) {
+                Image(systemName: "command.square.fill")
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundStyle(Color(red: 0.52, green: 0.32, blue: 0.98))
+
+                TextField("搜索实例名称、标签或工作区… (↑↓ 移动, ⏎ 调出, ⌥1~9 直达)", text: $searchText)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 14.5, weight: .medium))
+                    .focused($isSearchFocused)
+                    .onChange(of: searchText) { _ in
+                        selectedIndex = 0
+                    }
+
+                if !searchText.isEmpty {
+                    Button {
+                        searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                HStack(spacing: 4) {
+                    Text("Esc")
+                        .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 5.5)
+                        .frame(height: 20)
+                        .background(Capsule().fill(Color.primary.opacity(0.08)))
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+
+            Divider()
+                .opacity(0.6)
+
+            // 2. Instances List
+            if filteredInstances.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 24))
+                        .foregroundStyle(.secondary)
+                    Text("未匹配到实例")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.vertical, 40)
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical, showsIndicators: true) {
+                        LazyVStack(spacing: 6) {
+                            ForEach(Array(filteredInstances.enumerated()), id: \.element.id) { index, item in
+                                QuickSwitcherRow(
+                                    item: item,
+                                    activity: store.activity(for: item),
+                                    meta: store.meta(for: item),
+                                    metric: store.metric(for: item),
+                                    isSelected: index == selectedIndex,
+                                    shortcutNumber: shortcutNumber(for: item),
+                                    onSelect: {
+                                        dismiss()
+                                        store.open(item)
+                                    }
+                                )
+                                .id(index)
+                            }
+                        }
+                        .padding(10)
+                    }
+                    .onChange(of: selectedIndex) { newIndex in
+                        withAnimation(.easeOut(duration: 0.15)) {
+                            proxy.scrollTo(newIndex, anchor: .center)
+                        }
+                    }
+                }
+                .frame(maxHeight: 330)
+            }
+
+            Divider()
+                .opacity(0.6)
+
+            // 3. Bottom Status Bar & Shortcuts Legend
+            HStack(alignment: .center) {
+                HStack(spacing: 12) {
+                    legendItem(key: "↑ ↓", label: "选择")
+                    legendItem(key: "⏎", label: "调出")
+                    legendItem(key: "⌥ 1~9", label: "直达/收起")
+                    legendItem(key: "Esc", label: "关闭")
+                }
+
+                Spacer()
+
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(store.runningCount > 0 ? Color.green : Color.secondary.opacity(0.4))
+                        .frame(width: 6, height: 6)
+                    Text("\(store.runningCount) 运行中 · 共 \(store.instances.count) 个实例")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(Color.primary.opacity(colorScheme == .dark ? 0.03 : 0.015))
+        }
+        .frame(width: 620)
+        .background {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(.ultraThinMaterial)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .strokeBorder(Color.white.opacity(colorScheme == .dark ? 0.16 : 0.22), lineWidth: 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.55 : 0.25), radius: 24, y: 12)
+        .onAppear {
+            isSearchFocused = true
+            selectedIndex = 0
+            installKeyMonitor()
+        }
+        .onDisappear {
+            removeKeyMonitor()
+        }
+    }
+
+    private func shortcutNumber(for item: ManagedInstance) -> Int? {
+        if item.isOriginal { return 1 }
+        let clones = store.instances.filter { !$0.isOriginal }.sorted { $0.index < $1.index }
+        if let idx = clones.firstIndex(where: { $0.id == item.id }), idx + 2 <= 9 {
+            return idx + 2
+        }
+        return nil
+    }
+
+    private func legendItem(key: String, label: String) -> some View {
+        HStack(spacing: 4) {
+            Text(key)
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(.primary)
+                .padding(.horizontal, 4.5)
+                .frame(height: 17)
+                .background(RoundedRectangle(cornerRadius: 4, style: .continuous).fill(Color.primary.opacity(0.08)))
+            Text(label)
+                .font(.system(size: 10.5))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func installKeyMonitor() {
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if event.keyCode == 53 { // Esc
+                dismiss()
+                return nil
+            } else if event.keyCode == 126 { // Up
+                if selectedIndex > 0 {
+                    selectedIndex -= 1
+                }
+                return nil
+            } else if event.keyCode == 125 { // Down
+                if selectedIndex < filteredInstances.count - 1 {
+                    selectedIndex += 1
+                }
+                return nil
+            } else if event.keyCode == 36 || event.keyCode == 76 { // Return / Enter
+                if selectedIndex >= 0 && selectedIndex < filteredInstances.count {
+                    let target = filteredInstances[selectedIndex]
+                    dismiss()
+                    store.open(target)
+                }
+                return nil
+            }
+            return event
+        }
+    }
+
+    private func removeKeyMonitor() {
+        if let monitor = keyMonitor {
+            NSEvent.removeMonitor(monitor)
+            keyMonitor = nil
+        }
+    }
+}
+
+private struct QuickSwitcherRow: View {
+    let item: ManagedInstance
+    let activity: InstanceActivity
+    let meta: InstanceUserMeta
+    let metric: InstanceResourceMetric
+    let isSelected: Bool
+    let shortcutNumber: Int?
+    let onSelect: () -> Void
+
+    @State private var hovered = false
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var isMain: Bool { item.isOriginal }
+
+    private var mainGradient: LinearGradient {
+        LinearGradient(
+            colors: [Color(red: 0.52, green: 0.28, blue: 0.98), Color(red: 0.22, green: 0.46, blue: 1.0)],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 12) {
+                // 1. Identity Emblem Badge
+                if isMain {
+                    HStack(spacing: 3.5) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 9, weight: .bold))
+                        Text("MAIN 01")
+                            .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 7)
+                    .frame(height: 24)
+                    .background {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(mainGradient)
+                            .shadow(color: Color(red: 0.50, green: 0.28, blue: 0.98).opacity(0.40), radius: 5, y: 1.5)
+                    }
+                } else {
+                    Text("#\(String(format: "%02d", item.index))")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundStyle(item.running ? activity.state.color : accent)
+                        .padding(.horizontal, 6.5)
+                        .frame(height: 24)
+                        .background {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(item.running ? activity.state.color.opacity(0.18) : accent.opacity(0.12))
+                        }
+                }
+
+                // 2. Info Cluster (Title, Tag, Action, Workspace)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(meta.nickname.isEmpty ? item.name : meta.nickname)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(isMain ? (colorScheme == .dark ? Color.white : Color(red: 0.12, green: 0.08, blue: 0.28)) : Color.primary)
+                            .lineLimit(1)
+
+                        if isMain {
+                            Text("官方主实例")
+                                .font(.system(size: 9.5, weight: .semibold))
+                                .foregroundStyle(Color(red: 0.52, green: 0.32, blue: 0.98))
+                                .padding(.horizontal, 5)
+                                .frame(height: 16)
+                                .background(Capsule().fill(Color(red: 0.52, green: 0.32, blue: 0.98).opacity(0.12)))
+                        } else if !meta.nickname.isEmpty {
+                            Text("(\(item.name))")
+                                .font(.system(size: 10.5))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+
+                        if !meta.tag.isEmpty {
+                            Text(meta.tag)
+                                .font(.system(size: 9.5, weight: .bold))
+                                .foregroundStyle(meta.color)
+                                .padding(.horizontal, 5.5)
+                                .frame(height: 17)
+                                .background(Capsule().fill(meta.color.opacity(0.16)))
+                                .overlay(Capsule().strokeBorder(meta.color.opacity(0.35), lineWidth: 0.8))
+                        }
+
+                        Spacer()
+                    }
+
+                    HStack(spacing: 6) {
+                        if item.running {
+                            PulsingStatusDot(active: true, activeColor: activity.state.color)
+                            Text(activity.currentAction)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+
+                            if !activity.workspace.isEmpty {
+                                Text("· \(activity.workspace)")
+                                    .font(.system(size: 10.5, design: .monospaced))
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                            }
+                        } else {
+                            Circle()
+                                .fill(Color.secondary.opacity(0.35))
+                                .frame(width: 5, height: 5)
+                            Text("未启动")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Spacer(minLength: 6)
+
+                // 3. Right Cluster: Metrics & Shortcut Pill
+                HStack(spacing: 8) {
+                    if item.running && metric.processCount > 0 {
+                        HStack(spacing: 3.5) {
+                            Image(systemName: metric.cpuPercent > 15 ? "bolt.fill" : "cpu")
+                                .font(.system(size: 8))
+                                .foregroundStyle(metric.cpuPercent > 15 ? Color.cyan : .secondary)
+                            Text("\(metric.cpuLabel)")
+                                .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 5.5)
+                        .frame(height: 20)
+                        .background(Capsule().fill(Color.primary.opacity(0.06)))
+                    }
+
+                    if let shortcutNumber {
+                        HStack(spacing: 2) {
+                            Text("⌥")
+                                .font(.system(size: 10.5, weight: .bold))
+                            Text("\(shortcutNumber)")
+                                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        }
+                        .foregroundStyle(isMain ? Color(red: 0.52, green: 0.32, blue: 0.98) : Color.primary.opacity(0.85))
+                        .padding(.horizontal, 6.5)
+                        .frame(height: 22)
+                        .background {
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .fill(isMain ? Color(red: 0.52, green: 0.32, blue: 0.98).opacity(0.16) : Color.primary.opacity(colorScheme == .dark ? 0.12 : 0.08))
+                        }
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .strokeBorder(isMain ? Color(red: 0.52, green: 0.32, blue: 0.98).opacity(0.35) : Color.primary.opacity(0.12), lineWidth: 1)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(isMain ? Color(red: 0.52, green: 0.32, blue: 0.98).opacity(colorScheme == .dark ? 0.22 : 0.14) : Color.accentColor.opacity(colorScheme == .dark ? 0.20 : 0.12))
+                } else if hovered {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.045))
+                }
+            }
+            .overlay {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(isMain ? Color(red: 0.52, green: 0.32, blue: 0.98).opacity(0.55) : Color.accentColor.opacity(0.45), lineWidth: 1.2)
+                }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+    }
+}
+
 // MARK: - Thumbnail Grid Tile Card (Remote-Desktop / Mission-Control Style)
 
 struct InstanceThumbnailTile: View {
@@ -1670,6 +2279,7 @@ struct InstanceThumbnailTile: View {
     }
 
     private var borderTint: Color {
+        if item.isOriginal { return Color(red: 0.52, green: 0.32, blue: 0.98) }
         if !item.running { return .primary }
         switch activity.state {
         case .runningTask: return Color(red: 0.15, green: 0.82, blue: 0.96)
@@ -1694,8 +2304,8 @@ struct InstanceThumbnailTile: View {
         .padding(10)
         .systemSurface(
             radius: 14,
-            isHighlighted: hovered || (item.running && (activity.state == .runningTask || activity.state == .needsAttention)),
-            tint: item.running ? borderTint : nil
+            isHighlighted: hovered || (item.running && (activity.state == .runningTask || activity.state == .needsAttention)) || item.isOriginal,
+            tint: item.isOriginal ? Color(red: 0.52, green: 0.32, blue: 0.98) : (item.running ? borderTint : nil)
         )
         .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .scaleEffect(hovered ? 1.015 : 1.0)
@@ -1706,16 +2316,33 @@ struct InstanceThumbnailTile: View {
     // MARK: - Card Header (Identity & Action Menu)
     private var cardHeader: some View {
         HStack(alignment: .center, spacing: 6) {
-            // Index Pill
-            Text(item.isOriginal ? "MAIN" : "#\(String(format: "%02d", item.index))")
-                .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                .foregroundStyle(item.isOriginal ? .white : (item.running ? borderTint : accent))
-                .padding(.horizontal, 5.5)
+            // Index Pill / Main Badge
+            if item.isOriginal {
+                HStack(spacing: 3) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 8, weight: .bold))
+                    Text("MAIN 01")
+                        .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 6)
                 .frame(height: 19)
                 .background {
                     RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(item.isOriginal ? accent : (item.running ? borderTint.opacity(0.18) : accent.opacity(0.12)))
+                        .fill(LinearGradient(colors: [Color(red: 0.52, green: 0.28, blue: 0.98), Color(red: 0.22, green: 0.46, blue: 1.0)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .shadow(color: Color(red: 0.50, green: 0.28, blue: 0.98).opacity(0.35), radius: 4, y: 1)
                 }
+            } else {
+                Text("#\(String(format: "%02d", item.index))")
+                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                    .foregroundStyle(item.running ? borderTint : accent)
+                    .padding(.horizontal, 5.5)
+                    .frame(height: 19)
+                    .background {
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(item.running ? borderTint.opacity(0.18) : accent.opacity(0.12))
+                    }
+            }
 
             // Project Tag (if any)
             if !meta.tag.isEmpty {
@@ -2230,7 +2857,7 @@ struct InstanceCard: View {
     private var badgeGradient: LinearGradient {
         if item.isOriginal {
             return LinearGradient(
-                colors: [Color(red: 0.22, green: 0.48, blue: 0.98), Color(red: 0.42, green: 0.30, blue: 0.92)],
+                colors: [Color(red: 0.52, green: 0.28, blue: 0.98), Color(red: 0.22, green: 0.46, blue: 1.0)],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
@@ -2541,7 +3168,7 @@ struct InstanceCard: View {
         .systemSurface(
             radius: 16,
             isHighlighted: hovered || item.isOriginal,
-            tint: item.isOriginal ? accent : (item.running ? activity.state.color : nil)
+            tint: item.isOriginal ? Color(red: 0.52, green: 0.32, blue: 0.98) : (item.running ? activity.state.color : nil)
         )
         .scaleEffect(hovered ? 1.003 : 1.0)
         .animation(.spring(response: 0.24, dampingFraction: 0.80), value: hovered)
@@ -3035,7 +3662,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.5.2"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.5.3"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
@@ -3488,6 +4115,39 @@ struct ContentView: View {
                     .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
             }
 
+            // Quick Switcher Button
+            Button {
+                store.toggleQuickSwitcher()
+            } label: {
+                HStack(alignment: .center, spacing: 5) {
+                    Image(systemName: "command.square")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(Color(red: 0.52, green: 0.28, blue: 0.98))
+                    Text("极速切换")
+                        .font(.system(size: 11.5, weight: .medium))
+                    Text("⌥Space")
+                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 1.5)
+                        .background(Color.primary.opacity(0.08))
+                        .clipShape(RoundedRectangle(cornerRadius: 3.5))
+                        .foregroundStyle(.secondary)
+                }
+                .foregroundStyle(Color.primary)
+                .padding(.horizontal, 9)
+                .frame(height: 32)
+                .background {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.035))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+                }
+            }
+            .buttonStyle(.plain)
+            .help("呼出极速切换悬浮窗 (全局快捷键 ⌥Space)")
+
             // Options & Preferences Popover Button
             Button {
                 showOptionsPopover.toggle()
@@ -3533,6 +4193,75 @@ struct ContentView: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 12) {
+                Toggle(isOn: $store.globalHotkeysEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("全局快捷键 (⌥Space / ⌥1~9)")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text("任意桌面呼出极速切换面板或直达 1~9 号实例（⌥1 为主实例，前台时按则隐藏）")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+
+                if store.globalHotkeysEnabled {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "keyboard")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(Color(red: 0.52, green: 0.28, blue: 0.98))
+                            Text("快捷键快速指南")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.primary)
+                        }
+                        VStack(alignment: .leading, spacing: 4.5) {
+                            HStack {
+                                Text("⌥ Space")
+                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                    .padding(.horizontal, 4.5)
+                                    .padding(.vertical, 1.5)
+                                    .background(Color.primary.opacity(0.08))
+                                    .clipShape(RoundedRectangle(cornerRadius: 3.5))
+                                Text("唤出 / 隐藏极速切换面板")
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.secondary)
+                            }
+                            HStack {
+                                Text("⌥ 1")
+                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                    .padding(.horizontal, 4.5)
+                                    .padding(.vertical, 1.5)
+                                    .background(Color(red: 0.52, green: 0.28, blue: 0.98).opacity(0.2))
+                                    .foregroundStyle(Color(red: 0.52, green: 0.28, blue: 0.98))
+                                    .clipShape(RoundedRectangle(cornerRadius: 3.5))
+                                Text("直达 👑 主实例 (置顶紫标，前台按隐藏)")
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.secondary)
+                            }
+                            HStack {
+                                Text("⌥ 2 ~ ⌥ 9")
+                                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                                    .padding(.horizontal, 4.5)
+                                    .padding(.vertical, 1.5)
+                                    .background(Color.primary.opacity(0.08))
+                                    .clipShape(RoundedRectangle(cornerRadius: 3.5))
+                                Text("直达分身实例 02 ~ 09")
+                                    .font(.system(size: 10.5))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .padding(9)
+                    .background {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color.primary.opacity(colorScheme == .dark ? 0.05 : 0.03))
+                    }
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+                    }
+                }
+
                 Toggle(isOn: $store.soloFocusMode) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("专注单窗口模式")
