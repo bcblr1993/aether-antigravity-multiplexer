@@ -311,6 +311,49 @@ struct InstanceActivity: Equatable {
     static let stopped = InstanceActivity()
 }
 
+struct InstanceUserMeta: Codable, Equatable, Hashable {
+    var nickname: String = ""
+    var tag: String = ""
+    var tagColor: String = "blue"
+
+    var hasCustomContent: Bool {
+        !nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+        !tag.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var color: Color {
+        switch tagColor {
+        case "purple": return .purple
+        case "green": return .green
+        case "orange": return .orange
+        case "pink": return .pink
+        case "indigo": return .indigo
+        case "teal": return .teal
+        default: return .blue
+        }
+    }
+}
+
+struct InstanceResourceMetric: Equatable {
+    var cpuPercent: Double = 0.0
+    var rssBytes: Int64 = 0
+    var processCount: Int = 0
+
+    var memoryLabel: String {
+        guard rssBytes > 0 else { return "0 MB" }
+        let mb = Double(rssBytes) / (1024.0 * 1024.0)
+        if mb >= 1024 {
+            return String(format: "%.2f GB", mb / 1024.0)
+        } else {
+            return "\(Int(mb)) MB"
+        }
+    }
+
+    var cpuLabel: String {
+        String(format: "%.1f%%", cpuPercent)
+    }
+}
+
 struct ManagedInstance: Identifiable, Hashable {
     let id: String
     let name: String
@@ -392,6 +435,68 @@ private enum TelemetryScanner {
                 )
             }
         }
+        return results
+    }
+
+    static func scanResourceMetrics(instances: [ManagedInstance]) -> [String: InstanceResourceMetric] {
+        var results: [String: InstanceResourceMetric] = [:]
+        let runningItems = instances.filter(\.running)
+        guard !runningItems.isEmpty else { return results }
+
+        let pipe = Pipe()
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/ps")
+        proc.arguments = ["-A", "-o", "pid,ppid,%cpu,rss,command"]
+        proc.standardOutput = pipe
+        proc.standardError = FileHandle.nullDevice
+
+        do {
+            try proc.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            proc.waitUntilExit()
+            guard let text = String(data: data, encoding: .utf8) else { return results }
+
+            let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
+            guard lines.count > 1 else { return results }
+
+            let sortedByLength = runningItems.sorted { $0.name.count > $1.name.count }
+
+            for line in lines.dropFirst() {
+                let parts = line.split(separator: " ", maxSplits: 4, omittingEmptySubsequences: true)
+                guard parts.count >= 5,
+                      let cpu = Double(parts[2]),
+                      let rssKB = Int64(parts[3]) else { continue }
+                let cmd = String(parts[4])
+
+                for item in sortedByLength {
+                    let name = item.name
+                    let nameNoSpace = name.lowercased().replacingOccurrences(of: " ", with: "")
+                    var isMatch = false
+
+                    if cmd.contains("/Applications/\(name).app") || cmd.contains("/Applications/\(name) ") {
+                        isMatch = true
+                    } else if cmd.contains("--user-data-dir=") && cmd.contains("/\(name)") {
+                        isMatch = true
+                    } else if cmd.contains("--app_data_dir \(nameNoSpace)") {
+                        isMatch = true
+                    } else if item.isOriginal && (cmd.contains("--app_data_dir antigravity ") || (cmd.contains("/Applications/Antigravity.app") && !cmd.contains("Antigravity Second") && !cmd.contains("Antigravity Third") && !cmd.contains("Antigravity Fourth") && !cmd.contains("Antigravity Fifth") && !cmd.contains("Antigravity Sixth") && !cmd.contains("Antigravity Seventh") && !cmd.contains("Antigravity Eighth"))) {
+                        isMatch = true
+                    }
+
+                    if isMatch {
+                        var metric = results[item.id] ?? InstanceResourceMetric()
+                        metric.cpuPercent += cpu
+                        metric.rssBytes += rssKB * 1024
+                        metric.processCount += 1
+                        results[item.id] = metric
+                        break
+                    }
+                }
+            }
+        } catch {
+            // Silently ignore ps error
+        }
+
         return results
     }
 
@@ -636,6 +741,8 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     }
     @Published var activeInstanceName: String? = nil
     @Published var activeConversationURLs: [String: String] = [:]
+    @Published var resourceMetrics: [String: InstanceResourceMetric] = [:]
+    @Published var instanceMetas: [String: InstanceUserMeta] = [:]
 
     private var hudPanel: NSPanel?
     private var statusItem: NSStatusItem?
@@ -657,8 +764,35 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     init() {
         Self.current = self
         hasScreenCapturePermission = CGPreflightScreenCaptureAccess()
+        loadInstanceMetas()
         setupStatusBarItem()
         setupNotifications()
+    }
+
+    func meta(for item: ManagedInstance) -> InstanceUserMeta {
+        instanceMetas[item.id] ?? InstanceUserMeta()
+    }
+
+    func metric(for item: ManagedInstance) -> InstanceResourceMetric {
+        resourceMetrics[item.id] ?? InstanceResourceMetric()
+    }
+
+    private func loadInstanceMetas() {
+        if let data = UserDefaults.standard.data(forKey: "instance_user_metas"),
+           let decoded = try? JSONDecoder().decode([String: InstanceUserMeta].self, from: data) {
+            instanceMetas = decoded
+        }
+    }
+
+    func saveInstanceMeta(for itemID: String, meta: InstanceUserMeta) {
+        if meta.hasCustomContent {
+            instanceMetas[itemID] = meta
+        } else {
+            instanceMetas.removeValue(forKey: itemID)
+        }
+        if let encoded = try? JSONEncoder().encode(instanceMetas) {
+            UserDefaults.standard.set(encoded, forKey: "instance_user_metas")
+        }
     }
 
     private func isInstanceCollapsed(_ app: NSRunningApplication?) -> Bool {
@@ -775,6 +909,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         let snapshot = instances
         Task.detached(priority: .utility) {
             let scanned = TelemetryScanner.scan(instances: snapshot)
+            let metrics = TelemetryScanner.scanResourceMetrics(instances: snapshot)
             let cdpData = await Self.captureCDPScreenshots(for: snapshot)
             await MainActor.run { [weak self] in
                 guard let self else { return }
@@ -784,6 +919,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                         self.activities = scanned
                     }
                 }
+                self.resourceMetrics = metrics
                 for (id, image) in cdpData.thumbnails {
                     self.thumbnails[id] = image
                 }
@@ -1490,6 +1626,8 @@ private struct FloatingMonitorHUDView: View {
 struct InstanceThumbnailTile: View {
     let item: ManagedInstance
     let activity: InstanceActivity
+    let meta: InstanceUserMeta
+    let resourceMetric: InstanceResourceMetric
     let thumbnail: NSImage?
     let sourceVersion: String
     let busy: Bool
@@ -1501,6 +1639,7 @@ struct InstanceThumbnailTile: View {
     let reveal: () -> Void
     let logs: () -> Void
     let verify: () -> Void
+    let editMeta: () -> Void
     let clearWorkspace: () -> Void
     let destroy: () -> Void
 
@@ -1577,6 +1716,23 @@ struct InstanceThumbnailTile: View {
                                 .frame(height: 20)
                                 .background(Capsule().fill(Color.black.opacity(0.65)))
                                 .overlay(Capsule().strokeBorder(Color.orange.opacity(0.45), lineWidth: 1))
+                        }
+
+                        // Real-time Resource Metric Capsule (CPU & Memory)
+                        if item.running && resourceMetric.processCount > 0 {
+                            HStack(alignment: .center, spacing: 4) {
+                                Image(systemName: resourceMetric.cpuPercent > 15 ? "bolt.fill" : "cpu")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundStyle(resourceMetric.cpuPercent > 15 ? Color.cyan : .white.opacity(0.85))
+                                    .frame(width: 10, height: 10, alignment: .center)
+                                Text("\(resourceMetric.cpuLabel) · \(resourceMetric.memoryLabel)")
+                                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                                    .foregroundStyle(.white.opacity(0.92))
+                            }
+                            .padding(.horizontal, 7)
+                            .frame(height: 22)
+                            .background(Capsule().fill(Color.black.opacity(0.62)))
+                            .overlay(Capsule().strokeBorder(resourceMetric.cpuPercent > 15 ? Color.cyan.opacity(0.45) : Color.white.opacity(0.18), lineWidth: 1))
                         }
 
                         Spacer()
@@ -1671,10 +1827,27 @@ struct InstanceThumbnailTile: View {
                             .fill(item.isOriginal ? accent : (item.running ? borderTint.opacity(0.16) : accent.opacity(0.12)))
                     }
 
-                Text(item.name)
+                if !meta.tag.isEmpty {
+                    Text(meta.tag)
+                        .font(.system(size: 9.5, weight: .bold))
+                        .foregroundStyle(meta.color)
+                        .padding(.horizontal, 5)
+                        .frame(height: 17)
+                        .background(Capsule().fill(meta.color.opacity(colorScheme == .dark ? 0.20 : 0.12)))
+                        .overlay(Capsule().strokeBorder(meta.color.opacity(0.35), lineWidth: 0.8))
+                }
+
+                Text(meta.nickname.isEmpty ? item.name : meta.nickname)
                     .font(.system(size: 12.5, weight: .semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
+
+                if !meta.nickname.isEmpty {
+                    Text("(\(item.name.replacingOccurrences(of: "Antigravity", with: "").trimmingCharacters(in: .whitespaces).isEmpty ? "Main" : item.name.replacingOccurrences(of: "Antigravity", with: "").trimmingCharacters(in: .whitespaces)))")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
 
                 if !activity.workspace.isEmpty {
                     Text("· \(activity.workspace)")
@@ -1682,6 +1855,15 @@ struct InstanceThumbnailTile: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
+
+                Button(action: editMeta) {
+                    Image(systemName: meta.hasCustomContent ? "tag.fill" : "tag")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(meta.hasCustomContent ? meta.color : .secondary.opacity(0.8))
+                        .frame(width: 15, height: 15)
+                }
+                .buttonStyle(.plain)
+                .help("编辑此实例的项目别名与标签")
             }
             .padding(.horizontal, 11)
             .frame(height: 26)
@@ -1857,6 +2039,13 @@ struct InstanceThumbnailTile: View {
 
     private var tilePopoverMenu: some View {
         VStack(alignment: .leading, spacing: 2) {
+            tileMenuItem(title: "编辑项目备注与标签…", symbol: "tag") {
+                showMorePopover = false
+                editMeta()
+            }
+
+            Divider().padding(.vertical, 3)
+
             tileMenuItem(
                 title: item.running ? (item.isHidden ? "恢复并调出窗口" : "调出并置顶窗口") : "启动此实例",
                 symbol: item.running ? "macwindow.on.rectangle" : "play.fill"
@@ -1962,6 +2151,8 @@ struct InstanceThumbnailTile: View {
 struct InstanceCard: View {
     let item: ManagedInstance
     let activity: InstanceActivity
+    let meta: InstanceUserMeta
+    let resourceMetric: InstanceResourceMetric
     let sourceVersion: String
     let busy: Bool
     let canUpgrade: Bool
@@ -1972,6 +2163,7 @@ struct InstanceCard: View {
     let reveal: () -> Void
     let logs: () -> Void
     let verify: () -> Void
+    let editMeta: () -> Void
     let clearWorkspace: () -> Void
     let destroy: () -> Void
 
@@ -2048,9 +2240,25 @@ struct InstanceCard: View {
             VStack(alignment: .leading, spacing: 4) {
                 // Top Row: Title + Live Task Status Pill + Role/Verified Pill
                 HStack(alignment: .center, spacing: 8) {
-                    Text(item.name)
+                    if !meta.tag.isEmpty {
+                        Text(meta.tag)
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(meta.color)
+                            .padding(.horizontal, 6)
+                            .frame(height: 20)
+                            .background(Capsule().fill(meta.color.opacity(colorScheme == .dark ? 0.20 : 0.12)))
+                            .overlay(Capsule().strokeBorder(meta.color.opacity(0.35), lineWidth: 0.8))
+                    }
+
+                    Text(meta.nickname.isEmpty ? item.name : meta.nickname)
                         .font(.system(size: 14.5, weight: .semibold))
                         .foregroundStyle(.primary)
+
+                    if !meta.nickname.isEmpty {
+                        Text("(\(item.name))")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.secondary)
+                    }
 
                     // Live Task State Pill (Fixed 20pt height)
                     HStack(alignment: .center, spacing: 5) {
@@ -2142,6 +2350,36 @@ struct InstanceCard: View {
                             border: Color.primary.opacity(0.05)
                         )
                     }
+
+                    if item.running && resourceMetric.processCount > 0 {
+                        metaPill(
+                            icon: resourceMetric.cpuPercent > 15 ? "bolt.fill" : "cpu",
+                            text: resourceMetric.cpuLabel,
+                            foreground: resourceMetric.cpuPercent > 15 ? .cyan : .secondary,
+                            background: resourceMetric.cpuPercent > 15 ? Color.cyan.opacity(colorScheme == .dark ? 0.16 : 0.10) : Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.04),
+                            border: resourceMetric.cpuPercent > 15 ? Color.cyan.opacity(0.30) : Color.primary.opacity(0.06)
+                        )
+
+                        metaPill(
+                            icon: "memorychip.fill",
+                            text: resourceMetric.memoryLabel,
+                            foreground: .secondary,
+                            background: Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.04),
+                            border: Color.primary.opacity(0.06)
+                        )
+                    }
+
+                    Button(action: editMeta) {
+                        metaPill(
+                            icon: meta.hasCustomContent ? "tag.fill" : "tag",
+                            text: meta.hasCustomContent ? (meta.nickname.isEmpty ? meta.tag : meta.nickname) : "添加备注",
+                            foreground: meta.hasCustomContent ? meta.color : .secondary,
+                            background: meta.hasCustomContent ? meta.color.opacity(colorScheme == .dark ? 0.14 : 0.08) : Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.04),
+                            border: meta.hasCustomContent ? meta.color.opacity(0.28) : Color.primary.opacity(0.06)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .help("编辑此实例的项目别名与标签")
                 }
                 .frame(height: 22)
                 .lineLimit(1)
@@ -2171,23 +2409,33 @@ struct InstanceCard: View {
                 IconActionButton(symbol: "folder", tooltip: "在访达中显示应用", size: 30, action: reveal)
                 IconActionButton(symbol: "doc.text.magnifyingglass", tooltip: "查看运行日志", size: 30, action: logs)
 
-                if !item.isOriginal && (2...9999).contains(item.index) {
-                    IconActionButton(symbol: "ellipsis", tooltip: "更多实例操作", size: 30) {
-                        showMorePopover.toggle()
-                    }
-                    .popover(isPresented: $showMorePopover, arrowEdge: .bottom) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            if item.index >= 8 {
-                                popoverMenuButton(
-                                    title: item.verified ? "取消登录验证标记" : "标记已完成登录验证",
-                                    symbol: item.verified ? "xmark.seal" : "checkmark.seal",
-                                    destructive: false
-                                ) {
-                                    showMorePopover = false
-                                    verify()
-                                }
-                                Divider().padding(.vertical, 3)
+                IconActionButton(symbol: "ellipsis", tooltip: "更多实例操作", size: 30) {
+                    showMorePopover.toggle()
+                }
+                .popover(isPresented: $showMorePopover, arrowEdge: .bottom) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        popoverMenuButton(
+                            title: "编辑项目备注与标签…",
+                            symbol: "tag",
+                            destructive: false
+                        ) {
+                            showMorePopover = false
+                            editMeta()
+                        }
+                        Divider().padding(.vertical, 3)
+
+                        if item.index >= 8 {
+                            popoverMenuButton(
+                                title: item.verified ? "取消登录验证标记" : "标记已完成登录验证",
+                                symbol: item.verified ? "xmark.seal" : "checkmark.seal",
+                                destructive: false
+                            ) {
+                                showMorePopover = false
+                                verify()
                             }
+                            Divider().padding(.vertical, 3)
+                        }
+                        if !item.isOriginal {
                             popoverMenuButton(
                                 title: "清空工作空间…",
                                 symbol: "eraser.line.dashed",
@@ -2206,9 +2454,9 @@ struct InstanceCard: View {
                                 destroy()
                             }
                         }
-                        .padding(6)
-                        .frame(width: 176)
                     }
+                    .padding(6)
+                    .frame(width: 176)
                 }
 
                 if item.running {
@@ -2367,6 +2615,180 @@ struct OfficialReleaseNotesView: NSViewRepresentable {
                 NSWorkspace.shared.open(url); decisionHandler(.cancel)
             } else { decisionHandler(.allow) }
         }
+    }
+}
+
+// MARK: - Edit Instance Meta Sheet
+
+struct EditInstanceMetaSheet: View {
+    let item: ManagedInstance
+    let initialMeta: InstanceUserMeta
+    let onSave: (InstanceUserMeta) -> Void
+    let onDismiss: () -> Void
+
+    @State private var nickname: String = ""
+    @State private var tag: String = ""
+    @State private var selectedColor: String = "blue"
+    @Environment(\.colorScheme) private var colorScheme
+
+    private let presetColors: [(id: String, name: String, color: Color)] = [
+        ("blue", "海天蓝", .blue),
+        ("purple", "星云紫", .purple),
+        ("green", "薄荷绿", .green),
+        ("orange", "暖阳橙", .orange),
+        ("pink", "霓虹粉", .pink),
+        ("teal", "青碧绿", .teal),
+        ("indigo", "极光靛", .indigo)
+    ]
+
+    private let presetTags = ["生产环境", "微服务后端", "前端 UI", "数据清洗", "核心架构", "算法评测", "学习调试"]
+
+    init(item: ManagedInstance, initialMeta: InstanceUserMeta, onSave: @escaping (InstanceUserMeta) -> Void, onDismiss: @escaping () -> Void) {
+        self.item = item
+        self.initialMeta = initialMeta
+        self.onSave = onSave
+        self.onDismiss = onDismiss
+        _nickname = State(initialValue: initialMeta.nickname)
+        _tag = State(initialValue: initialMeta.tag)
+        _selectedColor = State(initialValue: initialMeta.tagColor)
+    }
+
+    var body: some View {
+        VStack(spacing: 18) {
+            // Header
+            HStack(alignment: .center, spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(accent.opacity(0.14))
+                        .frame(width: 40, height: 40)
+                    Image(systemName: "tag.fill")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(accent)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("编辑实例项目备注与标签")
+                        .font(.system(size: 14.5, weight: .bold))
+                    Text("\(item.name) · \(item.profile)")
+                        .font(.system(size: 11.5, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 17))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+
+            VStack(alignment: .leading, spacing: 14) {
+                // Nickname
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("项目别名 / 备注名称")
+                        .font(.system(size: 12, weight: .medium))
+                    TextField("例如：核心后端微服务 / Web 前端开发", text: $nickname)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12.5))
+                }
+
+                // Tag
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("分类标签")
+                        .font(.system(size: 12, weight: .medium))
+                    TextField("例如：生产 / 测试 / 开发", text: $tag)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12.5))
+
+                    // Preset Tag Pills
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(presetTags, id: \.self) { preset in
+                                Button {
+                                    tag = preset
+                                } label: {
+                                    Text(preset)
+                                        .font(.system(size: 10.5))
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3.5)
+                                        .background(Capsule().fill(Color.primary.opacity(tag == preset ? 0.14 : 0.05)))
+                                        .foregroundStyle(tag == preset ? Color.primary : Color.secondary)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+
+                // Color Picker
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("标签主题色")
+                        .font(.system(size: 12, weight: .medium))
+                    HStack(spacing: 12) {
+                        ForEach(presetColors, id: \.id) { preset in
+                            Button {
+                                selectedColor = preset.id
+                            } label: {
+                                ZStack {
+                                    Circle()
+                                        .fill(preset.color)
+                                        .frame(width: 22, height: 22)
+                                    if selectedColor == preset.id {
+                                        Image(systemName: "checkmark")
+                                            .font(.system(size: 10, weight: .bold))
+                                            .foregroundStyle(.white)
+                                    }
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+
+            // Preview Capsule
+            HStack(spacing: 8) {
+                Text("预览效果：")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+                if !tag.isEmpty {
+                    Text(tag)
+                        .font(.system(size: 10.5, weight: .bold))
+                        .foregroundStyle(InstanceUserMeta(tagColor: selectedColor).color)
+                        .padding(.horizontal, 6.5)
+                        .padding(.vertical, 2.5)
+                        .background(Capsule().fill(InstanceUserMeta(tagColor: selectedColor).color.opacity(0.15)))
+                }
+                Text(nickname.isEmpty ? item.name : nickname)
+                    .font(.system(size: 12.5, weight: .semibold))
+                Spacer()
+            }
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.04)))
+
+            // Buttons
+            HStack(spacing: 10) {
+                if initialMeta.hasCustomContent {
+                    Button("清除自定义备注", role: .destructive) {
+                        onSave(InstanceUserMeta())
+                    }
+                    .buttonStyle(ModernButtonStyle(variant: .danger, compact: true))
+                }
+                Spacer()
+                Button("取消", action: onDismiss)
+                    .buttonStyle(ModernButtonStyle(variant: .secondary, compact: true))
+                Button("保存备注") {
+                    onSave(InstanceUserMeta(nickname: nickname.trimmingCharacters(in: .whitespacesAndNewlines),
+                                           tag: tag.trimmingCharacters(in: .whitespacesAndNewlines),
+                                           tagColor: selectedColor))
+                }
+                .buttonStyle(ModernButtonStyle(variant: .primary, compact: true))
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(22)
+        .frame(width: 440)
     }
 }
 
@@ -2551,6 +2973,7 @@ struct ContentView: View {
     @State private var showUpdateSettings = false
     @State private var pendingDestroy: ManagedInstance?
     @State private var pendingClear: ManagedInstance?
+    @State private var editingMetaItem: ManagedInstance?
     @State private var destination = URL(fileURLWithPath: "/Applications")
     @State private var selectedFilter: InstanceFilter = .all
     @State private var refreshSpin: Double = 0
@@ -2694,6 +3117,19 @@ struct ContentView: View {
                 store.clearWorkspace(item)
                 pendingClear = nil
             }
+        }
+        .sheet(item: $editingMetaItem) { item in
+            EditInstanceMetaSheet(
+                item: item,
+                initialMeta: store.meta(for: item),
+                onSave: { newMeta in
+                    store.saveInstanceMeta(for: item.id, meta: newMeta)
+                    editingMetaItem = nil
+                },
+                onDismiss: {
+                    editingMetaItem = nil
+                }
+            )
         }
         .alert("操作未完成", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
             Button("好") { store.error = nil }
@@ -3131,6 +3567,8 @@ struct ContentView: View {
                         InstanceThumbnailTile(
                             item: item,
                             activity: store.activity(for: item),
+                            meta: store.meta(for: item),
+                            resourceMetric: store.metric(for: item),
                             thumbnail: store.thumbnails[item.id],
                             sourceVersion: store.sourceVersion,
                             busy: store.busy,
@@ -3142,6 +3580,7 @@ struct ContentView: View {
                             reveal: { store.reveal(item) },
                             logs: { store.showLogs(item) },
                             verify: { store.toggleVerified(item) },
+                            editMeta: { editingMetaItem = item },
                             clearWorkspace: { pendingClear = item },
                             destroy: { pendingDestroy = item }
                         )
@@ -3183,6 +3622,8 @@ struct ContentView: View {
             InstanceCard(
                 item: primary,
                 activity: store.activity(for: primary),
+                meta: store.meta(for: primary),
+                resourceMetric: store.metric(for: primary),
                 sourceVersion: store.sourceVersion,
                 busy: store.busy,
                 canUpgrade: false,
@@ -3193,6 +3634,7 @@ struct ContentView: View {
                 reveal: { store.reveal(primary) },
                 logs: { store.showLogs(primary) },
                 verify: {},
+                editMeta: { editingMetaItem = primary },
                 clearWorkspace: {},
                 destroy: {}
             )
@@ -3244,6 +3686,8 @@ struct ContentView: View {
                         InstanceCard(
                             item: item,
                             activity: store.activity(for: item),
+                            meta: store.meta(for: item),
+                            resourceMetric: store.metric(for: item),
                             sourceVersion: store.sourceVersion,
                             busy: store.busy,
                             canUpgrade: store.compatibility == "已支持本机版本",
@@ -3254,6 +3698,7 @@ struct ContentView: View {
                             reveal: { store.reveal(item) },
                             logs: { store.showLogs(item) },
                             verify: { store.toggleVerified(item) },
+                            editMeta: { editingMetaItem = item },
                             clearWorkspace: { pendingClear = item },
                             destroy: { pendingDestroy = item }
                         )
