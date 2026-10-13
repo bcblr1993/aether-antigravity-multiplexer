@@ -555,7 +555,7 @@ private enum TelemetryScanner {
             return InstanceActivity(state: isRunning ? .idle : .stopped, currentAction: "等待新对话指令", workspace: "", lastUpdatedLabel: ageLabel)
         }
 
-        // Extract workspace name from recent tool calls
+        // Extract workspace name from recent tool calls (excluding internal brain/gemini/UUID paths)
         var workspace = ""
         for step in parsedSteps.reversed() {
             if let tools = step["tool_calls"] as? [[String: Any]] {
@@ -566,8 +566,11 @@ private enum TelemetryScanner {
                                 let cleaned = raw.trimmingCharacters(in: CharacterSet(charactersIn: "\"' "))
                                 if cleaned.hasPrefix("/") {
                                     let urlPath = URL(fileURLWithPath: cleaned)
-                                    workspace = key == "Cwd" ? urlPath.lastPathComponent : urlPath.deletingLastPathComponent().lastPathComponent
-                                    break
+                                    let candidate = key == "Cwd" ? urlPath.lastPathComponent : urlPath.deletingLastPathComponent().lastPathComponent
+                                    if isValidWorkspaceCandidate(candidate, fullPath: cleaned) {
+                                        workspace = candidate
+                                        break
+                                    }
                                 }
                             }
                         }
@@ -589,6 +592,41 @@ private enum TelemetryScanner {
             return a
         }
 
+        // Find most recent tool call info from tail steps
+        var recentToolName = ""
+        var recentToolAction = ""
+        var recentTargetName = ""
+        for step in parsedSteps.reversed() {
+            if let tools = step["tool_calls"] as? [[String: Any]], let first = tools.first {
+                recentToolName = first["name"] as? String ?? ""
+                if let args = first["args"] as? [String: Any] {
+                    recentToolAction = (args["toolAction"] as? String) ?? (args["toolSummary"] as? String) ?? ""
+                    if let target = (args["TargetFile"] as? String) ?? (args["AbsolutePath"] as? String) {
+                        recentTargetName = URL(fileURLWithPath: target).lastPathComponent
+                    } else if let cmd = args["CommandLine"] as? String {
+                        let cmdParts = cmd.split(separator: " ", omittingEmptySubsequences: true)
+                        if let firstPart = cmdParts.first {
+                            recentTargetName = String(firstPart)
+                        }
+                    }
+                }
+                break
+            }
+        }
+
+        // Find most recent user prompt from tail steps
+        var recentUserPrompt = ""
+        for step in parsedSteps.reversed() {
+            if (step["type"] as? String) == "USER_INPUT",
+               let content = step["content"] as? String {
+                let cleaned = cleanSnippet(content)
+                if !cleaned.isEmpty {
+                    recentUserPrompt = cleaned
+                    break
+                }
+            }
+        }
+
         // Extract latest human-readable action or message
         var actionText = ""
         if let tools = last["tool_calls"] as? [[String: Any]], let firstTool = tools.first {
@@ -597,11 +635,17 @@ private enum TelemetryScanner {
                 let rawAction = (args["toolAction"] as? String) ?? (args["toolSummary"] as? String) ?? ""
                 actionText = rawAction.trimmingCharacters(in: CharacterSet(charactersIn: "\"' "))
             }
-            if actionText.isEmpty { actionText = "调用工具 \(toolName)" }
+            if actionText.isEmpty {
+                if !recentTargetName.isEmpty {
+                    actionText = "操作 \(recentTargetName)"
+                } else {
+                    actionText = "调用工具 \(toolName)"
+                }
+            }
             if isRunning && toolName == "ask_question" && age < 1800 {
                 return withConv(InstanceActivity(
                     state: .needsAttention,
-                    currentAction: "等待确认问题选项：\(actionText)",
+                    currentAction: "等待确认：\(actionText)",
                     workspace: workspace,
                     lastUpdatedLabel: ageLabel,
                     stepIndex: stepIndex
@@ -619,9 +663,10 @@ private enum TelemetryScanner {
         }
 
         if isRunning && hasRunningStep && age < 600 {
+            let runningDesc = !actionText.isEmpty ? actionText : (!recentToolAction.isEmpty ? "正在执行：\(recentToolAction)" : "正在后台执行任务…")
             return withConv(InstanceActivity(
                 state: .runningTask,
-                currentAction: actionText.isEmpty ? "正在后台执行命令任务…" : actionText,
+                currentAction: runningDesc,
                 workspace: workspace,
                 lastUpdatedLabel: ageLabel,
                 stepIndex: stepIndex
@@ -639,9 +684,21 @@ private enum TelemetryScanner {
                     stepIndex: stepIndex
                 ))
             } else if lastType == "GENERIC" {
+                let genericAction: String
+                if !recentToolAction.isEmpty {
+                    genericAction = "分析结果：\(recentToolAction)"
+                } else if !recentTargetName.isEmpty {
+                    genericAction = "分析结果：\(recentTargetName)"
+                } else if !recentToolName.isEmpty {
+                    genericAction = "处理 \(recentToolName) 输出"
+                } else if !recentUserPrompt.isEmpty {
+                    genericAction = "正在处理：\(recentUserPrompt)"
+                } else {
+                    genericAction = "正在规划下一步操作…"
+                }
                 return withConv(InstanceActivity(
                     state: .runningTask,
-                    currentAction: "正在分析工具执行结果…",
+                    currentAction: genericAction,
                     workspace: workspace,
                     lastUpdatedLabel: ageLabel,
                     stepIndex: stepIndex
@@ -660,7 +717,16 @@ private enum TelemetryScanner {
         }
 
         let summary = cleanSnippet(last["content"] as? String ?? "")
-        let displayAction = !summary.isEmpty ? summary : (!actionText.isEmpty ? actionText : "任务已完成 · 等待新指令")
+        let displayAction: String
+        if !summary.isEmpty {
+            displayAction = summary
+        } else if !recentToolAction.isEmpty {
+            displayAction = "已完成：\(recentToolAction)"
+        } else if !recentUserPrompt.isEmpty {
+            displayAction = "就绪 · 上次：\(recentUserPrompt)"
+        } else {
+            displayAction = "任务已完成 · 等待新指令"
+        }
         return withConv(InstanceActivity(
             state: isRunning ? .idle : .stopped,
             currentAction: displayAction,
@@ -681,6 +747,19 @@ private enum TelemetryScanner {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .first { !$0.isEmpty && !$0.hasPrefix("Created At:") && !$0.hasPrefix("The current local time") } ?? ""
         return String(firstLine.prefix(48))
+    }
+
+    private static func isValidWorkspaceCandidate(_ name: String, fullPath: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == "/" || trimmed.hasPrefix(".") || trimmed == "brain" || trimmed == "tmp" || trimmed == "scratch" {
+            return false
+        }
+        if UUID(uuidString: trimmed) != nil { return false }
+        if trimmed.count > 30 && trimmed.contains("-") { return false }
+        if fullPath.contains("/.gemini") || fullPath.contains("/brain/") || fullPath.contains(".system_generated") {
+            return false
+        }
+        return true
     }
 
     private static func formatRelativeAge(_ seconds: TimeInterval) -> String {
@@ -913,10 +992,17 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             let cdpData = await Self.captureCDPScreenshots(for: snapshot)
             await MainActor.run { [weak self] in
                 guard let self else { return }
-                self.processActivityChangesAndNotify(newActivities: scanned)
-                if self.activities != scanned {
+                var finalActivities = scanned
+                for (id, ws) in cdpData.workspaces {
+                    if !ws.isEmpty, var act = finalActivities[id] {
+                        act.workspace = ws
+                        finalActivities[id] = act
+                    }
+                }
+                self.processActivityChangesAndNotify(newActivities: finalActivities)
+                if self.activities != finalActivities {
                     withAnimation(.easeInOut(duration: 0.2)) {
-                        self.activities = scanned
+                        self.activities = finalActivities
                     }
                 }
                 self.resourceMetrics = metrics
@@ -934,9 +1020,11 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
 
     /// Zero-permission live window screenshot capture via Chromium DevTools Protocol (`DevToolsActivePort`).
     /// Captures live UI screenshots of all running instances in real-time and remembers the active conversation URL!
-    private nonisolated static func captureCDPScreenshots(for items: [ManagedInstance]) async -> (thumbnails: [String: NSImage], urls: [String: String]) {
+    private nonisolated static func captureCDPScreenshots(for items: [ManagedInstance]) async -> (thumbnails: [String: NSImage], urls: [String: String], workspaces: [String: String], sessionTitles: [String: String]) {
         var results: [String: NSImage] = [:]
         var urls: [String: String] = [:]
+        var workspaces: [String: String] = [:]
+        var sessionTitles: [String: String] = [:]
         let appSupportRoot = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support")
 
@@ -965,11 +1053,21 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 urls[item.id] = currentURL
             }
 
+            if let windowTitle = mainTarget["title"] as? String {
+                let parts = windowTitle.components(separatedBy: " - ").map { $0.trimmingCharacters(in: .whitespaces) }
+                if parts.count >= 3 {
+                    sessionTitles[item.id] = parts[0]
+                    workspaces[item.id] = parts[1]
+                } else if parts.count == 2 {
+                    workspaces[item.id] = parts[0]
+                }
+            }
+
             if let image = await fetchCDPScreenshot(wsURL: wsURL) {
                 results[item.id] = image
             }
         }
-        return (results, urls)
+        return (results, urls, workspaces, sessionTitles)
     }
 
     private nonisolated static func fetchCDPScreenshot(wsURL: URL) async -> NSImage? {
@@ -1664,221 +1762,251 @@ struct InstanceThumbnailTile: View {
     }
 
     var body: some View {
-        VStack(alignment: .center, spacing: 10) {
-            // 16:10 Miniature Monitor Screen Container
-            ZStack {
-                // Screen Background & Content
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color(red: 0.08, green: 0.09, blue: 0.13),
-                                Color(red: 0.12, green: 0.14, blue: 0.20)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
+        VStack(alignment: .leading, spacing: 0) {
+            // 1. Card Header: Identity & Actions
+            cardHeader
 
-                if item.running, let thumbnail {
-                    Image(nsImage: thumbnail)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(height: 158)
-                        .clipped()
-                        .opacity(item.running ? 0.96 : 0.72)
-                } else if item.running {
-                    syntheticLiveScreen
-                } else {
-                    stoppedScreen
+            // 2. 16:10 Live Screen Thumbnail & Badges
+            cardScreen
+
+            // 3. Card Footer: Telemetry & Status
+            cardFooter
+        }
+        .padding(10)
+        .systemSurface(
+            radius: 14,
+            isHighlighted: hovered || (item.running && (activity.state == .runningTask || activity.state == .needsAttention)),
+            tint: item.running ? borderTint : nil
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .scaleEffect(hovered ? 1.015 : 1.0)
+        .animation(.spring(response: 0.22, dampingFraction: 0.80), value: hovered)
+        .onHover { hovered = $0 }
+    }
+
+    // MARK: - Card Header (Identity & Action Menu)
+    private var cardHeader: some View {
+        HStack(alignment: .center, spacing: 6) {
+            // Index Pill
+            Text(item.isOriginal ? "MAIN" : "#\(String(format: "%02d", item.index))")
+                .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                .foregroundStyle(item.isOriginal ? .white : (item.running ? borderTint : accent))
+                .padding(.horizontal, 5.5)
+                .frame(height: 19)
+                .background {
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(item.isOriginal ? accent : (item.running ? borderTint.opacity(0.18) : accent.opacity(0.12)))
                 }
 
-                // Top-Left & Top-Right Screen Overlay Bar
-                VStack {
-                    HStack(alignment: .center, spacing: 6) {
-                        // Top-left state badge
-                        HStack(alignment: .center, spacing: 5) {
-                            PulsingStatusDot(active: item.running, activeColor: activity.state.color)
-                            Text(item.running ? (item.isHidden ? "\(activity.state.label) · 后台实时" : activity.state.label) : "未启动")
-                                .font(.system(size: 10.5, weight: .semibold))
-                                .foregroundStyle(.white)
-                        }
-                        .padding(.horizontal, 8)
-                        .frame(height: 22)
-                        .background(Capsule().fill(Color.black.opacity(0.62)))
-                        .overlay(Capsule().strokeBorder(activity.state.color.opacity(0.45), lineWidth: 1))
-
-                        if hasPendingUpgrade {
-                            Text("可升 v\(sourceVersion)")
-                                .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                                .foregroundStyle(.orange)
-                                .padding(.horizontal, 6.5)
-                                .frame(height: 20)
-                                .background(Capsule().fill(Color.black.opacity(0.65)))
-                                .overlay(Capsule().strokeBorder(Color.orange.opacity(0.45), lineWidth: 1))
-                        }
-
-                        // Real-time Resource Metric Capsule (CPU & Memory)
-                        if item.running && resourceMetric.processCount > 0 {
-                            HStack(alignment: .center, spacing: 4) {
-                                Image(systemName: resourceMetric.cpuPercent > 15 ? "bolt.fill" : "cpu")
-                                    .font(.system(size: 9, weight: .semibold))
-                                    .foregroundStyle(resourceMetric.cpuPercent > 15 ? Color.cyan : .white.opacity(0.85))
-                                    .frame(width: 10, height: 10, alignment: .center)
-                                Text("\(resourceMetric.cpuLabel) · \(resourceMetric.memoryLabel)")
-                                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                                    .foregroundStyle(.white.opacity(0.92))
-                            }
-                            .padding(.horizontal, 7)
-                            .frame(height: 22)
-                            .background(Capsule().fill(Color.black.opacity(0.62)))
-                            .overlay(Capsule().strokeBorder(resourceMetric.cpuPercent > 15 ? Color.cyan.opacity(0.45) : Color.white.opacity(0.18), lineWidth: 1))
-                        }
-
-                        Spacer()
-
-                        // Top-Right [...] Menu Button (matching user screenshot)
-                        Button {
-                            showMorePopover.toggle()
-                        } label: {
-                            Image(systemName: "ellipsis.circle")
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundStyle(.white.opacity(hovered || showMorePopover ? 0.98 : 0.75))
-                                .frame(width: 26, height: 26)
-                                .background {
-                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                        .fill(Color.black.opacity(hovered || showMorePopover ? 0.72 : 0.45))
-                                }
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                        .strokeBorder(Color.white.opacity(hovered || showMorePopover ? 0.35 : 0.18), lineWidth: 1)
-                                }
-                        }
-                        .buttonStyle(.plain)
-                        .popover(isPresented: $showMorePopover, arrowEdge: .bottom) {
-                            tilePopoverMenu
-                        }
-                    }
-                    .padding(10)
-
-                    Spacer()
-
-                    // Bottom Live Task Telemetry Caption Bar
-                    HStack(alignment: .center, spacing: 6) {
-                        Image(systemName: activity.state.symbol)
-                            .font(.system(size: 10.5, weight: .semibold))
-                            .foregroundStyle(activity.state.color)
-                            .frame(width: 13, height: 13, alignment: .center)
-
-                        Text(activity.currentAction)
-                            .font(.system(size: 10.5, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.92))
-                            .lineLimit(1)
-
-                        Spacer(minLength: 4)
-
-                        if !activity.lastUpdatedLabel.isEmpty {
-                            Text(activity.lastUpdatedLabel)
-                                .font(.system(size: 9.5, design: .monospaced))
-                                .foregroundStyle(.white.opacity(0.60))
-                        }
-                    }
-                    .padding(.horizontal, 10)
-                    .frame(height: 28)
-                    .background(Color.black.opacity(0.68))
-                }
-
-                // Center Play / Switch Action Overlay (Matches screenshot play button!)
-                centerPlayOverlay
-            }
-            .frame(height: 158)
-            .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .strokeBorder(
-                        item.running
-                            ? borderTint.opacity(hovered ? 0.85 : (activity.state == .runningTask || activity.state == .needsAttention ? 0.65 : 0.35))
-                            : Color.primary.opacity(hovered ? 0.30 : 0.12),
-                        lineWidth: (hovered || activity.state == .runningTask || activity.state == .needsAttention) ? 1.6 : 1
-                    )
-            }
-            .shadow(
-                color: (item.running && activity.state == .runningTask)
-                    ? borderTint.opacity(0.22)
-                    : Color.black.opacity(hovered ? 0.25 : 0.12),
-                radius: hovered ? 12 : 6,
-                x: 0,
-                y: hovered ? 5 : 2
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
-            .onTapGesture {
-                open()
-            }
-
-            // Bottom Instance Name Pill (Matches bottom IP/Instance label in screenshot!)
-            HStack(alignment: .center, spacing: 6) {
-                Text(item.isOriginal ? "MAIN" : "#\(String(format: "%02d", item.index))")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundStyle(item.isOriginal ? .white : (item.running ? borderTint : accent))
+            // Project Tag (if any)
+            if !meta.tag.isEmpty {
+                Text(meta.tag)
+                    .font(.system(size: 9.5, weight: .bold))
+                    .foregroundStyle(meta.color)
                     .padding(.horizontal, 5.5)
-                    .frame(height: 17)
-                    .background {
-                        RoundedRectangle(cornerRadius: 4.5, style: .continuous)
-                            .fill(item.isOriginal ? accent : (item.running ? borderTint.opacity(0.16) : accent.opacity(0.12)))
-                    }
+                    .frame(height: 19)
+                    .background(Capsule().fill(meta.color.opacity(colorScheme == .dark ? 0.22 : 0.12)))
+                    .overlay(Capsule().strokeBorder(meta.color.opacity(0.35), lineWidth: 0.8))
+            }
 
-                if !meta.tag.isEmpty {
-                    Text(meta.tag)
-                        .font(.system(size: 9.5, weight: .bold))
-                        .foregroundStyle(meta.color)
-                        .padding(.horizontal, 5)
-                        .frame(height: 17)
-                        .background(Capsule().fill(meta.color.opacity(colorScheme == .dark ? 0.20 : 0.12)))
-                        .overlay(Capsule().strokeBorder(meta.color.opacity(0.35), lineWidth: 0.8))
-                }
+            // Title / Nickname
+            Text(meta.nickname.isEmpty ? item.name : meta.nickname)
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
 
-                Text(meta.nickname.isEmpty ? item.name : meta.nickname)
-                    .font(.system(size: 12.5, weight: .semibold))
-                    .foregroundStyle(.primary)
+            if !meta.nickname.isEmpty {
+                Text("(\(item.name.replacingOccurrences(of: "Antigravity", with: "").trimmingCharacters(in: .whitespaces).isEmpty ? "Main" : item.name.replacingOccurrences(of: "Antigravity", with: "").trimmingCharacters(in: .whitespaces)))")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
+            }
 
-                if !meta.nickname.isEmpty {
-                    Text("(\(item.name.replacingOccurrences(of: "Antigravity", with: "").trimmingCharacters(in: .whitespaces).isEmpty ? "Main" : item.name.replacingOccurrences(of: "Antigravity", with: "").trimmingCharacters(in: .whitespaces)))")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+            if hasPendingUpgrade {
+                Text("可升 v\(sourceVersion)")
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 5)
+                    .frame(height: 17)
+                    .background(Capsule().fill(Color.orange.opacity(colorScheme == .dark ? 0.20 : 0.12)))
+                    .overlay(Capsule().strokeBorder(Color.orange.opacity(0.35), lineWidth: 0.8))
+            }
 
-                if !activity.workspace.isEmpty {
-                    Text("· \(activity.workspace)")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+            Spacer(minLength: 4)
 
+            // Edit Tag button (shown on hover or when tag exists)
+            if hovered || meta.hasCustomContent {
                 Button(action: editMeta) {
                     Image(systemName: meta.hasCustomContent ? "tag.fill" : "tag")
-                        .font(.system(size: 9.5, weight: .medium))
-                        .foregroundStyle(meta.hasCustomContent ? meta.color : .secondary.opacity(0.8))
-                        .frame(width: 15, height: 15)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(meta.hasCustomContent ? meta.color : Color.secondary)
+                        .frame(width: 20, height: 20)
                 }
                 .buttonStyle(.plain)
                 .help("编辑此实例的项目别名与标签")
+                .transition(.opacity)
             }
-            .padding(.horizontal, 11)
-            .frame(height: 26)
-            .background {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.05))
+
+            // [...] More Actions Menu Button
+            Button {
+                showMorePopover.toggle()
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(hovered || showMorePopover ? Color.primary : Color.secondary)
+                    .frame(width: 20, height: 20)
+                    .background {
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(Color.primary.opacity(hovered || showMorePopover ? (colorScheme == .dark ? 0.14 : 0.08) : 0))
+                    }
             }
-            .overlay {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(hovered ? 0.18 : 0.07), lineWidth: 1)
+            .buttonStyle(.plain)
+            .popover(isPresented: $showMorePopover, arrowEdge: .bottom) {
+                tilePopoverMenu
             }
         }
-        .scaleEffect(hovered ? 1.018 : 1.0)
-        .animation(.spring(response: 0.24, dampingFraction: 0.78), value: hovered)
-        .onHover { hovered = $0 }
+        .frame(height: 24)
+        .padding(.horizontal, 2)
+        .padding(.bottom, 7)
+    }
+
+    // MARK: - Card Screen (16:10 Live Preview & Overlays)
+    private var cardScreen: some View {
+        ZStack {
+            // Screen Background
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color(red: 0.07, green: 0.08, blue: 0.12),
+                            Color(red: 0.11, green: 0.13, blue: 0.19)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+
+            if item.running, let thumbnail {
+                Image(nsImage: thumbnail)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(height: 154)
+                    .clipped()
+                    .opacity(item.running ? 0.96 : 0.72)
+            } else if item.running {
+                syntheticLiveScreen
+            } else {
+                stoppedScreen
+            }
+
+            // Screen Overlay: Bottom Status Dot & Resource Metric
+            VStack {
+                Spacer()
+
+                HStack(alignment: .center, spacing: 6) {
+                    // Bottom-left state badge
+                    HStack(alignment: .center, spacing: 4.5) {
+                        PulsingStatusDot(active: item.running, activeColor: activity.state.color)
+                        Text(item.running ? (item.isHidden ? "\(activity.state.label) · 后台" : activity.state.label) : "未启动")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.white)
+                    }
+                    .padding(.horizontal, 7.5)
+                    .frame(height: 21)
+                    .background(Capsule().fill(Color.black.opacity(0.68)))
+                    .overlay(Capsule().strokeBorder(activity.state.color.opacity(0.40), lineWidth: 0.8))
+
+                    Spacer(minLength: 4)
+
+                    // Bottom-right Real-time Resource Metric Capsule (CPU & Memory)
+                    if item.running && resourceMetric.processCount > 0 {
+                        HStack(alignment: .center, spacing: 4) {
+                            Image(systemName: resourceMetric.cpuPercent > 15 ? "bolt.fill" : "cpu")
+                                .font(.system(size: 8.5, weight: .semibold))
+                                .foregroundStyle(resourceMetric.cpuPercent > 15 ? Color.cyan : .white.opacity(0.85))
+                                .frame(width: 9, height: 9, alignment: .center)
+                            Text("\(resourceMetric.cpuLabel) · \(resourceMetric.memoryLabel)")
+                                .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(.white.opacity(0.92))
+                        }
+                        .padding(.horizontal, 7)
+                        .frame(height: 21)
+                        .background(Capsule().fill(Color.black.opacity(0.68)))
+                        .overlay(Capsule().strokeBorder(resourceMetric.cpuPercent > 15 ? Color.cyan.opacity(0.45) : Color.white.opacity(0.18), lineWidth: 0.8))
+                    }
+                }
+                .padding(8)
+            }
+
+            // Center Play / Quick Focus Buttons
+            centerPlayOverlay
+        }
+        .frame(height: 154)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.8)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .onTapGesture {
+            open()
+        }
+    }
+
+    // MARK: - Card Footer (Telemetry & Subtitle)
+    private var cardFooter: some View {
+        HStack(alignment: .center, spacing: 6) {
+            if item.running {
+                Image(systemName: activity.state.symbol)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(activity.state.color)
+                    .frame(width: 12, height: 12, alignment: .center)
+
+                Text(activity.currentAction)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.primary.opacity(0.85))
+                    .lineLimit(1)
+
+                Spacer(minLength: 4)
+
+                if !activity.workspace.isEmpty {
+                    Text(activity.workspace)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else if !activity.lastUpdatedLabel.isEmpty {
+                    Text(activity.lastUpdatedLabel)
+                        .font(.system(size: 9.5, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+            } else {
+                Circle()
+                    .fill(Color.secondary.opacity(0.35))
+                    .frame(width: 5, height: 5)
+
+                Text(activity.currentAction.hasPrefix("上次：") ? activity.currentAction : "实例未启动")
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                Spacer()
+
+                if !activity.workspace.isEmpty {
+                    Text(activity.workspace)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                } else {
+                    Text("点击卡片启动")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+        }
+        .frame(height: 22)
+        .padding(.horizontal, 2)
+        .padding(.top, 7)
     }
 
     // Center Play / Focus Overlay
@@ -2974,6 +3102,7 @@ struct ContentView: View {
     @State private var pendingDestroy: ManagedInstance?
     @State private var pendingClear: ManagedInstance?
     @State private var editingMetaItem: ManagedInstance?
+    @State private var showOptionsPopover = false
     @State private var destination = URL(fileURLWithPath: "/Applications")
     @State private var selectedFilter: InstanceFilter = .all
     @State private var refreshSpin: Double = 0
@@ -3350,7 +3479,7 @@ struct ContentView: View {
         .systemSurface(radius: 15)
     }
 
-    // MARK: - Control Toolbar (Filter Pills + Solo Mode + View Switcher)
+    // MARK: - Control Toolbar (Filter Pills + View Switcher + Preferences Menu)
 
     private var controlToolbar: some View {
         HStack(alignment: .center, spacing: 10) {
@@ -3396,122 +3525,7 @@ struct ContentView: View {
 
             Spacer()
 
-            // Managed Background Keep-Alive Indicator Badge
-            HStack(alignment: .center, spacing: 5) {
-                Image(systemName: "shield.checkered")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.green)
-                    .frame(width: 13, height: 13, alignment: .center)
-                Text("关闭即转后台托管")
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 10)
-            .frame(height: 30)
-            .background {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color.green.opacity(colorScheme == .dark ? 0.10 : 0.07))
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(Color.green.opacity(0.22), lineWidth: 1)
-            }
-            .help("已接管所有实例后台保活：在实例窗口点击左上角红色关闭按钮 (✕) 不会退出软件或中断任务，而是自动脱离 macOS Dock 并回到此监控台；仅在此处点击「停止」才会真正退出实例。")
-
-            // Solo Focus Mode Toggle Pill
-            Button {
-                withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
-                    store.soloFocusMode.toggle()
-                }
-            } label: {
-                HStack(alignment: .center, spacing: 5) {
-                    Image(systemName: store.soloFocusMode ? "viewfinder.circle.fill" : "viewfinder.circle")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(store.soloFocusMode ? accent : .secondary)
-                        .frame(width: 14, height: 14, alignment: .center)
-                    Text("专注单窗口")
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(store.soloFocusMode ? .primary : .secondary)
-                }
-                .padding(.horizontal, 10)
-                .frame(height: 30)
-                .background {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(store.soloFocusMode
-                              ? accent.opacity(colorScheme == .dark ? 0.16 : 0.10)
-                              : Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.035))
-                }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(store.soloFocusMode ? accent.opacity(0.35) : Color.primary.opacity(0.08), lineWidth: 1)
-                }
-            }
-            .buttonStyle(.plain)
-            .help("开启后，点击缩略图调出某实例时会自动隐藏其他实例窗口，桌面始终只保留当前操作的窗口")
-
-            // Floating HUD Return Pill Toggle
-            Button {
-                withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
-                    store.floatingHUDEnabled.toggle()
-                }
-            } label: {
-                HStack(alignment: .center, spacing: 5) {
-                    Image(systemName: store.floatingHUDEnabled ? "pip.enter" : "pip")
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(store.floatingHUDEnabled ? accent : .secondary)
-                        .frame(width: 14, height: 14, alignment: .center)
-                    Text("悬浮返回条")
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(store.floatingHUDEnabled ? .primary : .secondary)
-                }
-                .padding(.horizontal, 10)
-                .frame(height: 30)
-                .background {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(store.floatingHUDEnabled
-                              ? accent.opacity(colorScheme == .dark ? 0.16 : 0.10)
-                              : Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.035))
-                }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(store.floatingHUDEnabled ? accent.opacity(0.35) : Color.primary.opacity(0.08), lineWidth: 1)
-                }
-            }
-            .buttonStyle(.plain)
-            .help("开启后，切换到任意 Antigravity 实例时屏幕右下角会浮现快捷胶囊，点一下即可收起当前实例并回到缩略图监控台")
-
-            // Task System Notification Toggle Pill
-            Button {
-                withAnimation(.spring(response: 0.25, dampingFraction: 0.8)) {
-                    store.notificationsEnabled.toggle()
-                }
-            } label: {
-                HStack(alignment: .center, spacing: 5) {
-                    Image(systemName: store.notificationsEnabled ? "bell.badge.fill" : "bell.slash")
-                        .font(.system(size: 11.5, weight: .semibold))
-                        .foregroundStyle(store.notificationsEnabled ? Color.orange : .secondary)
-                        .frame(width: 14, height: 14, alignment: .center)
-                    Text("任务系统通知")
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(store.notificationsEnabled ? .primary : .secondary)
-                }
-                .padding(.horizontal, 10)
-                .frame(height: 30)
-                .background {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(store.notificationsEnabled
-                              ? Color.orange.opacity(colorScheme == .dark ? 0.16 : 0.10)
-                              : Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.035))
-                }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .strokeBorder(store.notificationsEnabled ? Color.orange.opacity(0.35) : Color.primary.opacity(0.08), lineWidth: 1)
-                }
-            }
-            .buttonStyle(.plain)
-            .help("开启后，当后台实例的 Agent 任务执行完成或遇到问题需用户确认（如 ask_question）时，自动发送 macOS 系统横幅与提示音；点击通知直接呼出对应实例窗口。")
-
-            // Grid / List View Switcher
+            // View Switcher (Grid / List)
             HStack(alignment: .center, spacing: 3) {
                 ForEach(ViewMode.allCases) { mode in
                     let active = viewMode == mode
@@ -3549,7 +3563,115 @@ struct ContentView: View {
                 RoundedRectangle(cornerRadius: 9.5, style: .continuous)
                     .strokeBorder(Color.primary.opacity(0.07), lineWidth: 1)
             }
+
+            // Options & Preferences Popover Button
+            Button {
+                showOptionsPopover.toggle()
+            } label: {
+                HStack(alignment: .center, spacing: 5) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .frame(width: 13, height: 13, alignment: .center)
+                    Text("选项与偏好")
+                        .font(.system(size: 11.5, weight: .medium))
+                }
+                .foregroundStyle(showOptionsPopover ? Color.primary : Color.secondary)
+                .padding(.horizontal, 10)
+                .frame(height: 32)
+                .background {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(Color.primary.opacity(showOptionsPopover ? (colorScheme == .dark ? 0.14 : 0.09) : (colorScheme == .dark ? 0.06 : 0.035)))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(showOptionsPopover ? 0.20 : 0.08), lineWidth: 1)
+                }
+            }
+            .buttonStyle(.plain)
+            .help("工作台窗口管理与通知偏好设置")
+            .popover(isPresented: $showOptionsPopover, arrowEdge: .bottom) {
+                toolbarOptionsPopover
+            }
         }
+    }
+
+    private var toolbarOptionsPopover: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 8) {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(accent)
+                Text("工作台偏好与窗口管理")
+                    .font(.system(size: 13, weight: .bold))
+                Spacer()
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 12) {
+                Toggle(isOn: $store.soloFocusMode) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("专注单窗口模式")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text("调出某实例时自动隐藏其他实例窗口，保持桌面整洁")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+
+                Toggle(isOn: $store.floatingHUDEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("桌面悬浮返回胶囊")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text("在实例窗口右下角浮现微型返回条，点一下即可收起回监控台")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+
+                Toggle(isOn: $store.notificationsEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("任务系统通知")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text("后台实例任务跑完或需要确认时，自动发送 macOS 系统横幅与提示音")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+            }
+
+            Divider()
+
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "shield.checkered")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.green)
+                    .frame(width: 16, height: 16, alignment: .center)
+                VStack(alignment: .leading, spacing: 2.5) {
+                    Text("关闭即转后台托管 (始终生效)")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(.green)
+                    Text("在实例窗口点击左上角红色 ✕ 关闭按钮，不会退出软件或中断任务，自动转为后台托管；在此工具中点击「退出」才会真正关闭实例。")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(10)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.green.opacity(colorScheme == .dark ? 0.10 : 0.06))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(Color.green.opacity(0.18), lineWidth: 1)
+            }
+        }
+        .padding(16)
+        .frame(width: 330)
     }
 
     // MARK: - Thumbnail Monitor Wall View (Grid Mode)
