@@ -1490,9 +1490,10 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     }
 
     func bringMonitorWallToFront() {
+        quickSwitcherPanel?.orderOut(nil)
         NSApp.unhide(nil)
         NSApp.activate(ignoringOtherApps: true)
-        for window in NSApp.windows where window.canBecomeMain {
+        for window in NSApp.windows where !(window is NSPanel) && window.canBecomeMain {
             window.makeKeyAndOrderFront(nil)
         }
     }
@@ -2117,7 +2118,7 @@ final class GlobalHotKeyManager {
 
 final class QuickSwitcherPanel: NSPanel {
     override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
+    override var canBecomeMain: Bool { false }
 
     override func cancelOperation(_ sender: Any?) {
         orderOut(nil)
@@ -4148,7 +4149,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.5.6"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.5.7"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
