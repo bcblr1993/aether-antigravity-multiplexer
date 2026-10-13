@@ -2418,153 +2418,27 @@ struct InstanceThumbnailTile: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // 1. Card Header: Identity & Actions
-            cardHeader
-
-            // 2. 16:10 Live Screen Thumbnail & Badges
-            cardScreen
-
-            // 3. Card Footer: Telemetry & Status
-            cardFooter
-        }
-        .padding(10)
-        .systemSurface(
-            radius: 14,
-            isHighlighted: hovered || (item.running && (activity.state == .runningTask || activity.state == .needsAttention)) || item.isOriginal,
-            tint: item.isOriginal ? Color(red: 0.52, green: 0.32, blue: 0.98) : (item.running ? borderTint : nil)
-        )
-        .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .scaleEffect(hovered ? 1.015 : 1.0)
-        .animation(.spring(response: 0.22, dampingFraction: 0.80), value: hovered)
-        .onHover { hovered = $0 }
-    }
-
-    // MARK: - Card Header (Identity & Action Menu)
-    private var cardHeader: some View {
-        HStack(alignment: .center, spacing: 6) {
-            // Index Pill / Main Badge
-            if item.isOriginal {
-                HStack(spacing: 3) {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 8, weight: .bold))
-                    Text("MAIN 01")
-                        .font(.system(size: 9.5, weight: .bold, design: .rounded))
-                }
-                .foregroundStyle(.white)
-                .padding(.horizontal, 6)
-                .frame(height: 19)
-                .background {
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(LinearGradient(colors: [Color(red: 0.52, green: 0.28, blue: 0.98), Color(red: 0.22, green: 0.46, blue: 1.0)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                        .shadow(color: Color(red: 0.50, green: 0.28, blue: 0.98).opacity(0.35), radius: 4, y: 1)
-                }
-            } else {
-                Text("#\(String(format: "%02d", item.index))")
-                    .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                    .foregroundStyle(item.running ? borderTint : accent)
-                    .padding(.horizontal, 5.5)
-                    .frame(height: 19)
-                    .background {
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(item.running ? borderTint.opacity(0.18) : accent.opacity(0.12))
-                    }
-            }
-
-            // Project Tag (if any)
-            if !meta.tag.isEmpty {
-                Text(meta.tag)
-                    .font(.system(size: 9.5, weight: .bold))
-                    .foregroundStyle(meta.color)
-                    .padding(.horizontal, 5.5)
-                    .frame(height: 19)
-                    .background(Capsule().fill(meta.color.opacity(colorScheme == .dark ? 0.22 : 0.12)))
-                    .overlay(Capsule().strokeBorder(meta.color.opacity(0.35), lineWidth: 0.8))
-            }
-
-            // Title / Nickname
-            Text(meta.nickname.isEmpty ? item.name : meta.nickname)
-                .font(.system(size: 12.5, weight: .semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-
-            if !meta.nickname.isEmpty {
-                Text("(\(item.name.replacingOccurrences(of: "Antigravity", with: "").trimmingCharacters(in: .whitespaces).isEmpty ? "Main" : item.name.replacingOccurrences(of: "Antigravity", with: "").trimmingCharacters(in: .whitespaces)))")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            if hasPendingUpgrade {
-                Text("可升 v\(sourceVersion)")
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.orange)
-                    .padding(.horizontal, 5)
-                    .frame(height: 17)
-                    .background(Capsule().fill(Color.orange.opacity(colorScheme == .dark ? 0.20 : 0.12)))
-                    .overlay(Capsule().strokeBorder(Color.orange.opacity(0.35), lineWidth: 0.8))
-            }
-
-            Spacer(minLength: 4)
-
-            // Edit Tag button (shown on hover or when tag exists)
-            if hovered || meta.hasCustomContent {
-                Button(action: editMeta) {
-                    Image(systemName: meta.hasCustomContent ? "tag.fill" : "tag")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(meta.hasCustomContent ? meta.color : Color.secondary)
-                        .frame(width: 20, height: 20)
-                }
-                .buttonStyle(.plain)
-                .help("编辑此实例的项目别名与标签")
-                .transition(.opacity)
-            }
-
-            // [...] More Actions Menu Button
-            Button {
-                showMorePopover.toggle()
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(hovered || showMorePopover ? Color.primary : Color.secondary)
-                    .frame(width: 20, height: 20)
-                    .background {
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(Color.primary.opacity(hovered || showMorePopover ? (colorScheme == .dark ? 0.14 : 0.08) : 0))
-                    }
-            }
-            .buttonStyle(.plain)
-            .popover(isPresented: $showMorePopover, arrowEdge: .bottom) {
-                tilePopoverMenu
-            }
-        }
-        .frame(height: 24)
-        .padding(.horizontal, 2)
-        .padding(.bottom, 7)
-    }
-
-    // MARK: - Card Screen (16:10 Live Preview & Overlays)
-    private var cardScreen: some View {
-        ZStack {
-            // Screen Background
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [
-                            Color(red: 0.07, green: 0.08, blue: 0.12),
-                            Color(red: 0.11, green: 0.13, blue: 0.19)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
+        VStack(alignment: .center, spacing: 10) {
+            // 16:10 Miniature Monitor Screen Container
+            ZStack {
+                // Screen Background & Content
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color(red: 0.08, green: 0.09, blue: 0.13),
+                                Color(red: 0.12, green: 0.14, blue: 0.20)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
                     )
-                )
 
-            Group {
                 if item.running, let thumbnail {
                     Image(nsImage: thumbnail)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
-                        .frame(height: 154)
+                        .frame(height: 158)
                         .clipped()
                         .opacity(item.running ? 0.96 : 0.72)
                 } else if item.running {
@@ -2572,116 +2446,223 @@ struct InstanceThumbnailTile: View {
                 } else {
                     stoppedScreen
                 }
+
+                // Top Screen Overlay Bar
+                VStack {
+                    HStack(alignment: .center, spacing: 6) {
+                        // Top-left state badge
+                        HStack(alignment: .center, spacing: 5) {
+                            PulsingStatusDot(active: item.running, activeColor: activity.state.color)
+                            Text(item.running ? (item.isHidden ? "\(activity.state.label) · 后台实时" : activity.state.label) : "未启动")
+                                .font(.system(size: 10.5, weight: .semibold))
+                                .foregroundStyle(.white)
+                        }
+                        .padding(.horizontal, 8)
+                        .frame(height: 22)
+                        .background(Capsule().fill(Color.black.opacity(0.62)))
+                        .overlay(Capsule().strokeBorder(activity.state.color.opacity(0.45), lineWidth: 1))
+
+                        if hasPendingUpgrade {
+                            Text("可升 v\(sourceVersion)")
+                                .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                                .foregroundStyle(.orange)
+                                .padding(.horizontal, 6.5)
+                                .frame(height: 20)
+                                .background(Capsule().fill(Color.black.opacity(0.65)))
+                                .overlay(Capsule().strokeBorder(Color.orange.opacity(0.45), lineWidth: 1))
+                        }
+
+                        // Real-time Resource Metric Capsule (CPU & Memory)
+                        if item.running && resourceMetric.processCount > 0 {
+                            HStack(alignment: .center, spacing: 4) {
+                                Image(systemName: resourceMetric.cpuPercent > 15 ? "bolt.fill" : "cpu")
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundStyle(resourceMetric.cpuPercent > 15 ? Color.cyan : .white.opacity(0.85))
+                                    .frame(width: 10, height: 10, alignment: .center)
+                                Text("\(resourceMetric.cpuLabel) · \(resourceMetric.memoryLabel)")
+                                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                                    .foregroundStyle(.white.opacity(0.92))
+                            }
+                            .padding(.horizontal, 7)
+                            .frame(height: 22)
+                            .background(Capsule().fill(Color.black.opacity(0.62)))
+                            .overlay(Capsule().strokeBorder(resourceMetric.cpuPercent > 15 ? Color.cyan.opacity(0.45) : Color.white.opacity(0.18), lineWidth: 1))
+                        }
+
+                        Spacer()
+
+                        // Top-Right [...] Menu Button
+                        Button {
+                            showMorePopover.toggle()
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(.white.opacity(hovered || showMorePopover ? 0.98 : 0.75))
+                                .frame(width: 26, height: 26)
+                                .background {
+                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                        .fill(Color.black.opacity(hovered || showMorePopover ? 0.72 : 0.45))
+                                }
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                        .strokeBorder(Color.white.opacity(hovered || showMorePopover ? 0.35 : 0.18), lineWidth: 1)
+                                }
+                        }
+                        .buttonStyle(.plain)
+                        .popover(isPresented: $showMorePopover, arrowEdge: .bottom) {
+                            tilePopoverMenu
+                        }
+                    }
+                    .padding(10)
+
+                    Spacer()
+
+                    // Bottom Live Task Telemetry Caption Bar
+                    HStack(alignment: .center, spacing: 6) {
+                        Image(systemName: item.running ? activity.state.symbol : (activity.currentAction.hasPrefix("上次：") ? "clock.arrow.circlepath" : "circle"))
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .foregroundStyle(item.running ? activity.state.color : Color.secondary)
+                            .frame(width: 13, height: 13, alignment: .center)
+
+                        Text(item.running ? activity.currentAction : (activity.currentAction.hasPrefix("上次：") ? activity.currentAction : "点击缩略图启动实例"))
+                            .font(.system(size: 10.5, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.92))
+                            .lineLimit(1)
+
+                        Spacer(minLength: 4)
+
+                        if !activity.workspace.isEmpty {
+                            Text(activity.workspace)
+                                .font(.system(size: 9.5, design: .monospaced))
+                                .foregroundStyle(.white.opacity(0.70))
+                                .lineLimit(1)
+                        } else if !activity.lastUpdatedLabel.isEmpty {
+                            Text(activity.lastUpdatedLabel)
+                                .font(.system(size: 9.5, design: .monospaced))
+                                .foregroundStyle(.white.opacity(0.60))
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(height: 28)
+                    .background(Color.black.opacity(0.68))
+                }
+
+                // Center Play / Switch Action Overlay
+                centerPlayOverlay
             }
-            .contentShape(Rectangle())
+            .frame(height: 158)
+            .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .strokeBorder(
+                        item.isOriginal
+                            ? Color(red: 0.52, green: 0.32, blue: 0.98).opacity(hovered ? 0.95 : 0.70)
+                            : (item.running
+                                ? borderTint.opacity(hovered ? 0.85 : (activity.state == .runningTask || activity.state == .needsAttention ? 0.65 : 0.35))
+                                : Color.primary.opacity(hovered ? 0.30 : 0.12)),
+                        lineWidth: (item.isOriginal || hovered || activity.state == .runningTask || activity.state == .needsAttention) ? 1.6 : 1
+                    )
+            }
+            .shadow(
+                color: item.isOriginal
+                    ? Color(red: 0.52, green: 0.32, blue: 0.98).opacity(0.28)
+                    : ((item.running && activity.state == .runningTask)
+                        ? borderTint.opacity(0.22)
+                        : Color.black.opacity(hovered ? 0.25 : 0.12)),
+                radius: (item.isOriginal || hovered) ? 12 : 6,
+                x: 0,
+                y: hovered ? 5 : 2
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
             .onTapGesture {
                 open()
             }
 
-            // Screen Overlay: Bottom Status Dot & Resource Metric
-            VStack {
-                Spacer()
-
-                HStack(alignment: .center, spacing: 6) {
-                    // Bottom-left state badge
-                    HStack(alignment: .center, spacing: 4.5) {
-                        PulsingStatusDot(active: item.running, activeColor: activity.state.color)
-                        Text(item.running ? (item.isHidden ? "\(activity.state.label) · 后台" : activity.state.label) : "未启动")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.white)
+            // Bottom Instance Name Pill
+            HStack(alignment: .center, spacing: 6) {
+                if item.isOriginal {
+                    HStack(spacing: 3) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 8, weight: .bold))
+                        Text("MAIN 01")
+                            .font(.system(size: 9.5, weight: .bold, design: .rounded))
                     }
-                    .padding(.horizontal, 7.5)
-                    .frame(height: 21)
-                    .background(Capsule().fill(Color.black.opacity(0.68)))
-                    .overlay(Capsule().strokeBorder(activity.state.color.opacity(0.40), lineWidth: 0.8))
-
-                    Spacer(minLength: 4)
-
-                    // Bottom-right Real-time Resource Metric Capsule (CPU & Memory)
-                    if item.running && resourceMetric.processCount > 0 {
-                        HStack(alignment: .center, spacing: 4) {
-                            Image(systemName: resourceMetric.cpuPercent > 15 ? "bolt.fill" : "cpu")
-                                .font(.system(size: 8.5, weight: .semibold))
-                                .foregroundStyle(resourceMetric.cpuPercent > 15 ? Color.cyan : .white.opacity(0.85))
-                                .frame(width: 9, height: 9, alignment: .center)
-                            Text("\(resourceMetric.cpuLabel) · \(resourceMetric.memoryLabel)")
-                                .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                                .foregroundStyle(.white.opacity(0.92))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6)
+                    .frame(height: 18)
+                    .background {
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(LinearGradient(colors: [Color(red: 0.52, green: 0.28, blue: 0.98), Color(red: 0.22, green: 0.46, blue: 1.0)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                            .shadow(color: Color(red: 0.50, green: 0.28, blue: 0.98).opacity(0.35), radius: 4, y: 1)
+                    }
+                } else {
+                    Text("#\(String(format: "%02d", item.index))")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundStyle(item.running ? borderTint : accent)
+                        .padding(.horizontal, 5.5)
+                        .frame(height: 18)
+                        .background {
+                            RoundedRectangle(cornerRadius: 4.5, style: .continuous)
+                                .fill(item.running ? borderTint.opacity(0.18) : accent.opacity(0.12))
                         }
-                        .padding(.horizontal, 7)
-                        .frame(height: 21)
-                        .background(Capsule().fill(Color.black.opacity(0.68)))
-                        .overlay(Capsule().strokeBorder(resourceMetric.cpuPercent > 15 ? Color.cyan.opacity(0.45) : Color.white.opacity(0.18), lineWidth: 0.8))
-                    }
                 }
-                .padding(8)
-            }
 
-            // Center Play / Quick Focus Buttons
-            centerPlayOverlay
-        }
-        .frame(height: 154)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.8)
-        }
-    }
+                if !meta.tag.isEmpty {
+                    Text(meta.tag)
+                        .font(.system(size: 9.5, weight: .bold))
+                        .foregroundStyle(meta.color)
+                        .padding(.horizontal, 5)
+                        .frame(height: 17)
+                        .background(Capsule().fill(meta.color.opacity(colorScheme == .dark ? 0.20 : 0.12)))
+                        .overlay(Capsule().strokeBorder(meta.color.opacity(0.35), lineWidth: 0.8))
+                }
 
-    // MARK: - Card Footer (Telemetry & Subtitle)
-    private var cardFooter: some View {
-        HStack(alignment: .center, spacing: 6) {
-            if item.running {
-                Image(systemName: activity.state.symbol)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(activity.state.color)
-                    .frame(width: 12, height: 12, alignment: .center)
-
-                Text(activity.currentAction)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.primary.opacity(0.85))
+                Text(meta.nickname.isEmpty ? item.name : meta.nickname)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
 
-                Spacer(minLength: 4)
-
-                if !activity.workspace.isEmpty {
-                    Text(activity.workspace)
-                        .font(.system(size: 10, design: .monospaced))
+                if !meta.nickname.isEmpty {
+                    Text("(\(item.name.replacingOccurrences(of: "Antigravity", with: "").trimmingCharacters(in: .whitespaces).isEmpty ? "Main" : item.name.replacingOccurrences(of: "Antigravity", with: "").trimmingCharacters(in: .whitespaces)))")
+                        .font(.system(size: 10.5))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
-                } else if !activity.lastUpdatedLabel.isEmpty {
-                    Text(activity.lastUpdatedLabel)
-                        .font(.system(size: 9.5, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
                 }
-            } else {
-                Circle()
-                    .fill(Color.secondary.opacity(0.35))
-                    .frame(width: 5, height: 5)
-
-                Text(activity.currentAction.hasPrefix("上次：") ? activity.currentAction : "实例未启动")
-                    .font(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-
-                Spacer()
 
                 if !activity.workspace.isEmpty {
-                    Text(activity.workspace)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.tertiary)
+                    Text("· \(activity.workspace)")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
-                } else {
-                    Text("点击卡片启动")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
                 }
+
+                Button(action: editMeta) {
+                    Image(systemName: meta.hasCustomContent ? "tag.fill" : "tag")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(meta.hasCustomContent ? meta.color : .secondary.opacity(0.8))
+                        .frame(width: 15, height: 15)
+                }
+                .buttonStyle(.plain)
+                .help("编辑此实例的项目别名与标签")
+            }
+            .padding(.horizontal, 11)
+            .frame(height: 26)
+            .background {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(item.isOriginal
+                        ? Color(red: 0.52, green: 0.28, blue: 0.98).opacity(colorScheme == .dark ? 0.12 : 0.08)
+                        : Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.05))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(item.isOriginal
+                        ? Color(red: 0.52, green: 0.32, blue: 0.98).opacity(0.35)
+                        : Color.primary.opacity(hovered ? 0.18 : 0.07), lineWidth: 1)
             }
         }
-        .frame(height: 22)
-        .padding(.horizontal, 2)
-        .padding(.top, 7)
+        .scaleEffect(hovered ? 1.018 : 1.0)
+        .animation(.spring(response: 0.24, dampingFraction: 0.78), value: hovered)
+        .onHover { hovered = $0 }
     }
 
     // Center Play / Focus Overlay
@@ -3789,7 +3770,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.5.4"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.5.5"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
@@ -4473,8 +4454,8 @@ struct ContentView: View {
                 filteredEmptyView
             } else {
                 LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 250, maximum: 330), spacing: 18)],
-                    spacing: 20
+                    columns: [GridItem(.adaptive(minimum: 270, maximum: 360), spacing: 20)],
+                    spacing: 22
                 ) {
                     ForEach(Array(filteredInstances.enumerated()), id: \.element.id) { idx, item in
                         InstanceThumbnailTile(
@@ -4505,8 +4486,8 @@ struct ContentView: View {
                         )
                     }
                 }
-                .padding(18)
-                .systemSurface(radius: 18)
+                .padding(20)
+                .systemSurface(radius: 20)
             }
         }
     }
