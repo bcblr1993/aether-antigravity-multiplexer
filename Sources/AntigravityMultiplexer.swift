@@ -898,7 +898,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     @Published var sourceVersion = "—"
     @Published var compatibility = "检查中"
     @Published var hasScreenCapturePermission = false
-    @Published var soloFocusMode: Bool = UserDefaults.standard.object(forKey: "soloFocusMode") as? Bool ?? true {
+    @Published var soloFocusMode: Bool = UserDefaults.standard.object(forKey: "soloFocusMode") as? Bool ?? false {
         didSet { UserDefaults.standard.set(soloFocusMode, forKey: "soloFocusMode") }
     }
     @Published var floatingHUDEnabled: Bool = UserDefaults.standard.object(forKey: "floatingHUDEnabled") as? Bool ?? true {
@@ -936,6 +936,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     private var hasInitializedActivityBaseline = false
     private var lastNotifiedStates: [String: (state: TaskRunState, stepIndex: Int)] = [:]
     private var lastOpenTime: [String: Date] = [:]
+    private var isScanningTelemetry = false
 
     private let support = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/Antigravity Multiplexer")
@@ -1150,6 +1151,8 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     }
 
     func refreshTelemetryAndThumbnails() {
+        guard !isScanningTelemetry else { return }
+        isScanningTelemetry = true
         let snapshot = instances
         Task.detached(priority: .utility) {
             let scanned = TelemetryScanner.scan(instances: snapshot)
@@ -1157,6 +1160,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             let cdpData = await Self.captureCDPScreenshots(for: snapshot)
             await MainActor.run { [weak self] in
                 guard let self else { return }
+                self.isScanningTelemetry = false
                 var finalActivities = scanned
                 for (id, ws) in cdpData.workspaces {
                     if !ws.isEmpty, var act = finalActivities[id] {
@@ -1469,16 +1473,6 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         guard let app = runningApplication(bundleID: item.bundleID, path: item.path) else { return }
         enforceRunInBackgroundSetting(for: [item])
         app.hide()
-        let itemID = item.id
-        Task {
-            let shots = await Self.captureCDPScreenshots(for: [item])
-            await MainActor.run {
-                if let img = shots.thumbnails[itemID] {
-                    self.thumbnails[itemID] = img
-                }
-                self.refreshRunningStates()
-            }
-        }
     }
 
     func hideOtherInstances(except keptBundleID: String?) {
@@ -1493,8 +1487,12 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         quickSwitcherPanel?.orderOut(nil)
         NSApp.unhide(nil)
         NSApp.activate(ignoringOtherApps: true)
-        for window in NSApp.windows where !(window is NSPanel) && window.canBecomeMain {
-            window.makeKeyAndOrderFront(nil)
+        for window in NSApp.windows where !(window is NSPanel) && !window.isSheet && window.canBecomeMain {
+            if let sheet = window.attachedSheet {
+                sheet.makeKeyAndOrderFront(nil)
+            } else {
+                window.makeKeyAndOrderFront(nil)
+            }
         }
     }
 
@@ -1926,8 +1924,10 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 self?.refresh()
             }
         }
-        do { try process.run() }
-        catch {
+        do {
+            try process.run()
+            try? pipe.fileHandleForWriting.close()
+        } catch {
             withAnimation { busy = false }
             self.error = "无法启动组件：\(error.localizedDescription)"
         }
@@ -2054,7 +2054,9 @@ final class GlobalHotKeyManager {
                 nil,
                 &hotKeyID
             )
-            guard err == noErr else { return noErr }
+            guard err == noErr, hotKeyID.signature == OSType(0x4147594D) else {
+                return OSStatus(eventNotHandledErr)
+            }
 
             let id = Int(hotKeyID.id)
             DispatchQueue.main.async {
@@ -2339,8 +2341,9 @@ private struct QuickSwitcherView: View {
                 }
                 return nil
             } else if event.keyCode == 36 || event.keyCode == 76 { // Return / Enter
-                if selectedIndex >= 0 && selectedIndex < filteredInstances.count {
-                    let target = filteredInstances[selectedIndex]
+                if !filteredInstances.isEmpty {
+                    let safeIndex = min(max(0, selectedIndex), filteredInstances.count - 1)
+                    let target = filteredInstances[safeIndex]
                     doDismiss()
                     store?.open(target)
                 }
@@ -4115,8 +4118,10 @@ struct UpgradeConfirmationView: View {
                 Spacer()
                 Button("取消", action: cancel)
                     .buttonStyle(ModernButtonStyle(variant: .secondary))
+                    .keyboardShortcut(.cancelAction)
                 Button("备份并升级", action: confirm)
                     .buttonStyle(ModernButtonStyle(variant: .upgrade))
+                    .keyboardShortcut(.return, modifiers: .command)
                     .disabled(busy || instances.isEmpty)
             }
         }
@@ -4168,7 +4173,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.5.8"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.5.9"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
@@ -5223,11 +5228,13 @@ struct ContentView: View {
                 Spacer()
                 Button("取消") { showCreate = false }
                     .buttonStyle(ModernButtonStyle(variant: .secondary))
+                    .keyboardShortcut(.cancelAction)
                 Button("创建并启动") {
                     store.create(index: store.nextIndex, destination: destination)
                     showCreate = false
                 }
                 .buttonStyle(ModernButtonStyle(variant: .primary))
+                .keyboardShortcut(.return, modifiers: .command)
                 .disabled(store.compatibility != "已支持本机版本")
             }
         }
@@ -5363,6 +5370,7 @@ private struct ClearWorkspaceView: View {
                 Spacer()
                 Button("取消") { dismiss() }
                     .buttonStyle(ModernButtonStyle(variant: .secondary))
+                    .keyboardShortcut(.cancelAction)
                 Button("永久清空", action: clear)
                     .buttonStyle(ModernButtonStyle(variant: .danger))
                     .disabled(busy || item.running || confirmation != item.name)
@@ -5435,6 +5443,7 @@ private struct DestroyInstanceView: View {
                 Spacer()
                 Button("取消") { dismiss() }
                     .buttonStyle(ModernButtonStyle(variant: .secondary))
+                    .keyboardShortcut(.cancelAction)
                 Button("永久销毁", action: destroy)
                     .buttonStyle(ModernButtonStyle(variant: .danger))
                     .disabled(busy || item.running || confirmation != item.name)
@@ -5560,6 +5569,7 @@ private struct BackupManagementView: View {
                 Spacer()
                 Button("完成") { dismiss() }
                     .buttonStyle(ModernButtonStyle(variant: .primary))
+                    .keyboardShortcut(.cancelAction)
             }
         }
         .padding(24)
@@ -5622,6 +5632,7 @@ private struct UpdateSettingsView: View {
                 Spacer()
                 Button("完成") { dismiss() }
                     .buttonStyle(ModernButtonStyle(variant: .primary))
+                    .keyboardShortcut(.cancelAction)
             }
         }
         .padding(24)
@@ -5646,7 +5657,23 @@ private struct MainWindowCommands: Commands {
     }
 }
 
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        for window in sender.windows where !(window is NSPanel) && !window.isSheet && window.canBecomeMain {
+            if let sheet = window.attachedSheet {
+                sheet.makeKeyAndOrderFront(nil)
+            } else {
+                window.makeKeyAndOrderFront(nil)
+            }
+            sender.activate(ignoringOtherApps: true)
+            return true
+        }
+        return true
+    }
+}
+
 @main struct AntigravityMultiplexerApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     private let updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
     var body: some Scene {
         Window("Aether Antigravity Multiplexer", id: "main") {
