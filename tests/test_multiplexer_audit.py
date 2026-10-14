@@ -170,6 +170,21 @@ class TestMultiplexerAudit(unittest.TestCase):
         # Top dashboard header must display Kernel Direct badge
         self.assertIn('Kernel Direct', self.content)
 
+    def test_telemetry_actor_concurrency(self):
+        # TelemetryActor must encapsulate telemetry batch scanning in Swift concurrency actor
+        self.assertIn('actor TelemetryActor', self.content)
+        self.assertIn('func scanTelemetryBatch(', self.content)
+        self.assertIn('TelemetryActor.shared.scanTelemetryBatch(', self.content)
+
+    def test_agent_stall_sentinel(self):
+        # Must detect stalled tasks (>180s silence) and alert across UI and system notifications
+        self.assertIn('case .stalled', self.content)
+        self.assertIn('疑似挂起', self.content)
+        self.assertIn('isStalled: Bool', self.content)
+        self.assertIn('stalledTaskCount', self.content)
+        self.assertIn('task-stalled-', self.content)
+        self.assertIn('age >= 180', self.content)
+
 
 if __name__ == "__main__":
     unittest.main()

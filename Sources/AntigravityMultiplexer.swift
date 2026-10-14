@@ -271,6 +271,7 @@ private struct PulsingStatusDot: View {
 enum TaskRunState: Equatable {
     case stopped
     case runningTask
+    case stalled
     case needsAttention
     case idle
     case error
@@ -279,6 +280,7 @@ enum TaskRunState: Equatable {
         switch self {
         case .stopped: return "未启动"
         case .runningTask: return "任务执行中"
+        case .stalled: return "疑似挂起"
         case .needsAttention: return "等待确认"
         case .idle: return "空闲就绪"
         case .error: return "任务异常"
@@ -289,6 +291,7 @@ enum TaskRunState: Equatable {
         switch self {
         case .stopped: return .secondary
         case .runningTask: return Color(red: 0.15, green: 0.82, blue: 0.96)
+        case .stalled: return Color(red: 0.98, green: 0.65, blue: 0.18)
         case .needsAttention: return .orange
         case .idle: return .green
         case .error: return .red
@@ -299,6 +302,7 @@ enum TaskRunState: Equatable {
         switch self {
         case .stopped: return "poweroff"
         case .runningTask: return "bolt.horizontal.circle.fill"
+        case .stalled: return "clock.badge.exclamationmark.fill"
         case .needsAttention: return "bell.badge.fill"
         case .idle: return "checkmark.circle.fill"
         case .error: return "exclamationmark.triangle.fill"
@@ -313,6 +317,7 @@ struct InstanceActivity: Equatable {
     var lastUpdatedLabel: String = ""
     var stepIndex: Int = 0
     var latestConversationID: String = ""
+    var isStalled: Bool = false
 
     static let stopped = InstanceActivity()
 }
@@ -727,6 +732,42 @@ enum NativeProcessMonitor {
     }
 }
 
+// MARK: - Swift Concurrency Telemetry Actor
+
+actor TelemetryActor {
+    static let shared = TelemetryActor()
+
+    struct ScanBatchResult {
+        var activities: [String: InstanceActivity]
+        var metrics: [String: InstanceResourceMetric]
+        var cdpData: (thumbnails: [String: NSImage], urls: [String: String], workspaces: [String: String], sessionTitles: [String: String])
+    }
+
+    func scanTelemetryBatch(
+        instances: [ManagedInstance],
+        knownConvIDs: [String: String],
+        runningAppPids: [String: pid_t],
+        shouldCapture: Bool,
+        currentMetrics: [String: InstanceResourceMetric],
+        frontmostBundleID: String?,
+        existingThumbnailIDs: Set<String>,
+        activeTaskIDs: Set<String>,
+        telemetryTick: Int
+    ) async -> ScanBatchResult {
+        let scanned = TelemetryScanner.scan(instances: instances, knownConvIDs: knownConvIDs)
+        let metrics = shouldCapture ? TelemetryScanner.scanResourceMetrics(instances: instances, runningAppPids: runningAppPids) : currentMetrics
+        let cdpData = await InstanceStore.captureCDPScreenshots(
+            for: instances,
+            captureThumbnails: shouldCapture,
+            frontmostBundleID: frontmostBundleID,
+            existingThumbnailIDs: existingThumbnailIDs,
+            activeTaskIDs: activeTaskIDs,
+            telemetryTick: telemetryTick
+        )
+        return ScanBatchResult(activities: scanned, metrics: metrics, cdpData: cdpData)
+    }
+}
+
 // MARK: - Background Transcript & Window Scanner
 
 private enum TelemetryScanner {
@@ -1013,24 +1054,28 @@ private enum TelemetryScanner {
                 ))
             }
             if isRunning && age < 240 {
+                let isStalled = age >= 180
                 return withConv(InstanceActivity(
-                    state: .runningTask,
-                    currentAction: actionText,
+                    state: isStalled ? .stalled : .runningTask,
+                    currentAction: isStalled ? "⚠️ 疑似挂起（\(ageLabel)无响应）：\(actionText)" : actionText,
                     workspace: workspace,
                     lastUpdatedLabel: ageLabel,
-                    stepIndex: stepIndex
+                    stepIndex: stepIndex,
+                    isStalled: isStalled
                 ))
             }
         }
 
         if isRunning && hasRunningStep && age < 600 {
             let runningDesc = !actionText.isEmpty ? actionText : (!recentToolAction.isEmpty ? "正在执行：\(recentToolAction)" : "正在后台执行任务…")
+            let isStalled = age >= 180
             return withConv(InstanceActivity(
-                state: .runningTask,
-                currentAction: runningDesc,
+                state: isStalled ? .stalled : .runningTask,
+                currentAction: isStalled ? "⚠️ 疑似挂起（\(ageLabel)无响应）：\(runningDesc)" : runningDesc,
                 workspace: workspace,
                 lastUpdatedLabel: ageLabel,
-                stepIndex: stepIndex
+                stepIndex: stepIndex,
+                isStalled: isStalled
             ))
         }
 
@@ -1410,7 +1455,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
 
     func runningDuration(for item: ManagedInstance) -> String? {
         guard item.running,
-              activities[item.id]?.state == .runningTask,
+              (activities[item.id]?.state == .runningTask || activities[item.id]?.state == .stalled),
               let start = taskStartTimes[item.id] else { return nil }
         let elapsed = Int(Date().timeIntervalSince(start))
         if elapsed < 60 {
@@ -1581,7 +1626,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         }
         let currentMetrics = self.resourceMetrics
         let existingThumbnails = Set(thumbnails.keys)
-        let activeTasks = Set(activities.filter { $0.value.state == .runningTask }.keys)
+        let activeTasks = Set(activities.filter { $0.value.state == .runningTask || $0.value.state == .stalled }.keys)
         let frontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         let runningPids = Dictionary(uniqueKeysWithValues: snapshot.compactMap { item -> (String, pid_t)? in
             guard item.running, let app = self.runningApplication(bundleID: item.bundleID, path: item.path) else { return nil }
@@ -1592,11 +1637,12 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         let tick = telemetryTickCount
 
         Task.detached(priority: .utility) {
-            let scanned = TelemetryScanner.scan(instances: snapshot, knownConvIDs: knownConvIDs)
-            let metrics = shouldCapture ? TelemetryScanner.scanResourceMetrics(instances: snapshot, runningAppPids: runningPids) : currentMetrics
-            let cdpData = await Self.captureCDPScreenshots(
-                for: snapshot,
-                captureThumbnails: shouldCapture,
+            let result = await TelemetryActor.shared.scanTelemetryBatch(
+                instances: snapshot,
+                knownConvIDs: knownConvIDs,
+                runningAppPids: runningPids,
+                shouldCapture: shouldCapture,
+                currentMetrics: currentMetrics,
                 frontmostBundleID: frontmost,
                 existingThumbnailIDs: existingThumbnails,
                 activeTaskIDs: activeTasks,
@@ -1605,8 +1651,8 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.isScanningTelemetry = false
-                var finalActivities = scanned
-                for (id, ws) in cdpData.workspaces {
+                var finalActivities = result.activities
+                for (id, ws) in result.cdpData.workspaces {
                     if !ws.isEmpty, var act = finalActivities[id] {
                         act.workspace = ws
                         finalActivities[id] = act
@@ -1618,16 +1664,17 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                         self.activities = finalActivities
                     }
                 }
+                let metrics = result.metrics
                 if self.resourceMetrics != metrics {
                     self.resourceMetrics = metrics
                 }
-                if shouldCapture && !cdpData.thumbnails.isEmpty {
-                    for (id, image) in cdpData.thumbnails {
+                if shouldCapture && !result.cdpData.thumbnails.isEmpty {
+                    for (id, image) in result.cdpData.thumbnails {
                         self.thumbnails[id] = image
                     }
                 }
-                if self.activeConversationURLs != cdpData.urls {
-                    self.activeConversationURLs = cdpData.urls
+                if self.activeConversationURLs != result.cdpData.urls {
+                    self.activeConversationURLs = result.cdpData.urls
                 }
                 if shouldCapture {
                     self.captureWindowThumbnails()
@@ -1651,7 +1698,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
 
     /// Zero-permission live window screenshot capture via Chromium DevTools Protocol (`DevToolsActivePort`).
     /// Captures live UI screenshots of all running instances in real-time and remembers the active conversation URL!
-    private nonisolated static func captureCDPScreenshots(
+    fileprivate nonisolated static func captureCDPScreenshots(
         for items: [ManagedInstance],
         captureThumbnails: Bool = true,
         frontmostBundleID: String? = nil,
@@ -1767,7 +1814,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             guard let app = runningApplication(bundleID: item.bundleID, path: item.path) else { continue }
             // Only capture when not hidden/collapsed so we don't overwrite a good snapshot with an empty frame
             if isInstanceCollapsed(app) && thumbnails[item.id] != nil { continue }
-            let isRunningTask = activities[item.id]?.state == .runningTask
+            let isRunningTask = (activities[item.id]?.state == .runningTask || activities[item.id]?.state == .stalled)
             let isFront = (frontmostBundle == item.bundleID)
             let hasThumb = thumbnails[item.id] != nil
             if hasThumb && !isFront && !isRunningTask { continue }
@@ -1812,7 +1859,14 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     var activeTaskCount: Int {
         instances.filter { item in
             guard item.running, let state = activities[item.id]?.state else { return false }
-            return state == .runningTask || state == .needsAttention
+            return state == .runningTask || state == .stalled || state == .needsAttention
+        }.count
+    }
+
+    var stalledTaskCount: Int {
+        instances.filter { item in
+            guard item.running, let state = activities[item.id]?.state else { return false }
+            return state == .stalled
         }.count
     }
 
@@ -2121,7 +2175,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             let isMainPrefix = item.isOriginal ? "👑 " : ""
 
             // Start timing when task begins running
-            if newAct.state == .runningTask && prevState != .runningTask {
+            if (newAct.state == .runningTask || newAct.state == .stalled) && prevState != .runningTask && prevState != .stalled {
                 taskStartTimes[item.id] = Date()
             }
 
@@ -2145,7 +2199,27 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                         bundleID: item.bundleID
                     )
                 }
-            } else if prevState == .runningTask && newAct.state == .idle {
+            } else if newAct.state == .stalled && prevState != .stalled {
+                lastNotifiedStates[item.id] = (state: newAct.state, stepIndex: newAct.stepIndex)
+                let duration = taskStartTimes[item.id].map { Date().timeIntervalSince($0) }
+                recordTaskEvent(
+                    item: item,
+                    category: .needsAttention,
+                    action: newAct.currentAction.isEmpty ? "Agent 任务执行疑似挂起卡顿（超过3分钟无响应）" : newAct.currentAction,
+                    workspace: newAct.workspace,
+                    stepIndex: newAct.stepIndex,
+                    duration: duration
+                )
+                if !isUserCurrentlyFocusingInstance {
+                    sendSystemNotification(
+                        identifier: "task-stalled-\(item.id)-\(newAct.stepIndex)",
+                        title: "\(isMainPrefix)\(displayName) · 任务疑似挂起",
+                        subtitle: newAct.workspace.isEmpty ? "已持续超过 3 分钟无响应" : "工作区: \(newAct.workspace) · 超 3 分钟无响应",
+                        body: newAct.currentAction.isEmpty ? "终端进程或提示可能处于等待中，点击立即查看" : newAct.currentAction,
+                        bundleID: item.bundleID
+                    )
+                }
+            } else if (prevState == .runningTask || prevState == .stalled) && newAct.state == .idle {
                 let duration = taskStartTimes[item.id].map { Date().timeIntervalSince($0) }
                 taskStartTimes.removeValue(forKey: item.id)
                 lastNotifiedStates[item.id] = (state: newAct.state, stepIndex: newAct.stepIndex)
@@ -2224,12 +2298,18 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             item.running && activities[item.id]?.state == .needsAttention
         }.count
 
+        let stalledCount = instances.filter { item in
+            item.running && activities[item.id]?.state == .stalled
+        }.count
+
         let runningTasks = instances.filter { item in
             item.running && activities[item.id]?.state == .runningTask
         }.count
 
         if attentionCount > 0 {
             NSApp.dockTile.badgeLabel = attentionCount > 1 ? "!\(attentionCount)" : "!"
+        } else if stalledCount > 0 {
+            NSApp.dockTile.badgeLabel = stalledCount > 1 ? "⏳\(stalledCount)" : "⏳"
         } else if runningTasks > 0 {
             NSApp.dockTile.badgeLabel = "\(runningTasks)"
         } else {
@@ -2255,6 +2335,10 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             item.running && activities[item.id]?.state == .needsAttention
         }.count
 
+        let stalledCount = instances.filter { item in
+            item.running && activities[item.id]?.state == .stalled
+        }.count
+
         let runningTasks = instances.filter { item in
             item.running && activities[item.id]?.state == .runningTask
         }.count
@@ -2263,6 +2347,9 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             if attentionCount > 0 {
                 button.image = NSImage(systemSymbolName: "bell.badge.fill", accessibilityDescription: "有实例等待确认")
                 button.title = " \(attentionCount)待确认"
+            } else if stalledCount > 0 {
+                button.image = NSImage(systemSymbolName: "clock.badge.exclamationmark.fill", accessibilityDescription: "任务疑似挂起")
+                button.title = " \(stalledCount)挂起"
             } else if runningTasks > 0 {
                 button.image = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: "正在运行任务")
                 button.title = " \(runningTasks)"
@@ -2289,7 +2376,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
 
         let busyInstances = instances.filter { item in
             guard item.running, let act = activities[item.id] else { return false }
-            return act.state == .runningTask || act.state == .needsAttention
+            return act.state == .runningTask || act.state == .stalled || act.state == .needsAttention
         }
         if !busyInstances.isEmpty {
             menu.addItem(.separator())
@@ -2302,7 +2389,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 let meta = meta(for: item)
                 let name = meta.nickname.isEmpty ? item.name : meta.nickname
                 let isMainPrefix = item.isOriginal ? "👑 " : ""
-                let icon = act.state == .needsAttention ? "🔔" : "⚡"
+                let icon = act.state == .needsAttention ? "🔔" : (act.state == .stalled ? "⚠️" : "⚡")
                 let detail = act.workspace.isEmpty ? act.currentAction : "\(act.workspace) · \(act.currentAction)"
                 let taskItem = NSMenuItem(
                     title: "  \(icon) \(isMainPrefix)\(name) — \(detail)",
@@ -2325,7 +2412,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             let act = activity(for: item)
             let meta = meta(for: item)
             let displayName = meta.nickname.isEmpty ? item.name : "\(meta.nickname) (\(item.name))"
-            let statePrefix = !item.running ? "⏹" : (act.state == .runningTask ? "⚡" : (act.state == .needsAttention ? "🔔" : "🟢"))
+            let statePrefix = !item.running ? "⏹" : (act.state == .runningTask ? "⚡" : (act.state == .stalled ? "⚠️" : (act.state == .needsAttention ? "🔔" : "🟢")))
             let shortcutHint = item.isOriginal ? "[⌥1]" : "[⌥\(item.index)]"
             let isMainPrefix = item.isOriginal ? "👑 " : ""
             let menuItem = NSMenuItem(
@@ -2600,9 +2687,28 @@ private struct FloatingMonitorHUDView: View {
                     .frame(width: 12)
                     .help("按住可随意拖动浮窗到屏幕任意位置")
 
+                let hudDotColor: Color = {
+                    if store.stalledTaskCount > 0 {
+                        return Color(red: 0.98, green: 0.65, blue: 0.18)
+                    } else if store.activeTaskCount > 0 {
+                        return Color(red: 0.15, green: 0.82, blue: 0.96)
+                    } else {
+                        return .green
+                    }
+                }()
+                let hudSubtitle: String = {
+                    if store.stalledTaskCount > 0 {
+                        return "⚠️ \(store.stalledTaskCount) 个任务疑似挂起卡顿"
+                    } else if store.activeTaskCount > 0 {
+                        return "\(store.activeTaskCount) 个实例正在跑任务"
+                    } else {
+                        return "所有运行实例空闲"
+                    }
+                }()
+
                 PulsingStatusDot(
                     active: true,
-                    activeColor: store.activeTaskCount > 0 ? Color(red: 0.15, green: 0.82, blue: 0.96) : .green,
+                    activeColor: hudDotColor,
                     pulse: store.activeTaskCount > 0
                 )
                 VStack(alignment: .leading, spacing: 1) {
@@ -2610,9 +2716,9 @@ private struct FloatingMonitorHUDView: View {
                         .font(.system(size: 11.5, weight: .bold))
                         .foregroundStyle(.white)
                         .lineLimit(1)
-                    Text(store.activeTaskCount > 0 ? "\(store.activeTaskCount) 个实例正在跑任务" : "所有运行实例空闲")
+                    Text(hudSubtitle)
                         .font(.system(size: 9.5, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.75))
+                        .foregroundStyle(store.stalledTaskCount > 0 ? Color(red: 0.98, green: 0.75, blue: 0.35) : .white.opacity(0.75))
                         .lineLimit(1)
                 }
             }
@@ -3149,7 +3255,7 @@ private struct QuickSwitcherRow: View {
                             PulsingStatusDot(
                                 active: true,
                                 activeColor: activity.state.color,
-                                pulse: activity.state == .runningTask || activity.state == .needsAttention
+                                pulse: activity.state == .runningTask || activity.state == .stalled || activity.state == .needsAttention
                             )
                             Text(activity.currentAction)
                                 .font(.system(size: 11))
@@ -3384,6 +3490,7 @@ struct InstanceThumbnailTile: View {
         if !item.running { return .primary }
         switch activity.state {
         case .runningTask: return Color(red: 0.15, green: 0.82, blue: 0.96)
+        case .stalled: return Color(red: 0.98, green: 0.65, blue: 0.18)
         case .needsAttention: return .orange
         case .error: return .red
         case .idle: return .green
@@ -3429,7 +3536,7 @@ struct InstanceThumbnailTile: View {
                             PulsingStatusDot(
                                 active: item.running,
                                 activeColor: activity.state.color,
-                                pulse: item.running && (activity.state == .runningTask || activity.state == .needsAttention)
+                                pulse: item.running && (activity.state == .runningTask || activity.state == .stalled || activity.state == .needsAttention)
                             )
                             Text(item.running ? (item.isHidden ? "\(activity.state.label) · 后台实时" : activity.state.label) : "未启动")
                                 .font(.system(size: 10.5, weight: .semibold))
@@ -3545,15 +3652,15 @@ struct InstanceThumbnailTile: View {
                         item.isOriginal
                             ? Color(red: 0.52, green: 0.32, blue: 0.98).opacity(hovered ? 0.95 : 0.70)
                             : (item.running
-                                ? borderTint.opacity(hovered ? 0.85 : (activity.state == .runningTask || activity.state == .needsAttention ? 0.65 : 0.35))
+                                ? borderTint.opacity(hovered ? 0.85 : (activity.state == .runningTask || activity.state == .stalled || activity.state == .needsAttention ? 0.65 : 0.35))
                                 : Color.primary.opacity(hovered ? 0.30 : 0.12)),
-                        lineWidth: (item.isOriginal || hovered || activity.state == .runningTask || activity.state == .needsAttention) ? 1.6 : 1
+                        lineWidth: (item.isOriginal || hovered || activity.state == .runningTask || activity.state == .stalled || activity.state == .needsAttention) ? 1.6 : 1
                     )
             }
             .shadow(
                 color: item.isOriginal
                     ? Color(red: 0.52, green: 0.32, blue: 0.98).opacity(0.28)
-                    : ((item.running && activity.state == .runningTask)
+                    : ((item.running && (activity.state == .runningTask || activity.state == .stalled))
                         ? borderTint.opacity(0.22)
                         : Color.black.opacity(hovered ? 0.25 : 0.12)),
                 radius: (item.isOriginal || hovered) ? 12 : 6,
@@ -3777,7 +3884,7 @@ struct InstanceThumbnailTile: View {
                         .fill(activity.state.color.opacity(0.85))
                         .frame(width: 3, height: 28)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(activity.state == .runningTask ? "AGENT EXECUTING TASK" : (activity.state == .needsAttention ? "WAITING FOR USER INPUT" : "AGENT READY"))
+                        Text(activity.state == .runningTask ? "AGENT EXECUTING TASK" : (activity.state == .stalled ? "TASK SUSPECTED STALLED (>3M)" : (activity.state == .needsAttention ? "WAITING FOR USER INPUT" : "AGENT READY")))
                             .font(.system(size: 8.5, weight: .bold, design: .monospaced))
                             .foregroundStyle(activity.state.color)
                         Text(activity.currentAction)
@@ -3787,7 +3894,7 @@ struct InstanceThumbnailTile: View {
                     }
                 }
 
-                if activity.state == .runningTask {
+                if activity.state == .runningTask || activity.state == .stalled {
                     GeometryReader { geo in
                         ZStack(alignment: .leading) {
                             Capsule().fill(Color.white.opacity(0.10)).frame(height: 3)
@@ -4073,7 +4180,7 @@ struct InstanceCard: View {
                         PulsingStatusDot(
                             active: item.running,
                             activeColor: activity.state.color,
-                            pulse: item.running && (activity.state == .runningTask || activity.state == .needsAttention)
+                            pulse: item.running && (activity.state == .runningTask || activity.state == .stalled || activity.state == .needsAttention)
                         )
                         Text(item.running ? (item.isHidden ? "\(activity.state.label) · 已收起" : activity.state.label) : "未启动")
                             .font(.system(size: 11, weight: .medium))
@@ -5009,7 +5116,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.6.6"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.7.0"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
@@ -5020,7 +5127,7 @@ struct ContentView: View {
             return item.running
         case .busyTask:
             let state = store.activity(for: item).state
-            return item.running && (state == .runningTask || state == .needsAttention)
+            return item.running && (state == .runningTask || state == .stalled || state == .needsAttention)
         case .withTags:
             return store.meta(for: item).hasCustomContent
         case .upgradable:
