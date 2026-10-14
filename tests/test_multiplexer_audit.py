@@ -114,6 +114,29 @@ class TestMultiplexerAudit(unittest.TestCase):
         self.assertIn('shouldFetchImage', self.content)
         self.assertIn('hasThumb && !isFront && !isRunningTask', self.content)
 
+    def test_draggable_hud_and_position_persistence(self):
+        # Floating HUD must be draggable, use DraggableHostingView, and persist user coordinates
+        self.assertIn('class DraggableHostingView', self.content)
+        self.assertIn('override var mouseDownCanMoveWindow: Bool { true }', self.content)
+        self.assertIn('func saveHUDPosition(origin: NSPoint)', self.content)
+        self.assertIn('func moveHUD(by translation: CGSize, startOrigin: NSPoint)', self.content)
+        self.assertIn('UserDefaults.standard.object(forKey: "floatingHUD_x")', self.content)
+        self.assertIn('UserDefaults.standard.object(forKey: "floatingHUD_y")', self.content)
+
+    def test_cdp_ephemeral_session_and_adaptive_backoff(self):
+        # CDP calls must use dedicated ephemeral URLSession without shared cache leaks, and backoff for idle instances
+        self.assertIn('static let cdpSession: URLSession', self.content)
+        self.assertIn('URLSessionConfiguration.ephemeral', self.content)
+        self.assertIn('cdpSession.data(for: req)', self.content)
+        self.assertIn('cdpSession.webSocketTask(with: wsURL)', self.content)
+        self.assertIn('telemetryTick % 5 == 0', self.content)
+
+    def test_resource_metric_equatable_deadband(self):
+        # InstanceResourceMetric must implement deadband Equatable to eliminate float/byte redraw storms
+        self.assertIn('static func == (lhs: InstanceResourceMetric, rhs: InstanceResourceMetric) -> Bool', self.content)
+        self.assertIn('lhs.memoryLabel == rhs.memoryLabel', self.content)
+        self.assertIn('lhs.cpuLabel == rhs.cpuLabel', self.content)
+
 
 if __name__ == "__main__":
     unittest.main()

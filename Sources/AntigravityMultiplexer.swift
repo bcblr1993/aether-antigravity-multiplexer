@@ -396,6 +396,13 @@ struct InstanceResourceMetric: Equatable {
     var cpuLabel: String {
         String(format: "%.1f%%", cpuPercent)
     }
+
+    static func == (lhs: InstanceResourceMetric, rhs: InstanceResourceMetric) -> Bool {
+        lhs.processCount == rhs.processCount &&
+        lhs.memoryLabel == rhs.memoryLabel &&
+        lhs.cpuLabel == rhs.cpuLabel &&
+        (lhs.cpuPercent > 15) == (rhs.cpuPercent > 15)
+    }
 }
 
 enum TaskHistoryCategory: String, Codable, CaseIterable {
@@ -1076,7 +1083,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         instances.filter { $0.running && activities[$0.id]?.state == .needsAttention }.count
     }
 
-    private var hudPanel: NSPanel?
+    var hudPanel: NSPanel?
     private var quickSwitcherPanel: QuickSwitcherPanel?
     private var statusItem: NSStatusItem?
     private var lastOpenWindowBundles: Set<String> = []
@@ -1085,6 +1092,19 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     private var lastNotifiedStates: [String: (state: TaskRunState, stepIndex: Int)] = [:]
     private var lastOpenTime: [String: Date] = [:]
     private var isScanningTelemetry = false
+    private var telemetryTickCount: Int = 0
+
+    func saveHUDPosition(origin: NSPoint) {
+        UserDefaults.standard.set(Double(origin.x), forKey: "floatingHUD_x")
+        UserDefaults.standard.set(Double(origin.y), forKey: "floatingHUD_y")
+    }
+
+    func moveHUD(by translation: CGSize, startOrigin: NSPoint) {
+        guard let panel = hudPanel else { return }
+        let newX = startOrigin.x + translation.width
+        let newY = startOrigin.y - translation.height
+        panel.setFrameOrigin(NSPoint(x: newX, y: newY))
+    }
 
     private let support = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/Antigravity Multiplexer")
@@ -1424,6 +1444,9 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         let activeTasks = Set(activities.filter { $0.value.state == .runningTask }.keys)
         let frontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
 
+        telemetryTickCount += 1
+        let tick = telemetryTickCount
+
         Task.detached(priority: .utility) {
             let scanned = TelemetryScanner.scan(instances: snapshot, knownConvIDs: knownConvIDs)
             let metrics = shouldCapture ? TelemetryScanner.scanResourceMetrics(instances: snapshot) : currentMetrics
@@ -1432,7 +1455,8 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 captureThumbnails: shouldCapture,
                 frontmostBundleID: frontmost,
                 existingThumbnailIDs: existingThumbnails,
-                activeTaskIDs: activeTasks
+                activeTaskIDs: activeTasks,
+                telemetryTick: tick
             )
             await MainActor.run { [weak self] in
                 guard let self else { return }
@@ -1470,6 +1494,17 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         }
     }
 
+    private nonisolated static let cdpSession: URLSession = {
+        let config = URLSessionConfiguration.ephemeral
+        config.urlCache = nil
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        config.httpShouldSetCookies = false
+        config.httpCookieAcceptPolicy = .never
+        config.timeoutIntervalForRequest = 1.0
+        config.timeoutIntervalForResource = 2.0
+        return URLSession(configuration: config)
+    }()
+
     /// Zero-permission live window screenshot capture via Chromium DevTools Protocol (`DevToolsActivePort`).
     /// Captures live UI screenshots of all running instances in real-time and remembers the active conversation URL!
     private nonisolated static func captureCDPScreenshots(
@@ -1477,7 +1512,8 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         captureThumbnails: Bool = true,
         frontmostBundleID: String? = nil,
         existingThumbnailIDs: Set<String> = [],
-        activeTaskIDs: Set<String> = []
+        activeTaskIDs: Set<String> = [],
+        telemetryTick: Int = 0
     ) async -> (thumbnails: [String: NSImage], urls: [String: String], workspaces: [String: String], sessionTitles: [String: String]) {
         var results: [String: NSImage] = [:]
         var urls: [String: String] = [:]
@@ -1487,6 +1523,14 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             .appendingPathComponent("Library/Application Support")
 
         for item in items where item.running {
+            let isFrontmost = (frontmostBundleID == item.bundleID)
+            let isRunningTask = activeTaskIDs.contains(item.id)
+            let hasThumbnail = existingThumbnailIDs.contains(item.id)
+
+            // For background idle instances with existing metadata, only query CDP endpoint every 5 ticks (~11s)
+            let shouldQueryCDP = isFrontmost || isRunningTask || !hasThumbnail || (telemetryTick % 5 == 0)
+            guard shouldQueryCDP else { continue }
+
             let portFile = appSupportRoot.appendingPathComponent(item.name).appendingPathComponent("DevToolsActivePort")
             guard let content = try? String(contentsOf: portFile, encoding: .utf8),
                   let firstLine = content.components(separatedBy: .newlines).first,
@@ -1495,7 +1539,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
 
             var req = URLRequest(url: listURL)
             req.timeoutInterval = 0.8
-            guard let (data, _) = try? await URLSession.shared.data(for: req),
+            guard let (data, _) = try? await cdpSession.data(for: req),
                   let targets = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { continue }
 
             guard let mainTarget = targets.first(where: { t in
@@ -1519,9 +1563,6 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 }
             }
 
-            let isFrontmost = (frontmostBundleID == item.bundleID)
-            let isRunningTask = activeTaskIDs.contains(item.id)
-            let hasThumbnail = existingThumbnailIDs.contains(item.id)
             let shouldFetchImage = captureThumbnails && (!hasThumbnail || isFrontmost || isRunningTask)
 
             if shouldFetchImage,
@@ -1535,7 +1576,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     }
 
     private nonisolated static func fetchCDPScreenshot(wsURL: URL) async -> NSImage? {
-        let task = URLSession.shared.webSocketTask(with: wsURL)
+        let task = cdpSession.webSocketTask(with: wsURL)
         task.resume()
         defer { task.cancel(with: .goingAway, reason: nil) }
         let payload = "{\"id\":1,\"method\":\"Page.captureScreenshot\",\"params\":{\"format\":\"jpeg\",\"quality\":62}}"
@@ -1857,7 +1898,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         }
         if hudPanel == nil {
             let panel = NSPanel(
-                contentRect: NSRect(x: 0, y: 0, width: 260, height: 44),
+                contentRect: NSRect(x: 0, y: 0, width: 280, height: 44),
                 styleMask: [.nonactivatingPanel, .borderless],
                 backing: .buffered,
                 defer: false
@@ -1869,10 +1910,23 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             panel.isOpaque = false
             panel.hasShadow = true
             panel.isMovableByWindowBackground = true
-            if let screen = NSScreen.main?.visibleFrame {
-                panel.setFrameOrigin(NSPoint(x: screen.maxX - 280, y: screen.minY + 28))
+
+            let savedX = UserDefaults.standard.object(forKey: "floatingHUD_x") as? Double
+            let savedY = UserDefaults.standard.object(forKey: "floatingHUD_y") as? Double
+            if let x = savedX, let y = savedY, let screen = NSScreen.main?.visibleFrame {
+                let minX = screen.minX
+                let maxX = max(minX, screen.maxX - 280)
+                let minY = screen.minY
+                let maxY = max(minY, screen.maxY - 44)
+                let clampedX = min(max(x, minX), maxX)
+                let clampedY = min(max(y, minY), maxY)
+                panel.setFrameOrigin(NSPoint(x: clampedX, y: clampedY))
+            } else if let screen = NSScreen.main?.visibleFrame {
+                // Default position: Top-Right of screen below menu bar, avoiding bottom chat/prompt box on laptop screens
+                panel.setFrameOrigin(NSPoint(x: max(screen.minX, screen.maxX - 300), y: max(screen.minY, screen.maxY - 70)))
             }
-            panel.contentView = NSHostingView(rootView: FloatingMonitorHUDView(store: self))
+
+            panel.contentView = DraggableHostingView(rootView: FloatingMonitorHUDView(store: self))
             hudPanel = panel
         }
         hudPanel?.orderFrontRegardless()
@@ -2362,15 +2416,46 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     }
 }
 
+final class DraggableHostingView<Content: View>: NSHostingView<Content> {
+    override var mouseDownCanMoveWindow: Bool { true }
+}
+
 // MARK: - Floating Return to Monitor HUD View
 
 private struct FloatingMonitorHUDView: View {
     @ObservedObject var store: InstanceStore
     @State private var hovered = false
+    @State private var dragStartOrigin: NSPoint? = nil
+
+    private var dragGesture: some Gesture {
+        DragGesture(minimumDistance: 1, coordinateSpace: .global)
+            .onChanged { val in
+                guard let panel = store.hudPanel else { return }
+                if dragStartOrigin == nil {
+                    dragStartOrigin = panel.frame.origin
+                }
+                if let start = dragStartOrigin {
+                    store.moveHUD(by: val.translation, startOrigin: start)
+                }
+            }
+            .onEnded { _ in
+                if let panel = store.hudPanel {
+                    store.saveHUDPosition(origin: panel.frame.origin)
+                }
+                dragStartOrigin = nil
+            }
+    }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
+        HStack(alignment: .center, spacing: 8) {
+            // Draggable Area (Grip Icon + Pulsing Dot + Instance Info)
             HStack(alignment: .center, spacing: 6) {
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.40))
+                    .frame(width: 12)
+                    .help("按住可随意拖动浮窗到屏幕任意位置")
+
                 PulsingStatusDot(
                     active: true,
                     activeColor: store.activeTaskCount > 0 ? Color(red: 0.15, green: 0.82, blue: 0.96) : .green,
@@ -2387,8 +2472,12 @@ private struct FloatingMonitorHUDView: View {
                         .lineLimit(1)
                 }
             }
+            .contentShape(Rectangle())
+            .gesture(dragGesture)
 
             Spacer(minLength: 4)
+                .contentShape(Rectangle())
+                .gesture(dragGesture)
 
             Button {
                 store.collapseAllToMonitorWall()
@@ -2406,9 +2495,25 @@ private struct FloatingMonitorHUDView: View {
             }
             .buttonStyle(.plain)
             .help("隐藏当前实例窗口并返回缩略图监控墙（后台任务继续运行）")
+
+            if hovered {
+                Button {
+                    store.floatingHUDEnabled = false
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 8.5, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.65))
+                        .frame(width: 16, height: 16)
+                        .background(Circle().fill(Color.white.opacity(0.12)))
+                }
+                .buttonStyle(.plain)
+                .help("关闭悬浮胶囊（可在设置中重新开启）")
+                .transition(.opacity)
+            }
         }
-        .padding(.horizontal, 12)
-        .frame(width: 260, height: 42)
+        .padding(.leading, 10)
+        .padding(.trailing, hovered ? 8 : 12)
+        .frame(width: 280, height: 42)
         .background {
             Capsule()
                 .fill(Color(red: 0.09, green: 0.10, blue: 0.14).opacity(0.92))
@@ -4660,7 +4765,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.6.3"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.6.4"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
