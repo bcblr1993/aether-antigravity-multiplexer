@@ -224,40 +224,44 @@ private struct IconActionButton: View {
 private struct PulsingStatusDot: View {
     let active: Bool
     var activeColor: Color = .green
+    var pulse: Bool = false
     @State private var pulsing = false
 
     var body: some View {
-        Circle()
-            .fill(active ? activeColor : Color.secondary.opacity(0.45))
-            .frame(width: 6, height: 6)
-            .overlay {
-                if active {
-                    Circle()
-                        .stroke(activeColor.opacity(0.55), lineWidth: 1.5)
-                        .frame(width: 12, height: 12)
-                        .scaleEffect(pulsing ? 1.35 : 0.65)
-                        .opacity(pulsing ? 0.0 : 0.9)
-                }
+        ZStack {
+            Circle()
+                .fill(active ? activeColor : Color.secondary.opacity(0.45))
+                .frame(width: 6, height: 6)
+
+            if active && pulse {
+                Circle()
+                    .stroke(activeColor.opacity(0.6), lineWidth: 1.5)
+                    .frame(width: 12, height: 12)
+                    .scaleEffect(pulsing ? 1.4 : 0.6)
+                    .opacity(pulsing ? 0.0 : 0.85)
             }
-            .frame(width: 10, height: 10, alignment: .center)
-            .onAppear {
-                guard active else { return }
-                withAnimation(.easeOut(duration: 1.5).repeatForever(autoreverses: false)) {
-                    pulsing = true
-                }
+        }
+        .frame(width: 14, height: 14, alignment: .center)
+        .drawingGroup()
+        .onAppear {
+            updateAnimation(shouldPulse: active && pulse)
+        }
+        .onChange(of: active && pulse) { shouldPulse in
+            updateAnimation(shouldPulse: shouldPulse)
+        }
+    }
+
+    private func updateAnimation(shouldPulse: Bool) {
+        if shouldPulse {
+            pulsing = false
+            withAnimation(.easeOut(duration: 1.5).repeatForever(autoreverses: false)) {
+                pulsing = true
             }
-            .onChange(of: active) { isNowActive in
-                if isNowActive {
-                    pulsing = false
-                    withAnimation(.easeOut(duration: 1.5).repeatForever(autoreverses: false)) {
-                        pulsing = true
-                    }
-                } else {
-                    withAnimation(.linear(duration: 0.1)) {
-                        pulsing = false
-                    }
-                }
+        } else {
+            withAnimation(.linear(duration: 0.1)) {
+                pulsing = false
             }
+        }
     }
 }
 
@@ -540,12 +544,22 @@ struct BackupBatch: Decodable, Identifiable {
 // MARK: - Background Transcript & Window Scanner
 
 private enum TelemetryScanner {
-    static func scan(instances: [ManagedInstance]) -> [String: InstanceActivity] {
+    // Cache stopped instance activity so stopped instances never repeatedly hit disk
+    private static var stoppedActivityCache: [String: InstanceActivity] = [:]
+    // Cache last known transcript location per profile URL
+    private static var lastKnownTranscripts: [URL: (url: URL, date: Date, convID: String)] = [:]
+
+    static func scan(instances: [ManagedInstance], knownConvIDs: [String: String] = [:]) -> [String: InstanceActivity] {
         var results: [String: InstanceActivity] = [:]
         for item in instances {
             if !item.running {
+                // If instance is stopped, reuse cached stopped activity without disk traversal
+                if let cached = stoppedActivityCache[item.id] {
+                    results[item.id] = cached
+                    continue
+                }
                 var stopped = InstanceActivity.stopped
-                if let latest = latestTranscript(in: item.profileURL) {
+                if let latest = findTranscript(in: item.profileURL, knownConvID: knownConvIDs[item.id]) {
                     let parsed = parseTranscriptTail(at: latest.url, modDate: latest.date, isRunning: false, convID: latest.convID)
                     stopped.workspace = parsed.workspace
                     stopped.lastUpdatedLabel = parsed.lastUpdatedLabel
@@ -553,20 +567,64 @@ private enum TelemetryScanner {
                         stopped.currentAction = "上次：\(parsed.currentAction)"
                     }
                 }
+                stoppedActivityCache[item.id] = stopped
                 results[item.id] = stopped
-            } else if let latest = latestTranscript(in: item.profileURL) {
-                results[item.id] = parseTranscriptTail(at: latest.url, modDate: latest.date, isRunning: true, convID: latest.convID)
             } else {
-                results[item.id] = InstanceActivity(
-                    state: .idle,
-                    currentAction: "等待新对话指令",
-                    workspace: item.profile,
-                    lastUpdatedLabel: "刚刚",
-                    stepIndex: 0
-                )
+                stoppedActivityCache.removeValue(forKey: item.id)
+                if let latest = findTranscript(in: item.profileURL, knownConvID: knownConvIDs[item.id]) {
+                    results[item.id] = parseTranscriptTail(at: latest.url, modDate: latest.date, isRunning: true, convID: latest.convID)
+                } else {
+                    results[item.id] = InstanceActivity(
+                        state: .idle,
+                        currentAction: "等待新对话指令",
+                        workspace: item.profile,
+                        lastUpdatedLabel: "刚刚",
+                        stepIndex: 0
+                    )
+                }
             }
         }
         return results
+    }
+
+    private static func findTranscript(in profileURL: URL, knownConvID: String?) -> (url: URL, date: Date, convID: String)? {
+        let fm = FileManager.default
+
+        // 1. Direct Hit: If we know the active conversation ID from CDP URL (e.g. /c/<uuid>), check directly!
+        if let knownConvID, !knownConvID.isEmpty {
+            if let topDirs = try? fm.contentsOfDirectory(at: profileURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+                for dir in topDirs {
+                    let directTranscript = dir.appendingPathComponent("brain")
+                        .appendingPathComponent(knownConvID)
+                        .appendingPathComponent(".system_generated/logs/transcript.jsonl")
+                    if let values = try? directTranscript.resourceValues(forKeys: [.contentModificationDateKey]),
+                       let modDate = values.contentModificationDate {
+                        let res = (directTranscript, modDate, knownConvID)
+                        lastKnownTranscripts[profileURL] = res
+                        return res
+                    }
+                }
+            }
+        }
+
+        // 2. Cache Hit: If cached transcript was recently updated (< 30 seconds ago), avoid directory traversal
+        if let cached = lastKnownTranscripts[profileURL] {
+            if let values = try? cached.url.resourceValues(forKeys: [.contentModificationDateKey]),
+               let modDate = values.contentModificationDate {
+                if abs(modDate.timeIntervalSinceNow) < 30 {
+                    let updated = (cached.url, modDate, cached.convID)
+                    lastKnownTranscripts[profileURL] = updated
+                    return updated
+                }
+            }
+        }
+
+        // 3. Fallback: Scan directories and update cache
+        if let latest = latestTranscript(in: profileURL) {
+            lastKnownTranscripts[profileURL] = latest
+            return latest
+        }
+        return nil
     }
 
     static func scanResourceMetrics(instances: [ManagedInstance]) -> [String: InstanceResourceMetric] {
@@ -1311,8 +1369,20 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         return candidates.first
     }
 
+    var isMainWindowVisible: Bool {
+        NSApp.windows.contains { window in
+            !(window is NSPanel) && !window.isSheet && window.canBecomeMain && window.isVisible && !window.isMiniaturized
+        }
+    }
+
+    var shouldCaptureScreenshots: Bool {
+        isMainWindowVisible || (quickSwitcherPanel?.isVisible == true)
+    }
+
     func refreshRunningStates() {
-        hasScreenCapturePermission = CGPreflightScreenCaptureAccess()
+        if !hasScreenCapturePermission {
+            hasScreenCapturePermission = CGPreflightScreenCaptureAccess()
+        }
         let updated = instances.map { item in
             let app = runningApplication(bundleID: item.bundleID, path: item.path)
             return ManagedInstance(id: item.id, name: item.name, path: item.path, bundleID: item.bundleID,
@@ -1345,10 +1415,19 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         guard !isScanningTelemetry else { return }
         isScanningTelemetry = true
         let snapshot = instances
+        let shouldCapture = shouldCaptureScreenshots
+        var knownConvIDs: [String: String] = [:]
+        for (id, urlString) in activeConversationURLs {
+            if let url = URL(string: urlString), let lastComp = url.pathComponents.last, !lastComp.isEmpty {
+                knownConvIDs[id] = lastComp
+            }
+        }
+        let currentMetrics = self.resourceMetrics
+
         Task.detached(priority: .utility) {
-            let scanned = TelemetryScanner.scan(instances: snapshot)
-            let metrics = TelemetryScanner.scanResourceMetrics(instances: snapshot)
-            let cdpData = await Self.captureCDPScreenshots(for: snapshot)
+            let scanned = TelemetryScanner.scan(instances: snapshot, knownConvIDs: knownConvIDs)
+            let metrics = shouldCapture ? TelemetryScanner.scanResourceMetrics(instances: snapshot) : currentMetrics
+            let cdpData = await Self.captureCDPScreenshots(for: snapshot, captureThumbnails: shouldCapture)
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.isScanningTelemetry = false
@@ -1365,14 +1444,20 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                         self.activities = finalActivities
                     }
                 }
-                self.resourceMetrics = metrics
-                for (id, image) in cdpData.thumbnails {
-                    self.thumbnails[id] = image
+                if self.resourceMetrics != metrics {
+                    self.resourceMetrics = metrics
+                }
+                if shouldCapture {
+                    for (id, image) in cdpData.thumbnails {
+                        self.thumbnails[id] = image
+                    }
                 }
                 for (id, url) in cdpData.urls {
                     self.activeConversationURLs[id] = url
                 }
-                self.captureWindowThumbnails()
+                if shouldCapture {
+                    self.captureWindowThumbnails()
+                }
                 self.updateStatusBarMenu()
                 self.updateDockBadge()
             }
@@ -1381,7 +1466,10 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
 
     /// Zero-permission live window screenshot capture via Chromium DevTools Protocol (`DevToolsActivePort`).
     /// Captures live UI screenshots of all running instances in real-time and remembers the active conversation URL!
-    private nonisolated static func captureCDPScreenshots(for items: [ManagedInstance]) async -> (thumbnails: [String: NSImage], urls: [String: String], workspaces: [String: String], sessionTitles: [String: String]) {
+    private nonisolated static func captureCDPScreenshots(
+        for items: [ManagedInstance],
+        captureThumbnails: Bool = true
+    ) async -> (thumbnails: [String: NSImage], urls: [String: String], workspaces: [String: String], sessionTitles: [String: String]) {
         var results: [String: NSImage] = [:]
         var urls: [String: String] = [:]
         var workspaces: [String: String] = [:]
@@ -1406,9 +1494,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                       let u = t["url"] as? String else { return false }
                 return u.hasPrefix("https://127.0.0.1:") || u.hasPrefix("http://127.0.0.1:")
             }),
-            let currentURL = mainTarget["url"] as? String,
-            let wsString = mainTarget["webSocketDebuggerUrl"] as? String,
-            let wsURL = URL(string: wsString) else { continue }
+            let currentURL = mainTarget["url"] as? String else { continue }
 
             if currentURL.contains("/c/") {
                 urls[item.id] = currentURL
@@ -1424,7 +1510,10 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 }
             }
 
-            if let image = await fetchCDPScreenshot(wsURL: wsURL) {
+            if captureThumbnails,
+               let wsString = mainTarget["webSocketDebuggerUrl"] as? String,
+               let wsURL = URL(string: wsString),
+               let image = await fetchCDPScreenshot(wsURL: wsURL) {
                 results[item.id] = image
             }
         }
@@ -1462,6 +1551,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     }
 
     func captureWindowThumbnails(specificBundleID: String? = nil) {
+        guard shouldCaptureScreenshots else { return }
         guard CGPreflightScreenCaptureAccess() else { return }
         guard let windowList = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else { return }
 
@@ -2248,7 +2338,8 @@ private struct FloatingMonitorHUDView: View {
             HStack(alignment: .center, spacing: 6) {
                 PulsingStatusDot(
                     active: true,
-                    activeColor: store.activeTaskCount > 0 ? Color(red: 0.15, green: 0.82, blue: 0.96) : .green
+                    activeColor: store.activeTaskCount > 0 ? Color(red: 0.15, green: 0.82, blue: 0.96) : .green,
+                    pulse: store.activeTaskCount > 0
                 )
                 VStack(alignment: .leading, spacing: 1) {
                     Text(store.activeInstanceName ?? "Antigravity")
@@ -2729,7 +2820,11 @@ private struct QuickSwitcherRow: View {
 
                     HStack(spacing: 6) {
                         if item.running {
-                            PulsingStatusDot(active: true, activeColor: activity.state.color)
+                            PulsingStatusDot(
+                                active: true,
+                                activeColor: activity.state.color,
+                                pulse: activity.state == .runningTask || activity.state == .needsAttention
+                            )
                             Text(activity.currentAction)
                                 .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
@@ -2910,7 +3005,11 @@ struct InstanceThumbnailTile: View {
                     HStack(alignment: .center, spacing: 6) {
                         // Top-left state badge
                         HStack(alignment: .center, spacing: 5) {
-                            PulsingStatusDot(active: item.running, activeColor: activity.state.color)
+                            PulsingStatusDot(
+                                active: item.running,
+                                activeColor: activity.state.color,
+                                pulse: item.running && (activity.state == .runningTask || activity.state == .needsAttention)
+                            )
                             Text(item.running ? (item.isHidden ? "\(activity.state.label) · 后台实时" : activity.state.label) : "未启动")
                                 .font(.system(size: 10.5, weight: .semibold))
                                 .foregroundStyle(.white)
@@ -3548,7 +3647,11 @@ struct InstanceCard: View {
 
                     // Live Task State Pill (Fixed 20pt height)
                     HStack(alignment: .center, spacing: 5) {
-                        PulsingStatusDot(active: item.running, activeColor: activity.state.color)
+                        PulsingStatusDot(
+                            active: item.running,
+                            activeColor: activity.state.color,
+                            pulse: item.running && (activity.state == .runningTask || activity.state == .needsAttention)
+                        )
                         Text(item.running ? (item.isHidden ? "\(activity.state.label) · 已收起" : activity.state.label) : "未启动")
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(item.running ? activity.state.color : Color.secondary)
@@ -4481,7 +4584,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.6.0"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.6.1"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
@@ -4798,7 +4901,8 @@ struct ContentView: View {
                 leadingIndicator: {
                     AnyView(PulsingStatusDot(
                         active: store.runningCount > 0,
-                        activeColor: store.activeTaskCount > 0 ? Color(red: 0.15, green: 0.82, blue: 0.96) : .green
+                        activeColor: store.activeTaskCount > 0 ? Color(red: 0.15, green: 0.82, blue: 0.96) : .green,
+                        pulse: store.activeTaskCount > 0
                     ))
                 }
             )

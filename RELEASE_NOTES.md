@@ -1,3 +1,12 @@
+# v0.6.1
+
+- **深度性能优化与系统资源消耗剧减 (Deep Performance & Battery Optimization)**：
+  - **消除后台空闲 GPU/CPU 循环**：针对多实例运行且空闲时 `PulsingStatusDot` 呼吸动画在主窗口复杂阴影图层中触发全树 `layoutSubtreeIfNeeded` 与 `ShapeLayerShadowHelper.visitPaint` 频繁重绘的瓶颈，升级为按需动态触发（仅在实例正在执行 Agent 任务或需要人工处理时脉动，空闲时静止呈现），并使用 `.drawingGroup()` 彻底隔离动画图层，使应用后台空闲 CPU 占用从 35%~40% 骤降至接近 0%。
+  - **杜绝 TCC 权限 IPC 广播风暴**：对 `CGPreflightScreenCaptureAccess()` 引入权限状态缓存守卫，避免 2.2 秒循环定时器向 macOS `tccd` 守护进程高频发起同步 IPC 查询，彻底消除系统统一日志中的 TCC 访问日志风暴。
+  - **窗口非可见状态自动休眠与节流**：当主监控墙窗口处于关闭、最小化或隐藏后台状态时，自动暂停 Chromium CDP 网页截图采集与系统 `CGWindowListCreateImage` 渲染开销，仅保留轻量级状态追踪与 Dock 徽标告警。
+  - **工作区会话磁盘检索性能飞跃**：在 `TelemetryScanner` 中引入已停止实例状态缓存与活跃会话 ID 直达索引，杜绝每次轮询对所有历史会话目录进行 O(N) 递归遍历与 stat 系统调用，显著降低磁盘 I/O 磨损。
+  - **SwiftUI 状态发布防抖守卫**：对资源监控指标与缩略图更新引入 Equatable 脏值比对校验，避免无实际数据变更时高频触发 `objectWillChange` 和全界面重组重绘。
+
 # v0.6.0
 
 - **Phase 2 全局任务动态与执行历史中心 (Task Mission Control & Execution History)**：

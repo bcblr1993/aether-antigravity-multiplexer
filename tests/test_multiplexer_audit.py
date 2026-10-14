@@ -74,6 +74,31 @@ class TestMultiplexerAudit(unittest.TestCase):
         self.assertIn('.keyboardShortcut(.cancelAction)', self.content)
         self.assertIn('.keyboardShortcut(.defaultAction)', self.content)
 
+    def test_pulsing_dot_drawing_group_and_conditional_pulse(self):
+        # PulsingStatusDot must use drawingGroup() and conditional pulse to eliminate layout/shadow recalculations
+        self.assertIn('struct PulsingStatusDot: View', self.content)
+        self.assertIn('.drawingGroup()', self.content)
+        self.assertIn('var pulse: Bool = false', self.content)
+        self.assertIn('if active && pulse', self.content)
+
+    def test_tcc_permission_cached_guard(self):
+        # refreshRunningStates must not unconditionally query CGPreflightScreenCaptureAccess on every tick
+        self.assertIn('if !hasScreenCapturePermission', self.content)
+        refresh_idx = self.content.find("func refreshRunningStates()")
+        self.assertNotEqual(refresh_idx, -1)
+        refresh_body = self.content[refresh_idx:refresh_idx + 250]
+        self.assertIn('if !hasScreenCapturePermission', refresh_body)
+
+    def test_background_capture_throttled_when_hidden(self):
+        # Screenshots and window captures must be throttled when main window is hidden/minimized
+        self.assertIn('var isMainWindowVisible: Bool', self.content)
+        self.assertIn('var shouldCaptureScreenshots: Bool', self.content)
+        self.assertIn('guard shouldCaptureScreenshots else { return }', self.content)
+
+    def test_resource_metrics_equatable_guard(self):
+        # Published resourceMetrics must only mutate when changed
+        self.assertIn('if self.resourceMetrics != metrics', self.content)
+
 
 if __name__ == "__main__":
     unittest.main()
