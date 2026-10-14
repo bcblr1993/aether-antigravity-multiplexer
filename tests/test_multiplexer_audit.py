@@ -49,6 +49,31 @@ class TestMultiplexerAudit(unittest.TestCase):
         hide_func_body = self.content[hide_func_idx:hide_func_idx + 400]
         self.assertNotIn("captureCDPScreenshots", hide_func_body)
 
+    def test_applescript_system_events_unhide_and_hide(self):
+        # hideInstance and open must use AppleScript System Events to reliably manipulate Electron window visibility
+        self.assertIn("tell application", self.content)
+        self.assertIn("System Events", self.content)
+        self.assertIn("visible of (first process whose bundle identifier is", self.content)
+        self.assertIn("to false", self.content)
+        self.assertIn("to true", self.content)
+
+    def test_open_application_clean_activation(self):
+        # open must specify config.createsNewApplicationInstance = false to prevent duplicate windows
+        self.assertIn("config.createsNewApplicationInstance = false", self.content)
+        self.assertIn("config.activates = true", self.content)
+
+    def test_task_history_limits_and_persistence(self):
+        # Task history must cap at 200 items and persist to task_history.json
+        self.assertIn('task_history.json', self.content)
+        self.assertIn('taskHistory.count > 200', self.content)
+        self.assertIn('Array(taskHistory.prefix(200))', self.content)
+
+    def test_task_history_sheet_shortcuts(self):
+        # TaskHistorySheet must have standard macOS shortcuts
+        self.assertIn('TaskHistorySheet', self.content)
+        self.assertIn('.keyboardShortcut(.cancelAction)', self.content)
+        self.assertIn('.keyboardShortcut(.defaultAction)', self.content)
+
 
 if __name__ == "__main__":
     unittest.main()

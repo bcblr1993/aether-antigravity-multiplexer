@@ -394,6 +394,87 @@ struct InstanceResourceMetric: Equatable {
     }
 }
 
+enum TaskHistoryCategory: String, Codable, CaseIterable {
+    case completed
+    case needsAttention
+    case error
+
+    var label: String {
+        switch self {
+        case .completed: return "已完成"
+        case .needsAttention: return "等待确认"
+        case .error: return "执行异常"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .completed: return .green
+        case .needsAttention: return .orange
+        case .error: return .red
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .completed: return "checkmark.circle.fill"
+        case .needsAttention: return "bell.badge.fill"
+        case .error: return "exclamationmark.triangle.fill"
+        }
+    }
+}
+
+struct TaskHistoryItem: Identifiable, Codable, Equatable {
+    var id: UUID = UUID()
+    var instanceID: String
+    var instanceName: String
+    var instanceNickname: String
+    var isOriginal: Bool
+    var category: TaskHistoryCategory
+    var actionSummary: String
+    var workspace: String
+    var stepIndex: Int
+    var timestamp: Date
+    var durationSeconds: TimeInterval?
+
+    var displayName: String {
+        let base = instanceNickname.isEmpty ? instanceName : "\(instanceNickname) (\(instanceName))"
+        return isOriginal ? "👑 \(base)" : base
+    }
+
+    var formattedDuration: String? {
+        guard let durationSeconds, durationSeconds > 0 else { return nil }
+        let total = Int(durationSeconds)
+        if total < 60 {
+            return "\(max(1, total)) 秒"
+        } else {
+            let mins = total / 60
+            let secs = total % 60
+            return secs > 0 ? "\(mins) 分 \(secs) 秒" : "\(mins) 分钟"
+        }
+    }
+
+    var formattedTime: String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        return formatter.string(from: timestamp)
+    }
+
+    var relativeTime: String {
+        let elapsed = Date().timeIntervalSince(timestamp)
+        if elapsed < 60 { return "刚刚" }
+        if elapsed < 3600 { return "\(Int(elapsed / 60)) 分钟前" }
+        if elapsed < 86400 { return "\(Int(elapsed / 3600)) 小时前" }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MM-dd HH:mm"
+        return formatter.string(from: timestamp)
+    }
+}
+
+extension Notification.Name {
+    static let openTaskHistoryRequested = Notification.Name("openTaskHistoryRequested")
+}
+
 struct ManagedInstance: Identifiable, Hashable {
     let id: String
     let name: String
@@ -927,6 +1008,15 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     @Published var resourceMetrics: [String: InstanceResourceMetric] = [:]
     @Published var instanceMetas: [String: InstanceUserMeta] = [:]
     @Published var diskUsages: [String: InstanceDiskUsage] = [:]
+    @Published var taskHistory: [TaskHistoryItem] = []
+
+    private var taskStartTimes: [String: Date] = [:]
+    var taskHistoryFileURL: URL {
+        support.appendingPathComponent("task_history.json")
+    }
+    var unreadAttentionCount: Int {
+        instances.filter { $0.running && activities[$0.id]?.state == .needsAttention }.count
+    }
 
     private var hudPanel: NSPanel?
     private var quickSwitcherPanel: QuickSwitcherPanel?
@@ -952,6 +1042,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         Self.current = self
         hasScreenCapturePermission = CGPreflightScreenCaptureAccess()
         loadInstanceMetas()
+        loadTaskHistory()
         setupStatusBarItem()
         setupNotifications()
         setupGlobalHotKeys()
@@ -1031,6 +1122,101 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         }
         if let encoded = try? JSONEncoder().encode(instanceMetas) {
             UserDefaults.standard.set(encoded, forKey: "instance_user_metas")
+        }
+    }
+
+    func loadTaskHistory() {
+        guard FileManager.default.fileExists(atPath: taskHistoryFileURL.path),
+              let data = try? Data(contentsOf: taskHistoryFileURL),
+              let items = try? JSONDecoder().decode([TaskHistoryItem].self, from: data) else {
+            taskHistory = []
+            return
+        }
+        taskHistory = items
+    }
+
+    func saveTaskHistory() {
+        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        if let data = try? JSONEncoder().encode(taskHistory) {
+            try? data.write(to: taskHistoryFileURL, options: .atomic)
+        }
+    }
+
+    func recordTaskEvent(
+        item: ManagedInstance,
+        category: TaskHistoryCategory,
+        action: String,
+        workspace: String,
+        stepIndex: Int,
+        duration: TimeInterval?
+    ) {
+        let meta = meta(for: item)
+        let event = TaskHistoryItem(
+            instanceID: item.id,
+            instanceName: item.name,
+            instanceNickname: meta.nickname,
+            isOriginal: item.isOriginal,
+            category: category,
+            actionSummary: action,
+            workspace: workspace,
+            stepIndex: stepIndex,
+            timestamp: Date(),
+            durationSeconds: duration
+        )
+        taskHistory.insert(event, at: 0)
+        if taskHistory.count > 200 {
+            taskHistory = Array(taskHistory.prefix(200))
+        }
+        saveTaskHistory()
+        updateStatusBarMenu()
+    }
+
+    func clearTaskHistory() {
+        taskHistory.removeAll()
+        saveTaskHistory()
+        updateStatusBarMenu()
+    }
+
+    func exportTaskHistory() -> URL? {
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+
+        var md = "# Antigravity Multiplexer 任务动态历史记录\n\n"
+        md += "- 导出时间: \(dateFormatter.string(from: Date()))\n"
+        md += "- 记录总数: \(taskHistory.count) 条\n\n"
+        md += "| 时间 | 实例 | 类型 | 耗时 | 工作区 | 任务详情 |\n"
+        md += "| :--- | :--- | :--- | :--- | :--- | :--- |\n"
+
+        for item in taskHistory {
+            let dur = item.formattedDuration ?? "—"
+            let ws = item.workspace.isEmpty ? "—" : "`\(item.workspace)`"
+            let action = item.actionSummary.replacingOccurrences(of: "|", with: "\\|")
+            md += "| \(item.formattedTime) | \(item.displayName) | \(item.category.label) | \(dur) | \(ws) | \(action) |\n"
+        }
+
+        let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first ?? support
+        let fileURL = desktop.appendingPathComponent("Antigravity-Task-History-\(Int(Date().timeIntervalSince1970)).md")
+        do {
+            try md.write(to: fileURL, atomically: true, encoding: .utf8)
+            NSWorkspace.shared.selectFile(fileURL.path, inFileViewerRootedAtPath: desktop.path)
+            return fileURL
+        } catch {
+            self.error = "导出历史失败：\(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    func runningDuration(for item: ManagedInstance) -> String? {
+        guard item.running,
+              activities[item.id]?.state == .runningTask,
+              let start = taskStartTimes[item.id] else { return nil }
+        let elapsed = Int(Date().timeIntervalSince(start))
+        if elapsed < 60 {
+            return "\(max(1, elapsed))s"
+        } else {
+            let m = elapsed / 60
+            let s = elapsed % 60
+            return s > 0 ? "\(m)m \(s)s" : "\(m)m"
         }
     }
 
@@ -1115,9 +1301,14 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
 
     private func runningApplication(bundleID: String, path: URL) -> NSRunningApplication? {
         let expected = path.resolvingSymlinksInPath().standardizedFileURL
-        return NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first { app in
-            !app.isTerminated && app.bundleURL?.resolvingSymlinksInPath().standardizedFileURL == expected
+        let candidates = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).filter { !$0.isTerminated }
+        if let match = candidates.first(where: { app in
+            guard let bundleURL = app.bundleURL else { return true }
+            return bundleURL.resolvingSymlinksInPath().standardizedFileURL == expected
+        }) {
+            return match
         }
+        return candidates.first
     }
 
     func refreshRunningStates() {
@@ -1338,7 +1529,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
 
     func open(_ item: ManagedInstance) {
         let now = Date()
-        if let last = lastOpenTime[item.id], now.timeIntervalSince(last) < 1.0 {
+        if let last = lastOpenTime[item.id], now.timeIntervalSince(last) < 0.6 {
             return
         }
         lastOpenTime[item.id] = now
@@ -1353,29 +1544,37 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         self.updateFloatingHUDVisibility()
 
         if let app = runningApplication(bundleID: item.bundleID, path: item.path) {
-            // Already running: activate and unhide existing instance directly.
-            // Do NOT call NSWorkspace.openApplication because LaunchServices can
-            // trigger Electron to spawn a duplicate window.
-            app.unhide()
-            app.activate(options: [.activateIgnoringOtherApps])
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                app.unhide()
-                app.activate(options: [.activateIgnoringOtherApps])
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                self.refreshRunningStates()
+            // 1. Unhide via AppleScript and activate
+            let script = "tell application \"System Events\" to set visible of (first process whose bundle identifier is \"\(item.bundleID)\") to true"
+            var err: NSDictionary?
+            NSAppleScript(source: script)?.executeAndReturnError(&err)
+            _ = app.unhide()
+
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = true
+            config.createsNewApplicationInstance = false
+            NSWorkspace.shared.openApplication(at: item.path, configuration: config) { [weak self] runningApp, _ in
+                DispatchQueue.main.async {
+                    runningApp?.activate(options: [.activateIgnoringOtherApps])
+                    self?.refreshRunningStates()
+                }
             }
             return
         }
 
-        // Cold start: Instance is not currently running. Launch cleanly once.
+        // 2. Cold start: Instance is not currently running. Launch cleanly once.
         let config = NSWorkspace.OpenConfiguration()
         config.activates = true
+        config.createsNewApplicationInstance = false
         NSWorkspace.shared.openApplication(at: item.path, configuration: config) { [weak self] app, _ in
-            Task { @MainActor in
-                app?.unhide()
+            DispatchQueue.main.async {
                 app?.activate(options: [.activateIgnoringOtherApps])
-                try? await Task.sleep(nanoseconds: 400_000_000)
+                self?.refreshRunningStates()
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                self?.refreshRunningStates()
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
                 self?.refreshRunningStates()
             }
         }
@@ -1472,7 +1671,13 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     func hideInstance(_ item: ManagedInstance) {
         guard let app = runningApplication(bundleID: item.bundleID, path: item.path) else { return }
         enforceRunInBackgroundSetting(for: [item])
-        app.hide()
+        _ = app.hide()
+        let script = "tell application \"System Events\" to set visible of (first process whose bundle identifier is \"\(item.bundleID)\") to false"
+        var err: NSDictionary?
+        NSAppleScript(source: script)?.executeAndReturnError(&err)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            self.refreshRunningStates()
+        }
     }
 
     func hideOtherInstances(except keptBundleID: String?) {
@@ -1592,8 +1797,22 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             let displayName = meta.nickname.isEmpty ? item.name : "\(meta.nickname) (\(item.name))"
             let isMainPrefix = item.isOriginal ? "👑 " : ""
 
+            // Start timing when task begins running
+            if newAct.state == .runningTask && prevState != .runningTask {
+                taskStartTimes[item.id] = Date()
+            }
+
             if newAct.state == .needsAttention && (prevState != .needsAttention || newAct.stepIndex != prevStep) {
                 lastNotifiedStates[item.id] = (state: newAct.state, stepIndex: newAct.stepIndex)
+                let duration = taskStartTimes[item.id].map { Date().timeIntervalSince($0) }
+                recordTaskEvent(
+                    item: item,
+                    category: .needsAttention,
+                    action: newAct.currentAction.isEmpty ? "Agent 需要用户选择或确认操作" : newAct.currentAction,
+                    workspace: newAct.workspace,
+                    stepIndex: newAct.stepIndex,
+                    duration: duration
+                )
                 if !isUserCurrentlyFocusingInstance {
                     sendSystemNotification(
                         identifier: "needs-attention-\(item.id)-\(newAct.stepIndex)",
@@ -1604,9 +1823,19 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                     )
                 }
             } else if prevState == .runningTask && newAct.state == .idle {
+                let duration = taskStartTimes[item.id].map { Date().timeIntervalSince($0) }
+                taskStartTimes.removeValue(forKey: item.id)
                 lastNotifiedStates[item.id] = (state: newAct.state, stepIndex: newAct.stepIndex)
+                let cleanedAction = newAct.currentAction.hasPrefix("上次：") ? String(newAct.currentAction.dropFirst(3)) : newAct.currentAction
+                recordTaskEvent(
+                    item: item,
+                    category: .completed,
+                    action: cleanedAction.isEmpty ? "所有指令已执行完毕" : cleanedAction,
+                    workspace: newAct.workspace,
+                    stepIndex: newAct.stepIndex,
+                    duration: duration
+                )
                 if !isUserCurrentlyFocusingInstance {
-                    let cleanedAction = newAct.currentAction.hasPrefix("上次：") ? String(newAct.currentAction.dropFirst(3)) : newAct.currentAction
                     sendSystemNotification(
                         identifier: "task-completed-\(item.id)-\(newAct.stepIndex)",
                         title: "\(isMainPrefix)\(displayName) · 任务已完成",
@@ -1616,7 +1845,17 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                     )
                 }
             } else if newAct.state == .error && prevState != .error {
+                let duration = taskStartTimes[item.id].map { Date().timeIntervalSince($0) }
+                taskStartTimes.removeValue(forKey: item.id)
                 lastNotifiedStates[item.id] = (state: newAct.state, stepIndex: newAct.stepIndex)
+                recordTaskEvent(
+                    item: item,
+                    category: .error,
+                    action: newAct.currentAction.isEmpty ? "执行遇到错误" : newAct.currentAction,
+                    workspace: newAct.workspace,
+                    stepIndex: newAct.stepIndex,
+                    duration: duration
+                )
                 if !isUserCurrentlyFocusingInstance {
                     sendSystemNotification(
                         identifier: "task-error-\(item.id)-\(newAct.stepIndex)",
@@ -1774,6 +2013,32 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             menuItem.representedObject = item.id
             menuItem.target = StatusBarTarget.shared
             menu.addItem(menuItem)
+        }
+
+        if !taskHistory.isEmpty {
+            menu.addItem(.separator())
+            let historyHeader = NSMenuItem(title: "📋 最近任务动态", action: nil, keyEquivalent: "")
+            historyHeader.isEnabled = false
+            menu.addItem(historyHeader)
+
+            for item in taskHistory.prefix(3) {
+                let dur = item.formattedDuration.map { " (\($0))" } ?? ""
+                let icon = item.category == .completed ? "✅" : (item.category == .needsAttention ? "🔔" : "⚠️")
+                let title = "  \(icon) \(item.formattedTime) · \(item.displayName) · \(item.actionSummary)\(dur)"
+                let historyItem = NSMenuItem(
+                    title: title,
+                    action: #selector(StatusBarTarget.openHistoryInstance(_:)),
+                    keyEquivalent: ""
+                )
+                historyItem.representedObject = item.instanceID
+                historyItem.target = StatusBarTarget.shared
+                historyItem.toolTip = "点击调出该实例并聚焦"
+                menu.addItem(historyItem)
+            }
+
+            let viewAllItem = NSMenuItem(title: "  查看完整任务历史与耗时...", action: #selector(StatusBarTarget.openTaskHistory), keyEquivalent: "")
+            viewAllItem.target = StatusBarTarget.shared
+            menu.addItem(viewAllItem)
         }
 
         menu.addItem(.separator())
@@ -1954,6 +2219,17 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         guard let id = sender.representedObject as? String,
               let item = store?.instances.first(where: { $0.id == id }) else { return }
         store?.open(item)
+    }
+
+    @objc func openHistoryInstance(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let item = store?.instances.first(where: { $0.id == id }) else { return }
+        store?.open(item)
+    }
+
+    @objc func openTaskHistory() {
+        store?.bringMonitorWallToFront()
+        NotificationCenter.default.post(name: .openTaskHistoryRequested, object: nil)
     }
 
     @objc func quitApp() {
@@ -2223,6 +2499,7 @@ private struct QuickSwitcherView: View {
                                     activity: store.activity(for: item),
                                     meta: store.meta(for: item),
                                     metric: store.metric(for: item),
+                                    duration: store.runningDuration(for: item),
                                     isSelected: index == selectedIndex,
                                     shortcutNumber: shortcutNumber(for: item),
                                     onSelect: {
@@ -2366,6 +2643,7 @@ private struct QuickSwitcherRow: View {
     let activity: InstanceActivity
     let meta: InstanceUserMeta
     let metric: InstanceResourceMetric
+    let duration: String?
     let isSelected: Bool
     let shortcutNumber: Int?
     let onSelect: () -> Void
@@ -2476,8 +2754,22 @@ private struct QuickSwitcherRow: View {
 
                 Spacer(minLength: 6)
 
-                // 3. Right Cluster: Metrics & Shortcut Pill
+                // 3. Right Cluster: Metrics, Duration & Shortcut Pill
                 HStack(spacing: 8) {
+                    if let duration {
+                        HStack(spacing: 3) {
+                            Image(systemName: "stopwatch")
+                                .font(.system(size: 8))
+                            Text(duration)
+                                .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                        }
+                        .foregroundStyle(.cyan)
+                        .padding(.horizontal, 5.5)
+                        .frame(height: 20)
+                        .background(Capsule().fill(Color.cyan.opacity(0.12)))
+                        .overlay(Capsule().strokeBorder(Color.cyan.opacity(0.35), lineWidth: 0.8))
+                    }
+
                     if item.running && metric.processCount > 0 {
                         HStack(spacing: 3.5) {
                             Image(systemName: metric.cpuPercent > 15 ? "bolt.fill" : "cpu")
@@ -2547,6 +2839,7 @@ struct InstanceThumbnailTile: View {
     let diskUsage: InstanceDiskUsage
     let thumbnail: NSImage?
     let sourceVersion: String
+    var duration: String? = nil
     let busy: Bool
     let canUpgrade: Bool
     let open: () -> Void
@@ -2652,6 +2945,20 @@ struct InstanceThumbnailTile: View {
                             .frame(height: 22)
                             .background(Capsule().fill(Color.black.opacity(0.62)))
                             .overlay(Capsule().strokeBorder(resourceMetric.cpuPercent > 15 ? Color.cyan.opacity(0.45) : Color.white.opacity(0.18), lineWidth: 1))
+                        }
+
+                        if let duration {
+                            HStack(alignment: .center, spacing: 3.5) {
+                                Image(systemName: "stopwatch")
+                                    .font(.system(size: 8.5))
+                                Text(duration)
+                                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                            }
+                            .foregroundStyle(Color.cyan)
+                            .padding(.horizontal, 6.5)
+                            .frame(height: 22)
+                            .background(Capsule().fill(Color.black.opacity(0.62)))
+                            .overlay(Capsule().strokeBorder(Color.cyan.opacity(0.45), lineWidth: 1))
                         }
 
                         Spacer()
@@ -4161,6 +4468,7 @@ struct ContentView: View {
     @State private var upgradeRequest: UpgradeRequest?
     @State private var showBackupManager = false
     @State private var showUpdateSettings = false
+    @State private var showTaskHistory = false
     @State private var pendingDestroy: ManagedInstance?
     @State private var pendingClear: ManagedInstance?
     @State private var editingMetaItem: ManagedInstance?
@@ -4173,7 +4481,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.5.9"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.6.0"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
@@ -4328,6 +4636,12 @@ struct ContentView: View {
                 }
             )
         }
+        .onReceive(NotificationCenter.default.publisher(for: .openTaskHistoryRequested)) { _ in
+            showTaskHistory = true
+        }
+        .sheet(isPresented: $showTaskHistory) {
+            TaskHistorySheet(store: store)
+        }
         .alert("操作未完成", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
             Button("好") { store.error = nil }
         } message: { Text(store.error ?? "") }
@@ -4402,6 +4716,15 @@ struct ContentView: View {
                         refreshSpin += 360
                     }
                     store.refresh()
+                }
+
+                IconActionButton(
+                    symbol: "list.bullet.rectangle.portrait",
+                    tooltip: "任务事件与执行动态中心（\(store.taskHistory.count) 条记录）",
+                    size: 34,
+                    badge: store.unreadAttentionCount
+                ) {
+                    showTaskHistory = true
                 }
 
                 IconActionButton(
@@ -4883,6 +5206,7 @@ struct ContentView: View {
                             diskUsage: store.diskUsage(for: item),
                             thumbnail: store.thumbnails[item.id],
                             sourceVersion: store.sourceVersion,
+                            duration: store.runningDuration(for: item),
                             busy: store.busy,
                             canUpgrade: store.compatibility == "已支持本机版本",
                             open: { store.open(item) },
@@ -5638,6 +5962,413 @@ private struct UpdateSettingsView: View {
         .padding(24)
         .frame(width: 460)
         .onAppear { automatic = updater.automaticallyChecksForUpdates && updater.automaticallyDownloadsUpdates }
+    }
+}
+
+// MARK: - Task History & Telemetry Sheet
+
+private struct TaskHistorySheet: View {
+    @ObservedObject var store: InstanceStore
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
+
+    @State private var searchQuery: String = ""
+    @State private var selectedCategory: TaskHistoryCategory? = nil
+    @State private var showClearConfirmation = false
+    @State private var exportSuccessURL: URL? = nil
+
+    private var filteredItems: [TaskHistoryItem] {
+        store.taskHistory.filter { item in
+            if let cat = selectedCategory, item.category != cat {
+                return false
+            }
+            let q = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if q.isEmpty { return true }
+            return item.instanceName.lowercased().contains(q) ||
+                item.instanceNickname.lowercased().contains(q) ||
+                item.actionSummary.lowercased().contains(q) ||
+                item.workspace.lowercased().contains(q) ||
+                item.category.label.lowercased().contains(q)
+        }
+    }
+
+    private var attentionCount: Int {
+        store.taskHistory.filter { $0.category == .needsAttention }.count
+    }
+
+    private var completedCount: Int {
+        store.taskHistory.filter { $0.category == .completed }.count
+    }
+
+    private var errorCount: Int {
+        store.taskHistory.filter { $0.category == .error }.count
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // 1. Header Bar
+            HStack(alignment: .center, spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [Color(red: 0.19, green: 0.44, blue: 0.96), Color(red: 0.36, green: 0.27, blue: 0.88)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 42, height: 42)
+                        .shadow(color: accent.opacity(0.3), radius: 6, y: 2)
+                    Image(systemName: "list.bullet.rectangle.portrait")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 8) {
+                        Text("任务事件与执行动态中心")
+                            .font(.system(size: 16.5, weight: .bold))
+                        Text("共 \(store.taskHistory.count) 条记录")
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(accent)
+                            .padding(.horizontal, 7)
+                            .frame(height: 19)
+                            .background(Capsule().fill(accent.opacity(0.12)))
+                    }
+                    Text("实时聚合各多开实例的 Agent 执行状态、耗时与用户待确认事件 · 支持一键跳转实例")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 18))
+                        .foregroundStyle(.secondary.opacity(0.8))
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.cancelAction)
+            }
+            .padding(.horizontal, 22)
+            .padding(.top, 18)
+            .padding(.bottom, 14)
+
+            Divider()
+
+            // 2. Filter Tabs & Search Bar
+            HStack(spacing: 12) {
+                // Category Pills
+                HStack(spacing: 6) {
+                    categoryFilterTab(title: "全部", category: nil, count: store.taskHistory.count)
+                    categoryFilterTab(title: "待确认", category: .needsAttention, count: attentionCount, color: .orange)
+                    categoryFilterTab(title: "已完成", category: .completed, count: completedCount, color: .green)
+                    categoryFilterTab(title: "异常", category: .error, count: errorCount, color: .red)
+                }
+
+                Spacer()
+
+                // Search Input
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                    TextField("搜索实例名、工作区、任务内容...", text: $searchQuery)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12))
+                    if !searchQuery.isEmpty {
+                        Button {
+                            searchQuery = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 9)
+                .frame(width: 240, height: 28)
+                .background {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.05))
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .strokeBorder(Color.primary.opacity(0.1), lineWidth: 1)
+                }
+            }
+            .padding(.horizontal, 22)
+            .padding(.vertical, 10)
+            .background(Color.primary.opacity(colorScheme == .dark ? 0.025 : 0.015))
+
+            Divider()
+
+            // 3. Item List or Empty State
+            if filteredItems.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: searchQuery.isEmpty ? "clock.badge.checkmark" : "magnifyingglass")
+                        .font(.system(size: 38))
+                        .foregroundStyle(.secondary.opacity(0.6))
+                    Text(searchQuery.isEmpty ? "暂无任务历史记录" : "未找到匹配的任务记录")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Text(searchQuery.isEmpty ? "当各实例运行 Agent 任务并完成、遇到报错或等待确认时，事件与耗时会自动记录在此处。" : "请尝试更改筛选条件或搜索关键词")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary.opacity(0.8))
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 400)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.vertical, 60)
+            } else {
+                ScrollView(.vertical, showsIndicators: true) {
+                    LazyVStack(spacing: 10) {
+                        ForEach(filteredItems) { item in
+                            TaskHistoryCard(
+                                item: item,
+                                onOpen: {
+                                    if let target = store.instances.first(where: { $0.id == item.instanceID }) {
+                                        dismiss()
+                                        store.open(target)
+                                    }
+                                },
+                                onShowLogs: {
+                                    if let target = store.instances.first(where: { $0.id == item.instanceID }) {
+                                        store.showLogs(target)
+                                    }
+                                }
+                            )
+                        }
+                    }
+                    .padding(20)
+                }
+            }
+
+            Divider()
+
+            // 4. Bottom Action Bar
+            HStack(alignment: .center) {
+                Button {
+                    if let url = store.exportTaskHistory() {
+                        exportSuccessURL = url
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.system(size: 11))
+                        Text("导出 Markdown 报告")
+                    }
+                }
+                .buttonStyle(ModernButtonStyle(variant: .secondary, compact: true))
+                .help("将当前所有任务动态耗时导出为 Markdown 文件并保存到桌面")
+
+                if !store.taskHistory.isEmpty {
+                    Button {
+                        showClearConfirmation = true
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "trash")
+                                .font(.system(size: 11))
+                            Text("清空历史")
+                        }
+                    }
+                    .buttonStyle(ModernButtonStyle(variant: .danger, compact: true))
+                }
+
+                if let exportSuccessURL {
+                    Text("✓ 已导出至 \(exportSuccessURL.lastPathComponent)")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.green)
+                }
+
+                Spacer()
+
+                Button("完成") {
+                    dismiss()
+                }
+                .buttonStyle(ModernButtonStyle(variant: .primary, compact: true))
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(.horizontal, 22)
+            .padding(.vertical, 12)
+            .background(Color.primary.opacity(colorScheme == .dark ? 0.03 : 0.02))
+        }
+        .frame(minWidth: 740, idealWidth: 780, minHeight: 520, idealHeight: 580)
+        .confirmationDialog(
+            "确定要清空所有任务历史记录吗？",
+            isPresented: $showClearConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("清空历史记录", role: .destructive) {
+                store.clearTaskHistory()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("清空后将无法恢复已记录的任务耗时与事件详情。")
+        }
+    }
+
+    private func categoryFilterTab(title: String, category: TaskHistoryCategory?, count: Int, color: Color = accent) -> some View {
+        let isSelected = selectedCategory == category
+        return Button {
+            withAnimation(.spring(response: 0.2, dampingFraction: 0.8)) {
+                selectedCategory = category
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(title)
+                    .font(.system(size: 11.5, weight: isSelected ? .bold : .medium))
+                Text("\(count)")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(isSelected ? .white : (category != nil ? color : .secondary))
+                    .padding(.horizontal, 5)
+                    .frame(height: 15)
+                    .background(Capsule().fill(isSelected ? Color.white.opacity(0.25) : color.opacity(0.12)))
+            }
+            .foregroundStyle(isSelected ? .white : Color.primary.opacity(0.85))
+            .padding(.horizontal, 10)
+            .frame(height: 26)
+            .background {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(isSelected ? color : Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.035))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(isSelected ? color : Color.primary.opacity(0.08), lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct TaskHistoryCard: View {
+    let item: TaskHistoryItem
+    let onOpen: () -> Void
+    let onShowLogs: () -> Void
+
+    @State private var hovered = false
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Row 1: Category Tag, Instance Identity, Duration Pill, Timestamp
+            HStack(alignment: .center, spacing: 8) {
+                HStack(spacing: 4.5) {
+                    Image(systemName: item.category.icon)
+                        .font(.system(size: 10.5, weight: .bold))
+                    Text(item.category.label)
+                        .font(.system(size: 11, weight: .bold))
+                }
+                .foregroundStyle(item.category.color)
+                .padding(.horizontal, 7.5)
+                .frame(height: 21)
+                .background(Capsule().fill(item.category.color.opacity(0.14)))
+                .overlay(Capsule().strokeBorder(item.category.color.opacity(0.35), lineWidth: 1))
+
+                HStack(spacing: 4) {
+                    if item.isOriginal {
+                        Text("👑 官方主实例")
+                            .font(.system(size: 10.5, weight: .bold))
+                            .foregroundStyle(Color(red: 0.52, green: 0.32, blue: 0.98))
+                    } else {
+                        Text(item.displayName)
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(accent)
+                    }
+                }
+                .padding(.horizontal, 6.5)
+                .frame(height: 21)
+                .background(Capsule().fill(item.isOriginal ? Color(red: 0.52, green: 0.32, blue: 0.98).opacity(0.12) : accent.opacity(0.1)))
+
+                if let duration = item.formattedDuration {
+                    HStack(spacing: 3.5) {
+                        Image(systemName: "stopwatch")
+                            .font(.system(size: 9))
+                        Text("耗时 \(duration)")
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    }
+                    .foregroundStyle(Color.cyan)
+                    .padding(.horizontal, 7)
+                    .frame(height: 21)
+                    .background(Capsule().fill(Color.cyan.opacity(0.12)))
+                    .overlay(Capsule().strokeBorder(Color.cyan.opacity(0.3), lineWidth: 1))
+                }
+
+                Spacer()
+
+                HStack(spacing: 4) {
+                    Text(item.formattedTime)
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                    Text("(\(item.relativeTime))")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            // Row 2: Action Summary
+            Text(item.actionSummary)
+                .font(.system(size: 12.5, weight: .medium))
+                .foregroundStyle(Color.primary.opacity(0.92))
+                .lineLimit(3)
+
+            // Row 3: Workspace & Action Buttons
+            HStack(alignment: .center, spacing: 8) {
+                if !item.workspace.isEmpty {
+                    HStack(spacing: 4) {
+                        Image(systemName: "folder")
+                            .font(.system(size: 9.5))
+                        Text(item.workspace)
+                            .font(.system(size: 10.5, design: .monospaced))
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 6)
+                    .frame(height: 20)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(Color.primary.opacity(0.05)))
+                }
+
+                Spacer()
+
+                Button {
+                    onShowLogs()
+                } label: {
+                    Text("日志")
+                        .font(.system(size: 10.5, weight: .medium))
+                }
+                .buttonStyle(ModernButtonStyle(variant: .ghost, compact: true))
+                .help("打开该实例的系统日志目录")
+
+                Button {
+                    onOpen()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "arrow.up.forward.app")
+                            .font(.system(size: 10.5))
+                        Text("调出并聚焦")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                }
+                .buttonStyle(ModernButtonStyle(variant: .primary, compact: true))
+            }
+        }
+        .padding(14)
+        .background {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.primary.opacity(colorScheme == .dark ? 0.05 : 0.03))
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(
+                    item.category == .needsAttention ? Color.orange.opacity(0.35) :
+                    (item.category == .error ? Color.red.opacity(0.35) : Color.primary.opacity(hovered ? 0.18 : 0.08)),
+                    lineWidth: 1
+                )
+        }
+        .onHover { hovered = $0 }
     }
 }
 
