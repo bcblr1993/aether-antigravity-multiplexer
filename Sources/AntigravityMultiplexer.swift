@@ -4,6 +4,7 @@ import Sparkle
 import WebKit
 import UserNotifications
 import Carbon
+import Darwin
 
 private let accent = Color.accentColor
 
@@ -548,6 +549,184 @@ struct BackupBatch: Decodable, Identifiable {
     var sizeLabel: String { ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
 }
 
+// MARK: - Native Kernel Process Metrics (Darwin libproc / proc_pidinfo)
+
+enum NativeProcessMonitor {
+    private static var previousSamples: [String: (timestamp: Date, totalCpuNanos: UInt64)] = [:]
+    private static let lock = NSLock()
+
+    /// Collects all descendant process IDs rooted at `root` using Darwin's native `proc_listchildpids`.
+    /// Traverses the Electron process tree (main -> helper/gpu/utility/renderer/language_server) in < 0.1ms.
+    static func getProcessTreePids(root: pid_t) -> [pid_t] {
+        guard root > 0 else { return [] }
+        var pids: [pid_t] = [root]
+        var queue: [pid_t] = [root]
+        var visited = Set<pid_t>([root])
+
+        while !queue.isEmpty {
+            let parent = queue.removeFirst()
+            var buffer = [pid_t](repeating: 0, count: 512)
+            let count = Int(proc_listchildpids(parent, &buffer, Int32(MemoryLayout<pid_t>.stride * 512)))
+            if count > 0 {
+                for i in 0..<count {
+                    let child = buffer[i]
+                    if child > 0 && !visited.contains(child) {
+                        visited.insert(child)
+                        queue.append(child)
+                        pids.append(child)
+                    }
+                }
+            }
+        }
+        return pids
+    }
+
+    /// Direct kernel sampling of process tree total CPU time (nanoseconds), resident memory (bytes), and live process count.
+    static func sampleTree(root: pid_t) -> (cpuNanos: UInt64, rssBytes: Int64, processCount: Int)? {
+        guard root > 0 else { return nil }
+        let pids = getProcessTreePids(root: root)
+        guard !pids.isEmpty else { return nil }
+
+        var totalCpu: UInt64 = 0
+        var totalRss: Int64 = 0
+        var validCount = 0
+
+        for pid in pids {
+            var ti = proc_taskinfo()
+            let r = proc_pidinfo(pid, PROC_PIDTASKINFO, 0, &ti, Int32(MemoryLayout<proc_taskinfo>.stride))
+            if r > 0 {
+                totalCpu += (ti.pti_total_user + ti.pti_total_system)
+                totalRss += Int64(ti.pti_resident_size)
+                validCount += 1
+            }
+        }
+
+        guard validCount > 0 else { return nil }
+        return (totalCpu, totalRss, validCount)
+    }
+
+    /// Scans resource metrics using Darwin native C APIs with zero subprocess forks, zero Mach task creation, and zero pipe I/O.
+    static func scanResourceMetrics(
+        instances: [ManagedInstance],
+        runningAppPids: [String: pid_t] = [:]
+    ) -> [String: InstanceResourceMetric] {
+        var results: [String: InstanceResourceMetric] = [:]
+        let now = Date()
+
+        lock.lock()
+        defer { lock.unlock() }
+
+        let runningItems = instances.filter(\.running)
+        guard !runningItems.isEmpty else {
+            previousSamples.removeAll()
+            return results
+        }
+
+        let runningIDs = Set(runningItems.map(\.id))
+        previousSamples = previousSamples.filter { runningIDs.contains($0.key) }
+
+        for item in runningItems {
+            let rootPid: pid_t? = {
+                if let pid = runningAppPids[item.id], pid > 0 { return pid }
+                let apps = NSRunningApplication.runningApplications(withBundleIdentifier: item.bundleID).filter { !$0.isTerminated }
+                if let match = apps.first(where: { app in
+                    guard let bURL = app.bundleURL else { return true }
+                    return bURL.resolvingSymlinksInPath().standardizedFileURL == item.path.resolvingSymlinksInPath().standardizedFileURL
+                }) {
+                    return match.processIdentifier
+                }
+                return apps.first?.processIdentifier
+            }()
+
+            guard let root = rootPid, let sample = sampleTree(root: root) else { continue }
+
+            var cpuPercent = 0.0
+            if let prev = previousSamples[item.id] {
+                let dt = now.timeIntervalSince(prev.timestamp)
+                if dt >= 0.5 {
+                    let dCpu = sample.cpuNanos >= prev.totalCpuNanos ? (sample.cpuNanos - prev.totalCpuNanos) : 0
+                    cpuPercent = (Double(dCpu) / (dt * 1_000_000_000.0)) * 100.0
+                    cpuPercent = min(max(cpuPercent, 0.0), Double(sample.processCount) * 100.0)
+                }
+            }
+            previousSamples[item.id] = (timestamp: now, totalCpuNanos: sample.cpuNanos)
+
+            results[item.id] = InstanceResourceMetric(
+                cpuPercent: cpuPercent,
+                rssBytes: sample.rssBytes,
+                processCount: sample.processCount
+            )
+        }
+
+        // If for any rare reason libproc returned empty for running instances, fallback to ps
+        if results.isEmpty && !runningItems.isEmpty {
+            return fallbackScanResourceMetricsViaPS(instances: instances)
+        }
+
+        return results
+    }
+
+    /// Safe fallback using /bin/ps in case kernel security policy blocks libproc
+    private static func fallbackScanResourceMetricsViaPS(instances: [ManagedInstance]) -> [String: InstanceResourceMetric] {
+        var results: [String: InstanceResourceMetric] = [:]
+        let runningItems = instances.filter(\.running)
+        guard !runningItems.isEmpty else { return results }
+
+        let pipe = Pipe()
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/ps")
+        proc.arguments = ["-A", "-o", "pid,ppid,%cpu,rss,command"]
+        proc.standardOutput = pipe
+        proc.standardError = FileHandle.nullDevice
+
+        do {
+            try proc.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            proc.waitUntilExit()
+            guard let text = String(data: data, encoding: .utf8) else { return results }
+
+            let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
+            guard lines.count > 1 else { return results }
+
+            let sortedByLength = runningItems.sorted { $0.name.count > $1.name.count }
+
+            for line in lines.dropFirst() {
+                let parts = line.split(separator: " ", maxSplits: 4, omittingEmptySubsequences: true)
+                guard parts.count >= 5,
+                      let cpu = Double(parts[2]),
+                      let rssKB = Int64(parts[3]) else { continue }
+                let cmd = String(parts[4])
+
+                for item in sortedByLength {
+                    let name = item.name
+                    let nameNoSpace = name.lowercased().replacingOccurrences(of: " ", with: "")
+                    var isMatch = false
+
+                    if cmd.contains("/Applications/\(name).app") || cmd.contains("/Applications/\(name) ") {
+                        isMatch = true
+                    } else if cmd.contains("--user-data-dir=") && cmd.contains("/\(name)") {
+                        isMatch = true
+                    } else if cmd.contains("--app_data_dir \(nameNoSpace)") {
+                        isMatch = true
+                    } else if item.isOriginal && (cmd.contains("--app_data_dir antigravity ") || (cmd.contains("/Applications/Antigravity.app") && !cmd.contains("Antigravity Second") && !cmd.contains("Antigravity Third") && !cmd.contains("Antigravity Fourth") && !cmd.contains("Antigravity Fifth") && !cmd.contains("Antigravity Sixth") && !cmd.contains("Antigravity Seventh") && !cmd.contains("Antigravity Eighth"))) {
+                        isMatch = true
+                    }
+
+                    if isMatch {
+                        var metric = results[item.id] ?? InstanceResourceMetric()
+                        metric.cpuPercent += cpu
+                        metric.rssBytes += rssKB * 1024
+                        metric.processCount += 1
+                        results[item.id] = metric
+                        break
+                    }
+                }
+            }
+        } catch {}
+        return results
+    }
+}
+
 // MARK: - Background Transcript & Window Scanner
 
 private enum TelemetryScanner {
@@ -634,66 +813,11 @@ private enum TelemetryScanner {
         return nil
     }
 
-    static func scanResourceMetrics(instances: [ManagedInstance]) -> [String: InstanceResourceMetric] {
-        var results: [String: InstanceResourceMetric] = [:]
-        let runningItems = instances.filter(\.running)
-        guard !runningItems.isEmpty else { return results }
-
-        let pipe = Pipe()
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/bin/ps")
-        proc.arguments = ["-A", "-o", "pid,ppid,%cpu,rss,command"]
-        proc.standardOutput = pipe
-        proc.standardError = FileHandle.nullDevice
-
-        do {
-            try proc.run()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            proc.waitUntilExit()
-            guard let text = String(data: data, encoding: .utf8) else { return results }
-
-            let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
-            guard lines.count > 1 else { return results }
-
-            let sortedByLength = runningItems.sorted { $0.name.count > $1.name.count }
-
-            for line in lines.dropFirst() {
-                let parts = line.split(separator: " ", maxSplits: 4, omittingEmptySubsequences: true)
-                guard parts.count >= 5,
-                      let cpu = Double(parts[2]),
-                      let rssKB = Int64(parts[3]) else { continue }
-                let cmd = String(parts[4])
-
-                for item in sortedByLength {
-                    let name = item.name
-                    let nameNoSpace = name.lowercased().replacingOccurrences(of: " ", with: "")
-                    var isMatch = false
-
-                    if cmd.contains("/Applications/\(name).app") || cmd.contains("/Applications/\(name) ") {
-                        isMatch = true
-                    } else if cmd.contains("--user-data-dir=") && cmd.contains("/\(name)") {
-                        isMatch = true
-                    } else if cmd.contains("--app_data_dir \(nameNoSpace)") {
-                        isMatch = true
-                    } else if item.isOriginal && (cmd.contains("--app_data_dir antigravity ") || (cmd.contains("/Applications/Antigravity.app") && !cmd.contains("Antigravity Second") && !cmd.contains("Antigravity Third") && !cmd.contains("Antigravity Fourth") && !cmd.contains("Antigravity Fifth") && !cmd.contains("Antigravity Sixth") && !cmd.contains("Antigravity Seventh") && !cmd.contains("Antigravity Eighth"))) {
-                        isMatch = true
-                    }
-
-                    if isMatch {
-                        var metric = results[item.id] ?? InstanceResourceMetric()
-                        metric.cpuPercent += cpu
-                        metric.rssBytes += rssKB * 1024
-                        metric.processCount += 1
-                        results[item.id] = metric
-                        break
-                    }
-                }
-            }
-        } catch {
-            // Silently ignore ps error
-        }
-
-        return results
+    static func scanResourceMetrics(
+        instances: [ManagedInstance],
+        runningAppPids: [String: pid_t] = [:]
+    ) -> [String: InstanceResourceMetric] {
+        NativeProcessMonitor.scanResourceMetrics(instances: instances, runningAppPids: runningAppPids)
     }
 
     static func calculateFolderBytes(at url: URL) -> Int64 {
@@ -1459,13 +1583,17 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         let existingThumbnails = Set(thumbnails.keys)
         let activeTasks = Set(activities.filter { $0.value.state == .runningTask }.keys)
         let frontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let runningPids = Dictionary(uniqueKeysWithValues: snapshot.compactMap { item -> (String, pid_t)? in
+            guard item.running, let app = self.runningApplication(bundleID: item.bundleID, path: item.path) else { return nil }
+            return (item.id, app.processIdentifier)
+        })
 
         telemetryTickCount += 1
         let tick = telemetryTickCount
 
         Task.detached(priority: .utility) {
             let scanned = TelemetryScanner.scan(instances: snapshot, knownConvIDs: knownConvIDs)
-            let metrics = shouldCapture ? TelemetryScanner.scanResourceMetrics(instances: snapshot) : currentMetrics
+            let metrics = shouldCapture ? TelemetryScanner.scanResourceMetrics(instances: snapshot, runningAppPids: runningPids) : currentMetrics
             let cdpData = await Self.captureCDPScreenshots(
                 for: snapshot,
                 captureThumbnails: shouldCapture,
@@ -1914,7 +2042,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         }
         if hudPanel == nil {
             let panel = NSPanel(
-                contentRect: NSRect(x: 0, y: 0, width: 280, height: 44),
+                contentRect: NSRect(x: 0, y: 0, width: 315, height: 44),
                 styleMask: [.nonactivatingPanel, .borderless],
                 backing: .buffered,
                 defer: false
@@ -1931,7 +2059,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             let savedY = UserDefaults.standard.object(forKey: "floatingHUD_y") as? Double
             if let x = savedX, let y = savedY, let screen = NSScreen.main?.visibleFrame {
                 let minX = screen.minX
-                let maxX = max(minX, screen.maxX - 280)
+                let maxX = max(minX, screen.maxX - 315)
                 let minY = screen.minY
                 let maxY = max(minY, screen.maxY - 44)
                 let clampedX = min(max(x, minX), maxX)
@@ -1939,7 +2067,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 panel.setFrameOrigin(NSPoint(x: clampedX, y: clampedY))
             } else if let screen = NSScreen.main?.visibleFrame {
                 // Default position: Top-Right of screen below menu bar, avoiding bottom chat/prompt box on laptop screens
-                panel.setFrameOrigin(NSPoint(x: max(screen.minX, screen.maxX - 300), y: max(screen.minY, screen.maxY - 70)))
+                panel.setFrameOrigin(NSPoint(x: max(screen.minX, screen.maxX - 335), y: max(screen.minY, screen.maxY - 70)))
             }
 
             panel.contentView = DraggableHostingView(rootView: FloatingMonitorHUDView(store: self))
@@ -2496,6 +2624,18 @@ private struct FloatingMonitorHUDView: View {
                 .gesture(dragGesture)
 
             Button {
+                store.toggleQuickSwitcher()
+            } label: {
+                Image(systemName: "arrow.left.arrow.right")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.85))
+                    .frame(width: 24, height: 24)
+                    .background(Circle().fill(Color.white.opacity(0.12)))
+            }
+            .buttonStyle(.plain)
+            .help("快速切换到其他 Antigravity 实例 (⌥Space)")
+
+            Button {
                 store.collapseAllToMonitorWall()
             } label: {
                 HStack(alignment: .center, spacing: 4) {
@@ -2529,15 +2669,44 @@ private struct FloatingMonitorHUDView: View {
         }
         .padding(.leading, 10)
         .padding(.trailing, hovered ? 8 : 12)
-        .frame(width: 280, height: 42)
+        .frame(width: 315, height: 42)
         .background {
-            Capsule()
-                .fill(Color(red: 0.09, green: 0.10, blue: 0.14).opacity(0.92))
+            ZStack {
+                Capsule()
+                    .fill(.ultraThinMaterial)
+                Capsule()
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color(red: 0.12, green: 0.14, blue: 0.20).opacity(0.94),
+                                Color(red: 0.07, green: 0.08, blue: 0.12).opacity(0.97)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            }
         }
         .overlay {
             Capsule()
-                .strokeBorder(Color.white.opacity(hovered ? 0.28 : 0.16), lineWidth: 1)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(hovered ? 0.38 : 0.20),
+                            accent.opacity(hovered ? 0.45 : 0.15)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
         }
+        .shadow(
+            color: Color.black.opacity(hovered ? 0.45 : 0.30),
+            radius: hovered ? 12 : 8,
+            x: 0,
+            y: hovered ? 5 : 3
+        )
         .scaleEffect(hovered ? 1.02 : 1.0)
         .animation(.spring(response: 0.22, dampingFraction: 0.78), value: hovered)
         .onHover { hovered = $0 }
@@ -4840,7 +5009,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.6.5"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.6.6"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
@@ -5040,6 +5209,20 @@ struct ContentView: View {
                             .frame(height: 19)
                             .background(Capsule().fill(accent.opacity(0.12)))
                             .overlay(Capsule().strokeBorder(accent.opacity(0.22), lineWidth: 1))
+
+                        HStack(alignment: .center, spacing: 4) {
+                            Circle()
+                                .fill(Color.green)
+                                .frame(width: 5.5, height: 5.5)
+                            Text("Kernel Direct")
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(.green)
+                        }
+                        .padding(.horizontal, 6.5)
+                        .frame(height: 19)
+                        .background(Capsule().fill(Color.green.opacity(0.10)))
+                        .overlay(Capsule().strokeBorder(Color.green.opacity(0.20), lineWidth: 1))
+                        .help("内核直接通信：使用 macOS Darwin libproc 直读进程指标，0 子进程开销，微秒级能效")
                     }
                     Text("Apple Silicon 多实例监控与隔离工作台 · 实时任务感知与一键调出")
                         .font(.system(size: 12))

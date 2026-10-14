@@ -150,6 +150,27 @@ class TestMultiplexerAudit(unittest.TestCase):
         self.assertIn('InstanceThumbnailResourceBadge(isRunning: item.running, metric: resourceMetric)', self.content)
         self.assertIn('InstanceCardResourceBadges(', self.content)
 
+    def test_native_kernel_process_monitor_libproc(self):
+        # NativeProcessMonitor must use Darwin kernel APIs (proc_pidinfo, proc_listchildpids) for zero subprocess churn
+        self.assertIn('enum NativeProcessMonitor', self.content)
+        self.assertIn('proc_listchildpids', self.content)
+        self.assertIn('proc_pidinfo', self.content)
+        self.assertIn('PROC_PIDTASKINFO', self.content)
+        self.assertIn('getProcessTreePids(root: pid_t)', self.content)
+        self.assertIn('sampleTree(root: pid_t)', self.content)
+        self.assertIn('fallbackScanResourceMetricsViaPS', self.content)
+
+    def test_floating_hud_interactive_quick_switch(self):
+        # Floating HUD must include interactive quick switcher trigger button and liquid glass styling
+        self.assertIn('store.toggleQuickSwitcher()', self.content)
+        self.assertIn('arrow.left.arrow.right', self.content)
+        self.assertIn('width: 315', self.content)
+
+    def test_kernel_direct_dashboard_badge(self):
+        # Top dashboard header must display Kernel Direct badge
+        self.assertIn('Kernel Direct', self.content)
+
 
 if __name__ == "__main__":
     unittest.main()
+
