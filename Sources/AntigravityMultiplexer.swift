@@ -1399,7 +1399,23 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         isMainWindowVisible || (quickSwitcherPanel?.isVisible == true)
     }
 
+    private var standbyTickCount: Int = 0
+
+    func periodicTick() {
+        let isStandby = !shouldCaptureScreenshots && activeTaskCount == 0
+        if isStandby {
+            standbyTickCount += 1
+            // Sentinel Low-Power Standby: when window is hidden to tray and all instances are idle,
+            // throttle full scan from 2.2s to ~11s (every 5 ticks), allowing macOS App Nap to engage
+            guard standbyTickCount % 5 == 0 else { return }
+        } else {
+            standbyTickCount = 0
+        }
+        refreshRunningStates()
+    }
+
     func refreshRunningStates() {
+        standbyTickCount = 0
         let updated = instances.map { item in
             let app = runningApplication(bundleID: item.bundleID, path: item.path)
             return ManagedInstance(id: item.id, name: item.name, path: item.path, bundleID: item.bundleID,
@@ -3077,6 +3093,89 @@ extension QuickSwitcherRow: Equatable {
     }
 }
 
+// MARK: - Isolated Resource Metric Badges (Equatable Subtree Isolation)
+
+struct InstanceThumbnailResourceBadge: View, Equatable {
+    let isRunning: Bool
+    let metric: InstanceResourceMetric
+
+    static func == (lhs: InstanceThumbnailResourceBadge, rhs: InstanceThumbnailResourceBadge) -> Bool {
+        lhs.isRunning == rhs.isRunning && lhs.metric == rhs.metric
+    }
+
+    var body: some View {
+        if isRunning && metric.processCount > 0 {
+            HStack(alignment: .center, spacing: 4) {
+                Image(systemName: metric.cpuPercent > 15 ? "bolt.fill" : "cpu")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(metric.cpuPercent > 15 ? Color.cyan : .white.opacity(0.85))
+                    .frame(width: 10, height: 10, alignment: .center)
+                Text("\(metric.cpuLabel) · \(metric.memoryLabel)")
+                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.92))
+            }
+            .padding(.horizontal, 7)
+            .frame(height: 22)
+            .background(Capsule().fill(Color.black.opacity(0.62)))
+            .overlay(Capsule().strokeBorder(metric.cpuPercent > 15 ? Color.cyan.opacity(0.45) : Color.white.opacity(0.18), lineWidth: 1))
+        }
+    }
+}
+
+struct InstanceCardResourceBadges: View, Equatable {
+    let isRunning: Bool
+    let metric: InstanceResourceMetric
+    let isDarkMode: Bool
+
+    static func == (lhs: InstanceCardResourceBadges, rhs: InstanceCardResourceBadges) -> Bool {
+        lhs.isRunning == rhs.isRunning && lhs.metric == rhs.metric && lhs.isDarkMode == rhs.isDarkMode
+    }
+
+    var body: some View {
+        if isRunning && metric.processCount > 0 {
+            HStack(spacing: 6) {
+                pill(
+                    icon: metric.cpuPercent > 15 ? "bolt.fill" : "cpu",
+                    text: metric.cpuLabel,
+                    foreground: metric.cpuPercent > 15 ? .cyan : .secondary,
+                    background: metric.cpuPercent > 15 ? Color.cyan.opacity(isDarkMode ? 0.16 : 0.10) : Color.primary.opacity(isDarkMode ? 0.06 : 0.04),
+                    border: metric.cpuPercent > 15 ? Color.cyan.opacity(0.30) : Color.primary.opacity(0.06)
+                )
+
+                pill(
+                    icon: "memorychip.fill",
+                    text: metric.memoryLabel,
+                    foreground: .secondary,
+                    background: Color.primary.opacity(isDarkMode ? 0.06 : 0.04),
+                    border: Color.primary.opacity(0.06)
+                )
+            }
+        }
+    }
+
+    private func pill(icon: String, text: String, foreground: Color, background: Color, border: Color) -> some View {
+        HStack(alignment: .center, spacing: 4.5) {
+            Image(systemName: icon)
+                .font(.system(size: 9.5, weight: .semibold))
+                .frame(width: 11, height: 11, alignment: .center)
+                .opacity(0.75)
+            Text(text)
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+        }
+        .foregroundStyle(foreground)
+        .padding(.horizontal, 7.5)
+        .frame(height: 21)
+        .background {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(background)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(border, lineWidth: 0.8)
+        }
+    }
+}
+
 // MARK: - Thumbnail Grid Tile Card (Remote-Desktop / Mission-Control Style)
 
 struct InstanceThumbnailTile: View {
@@ -3182,22 +3281,9 @@ struct InstanceThumbnailTile: View {
                                 .overlay(Capsule().strokeBorder(Color.orange.opacity(0.45), lineWidth: 1))
                         }
 
-                        // Real-time Resource Metric Capsule (CPU & Memory)
-                        if item.running && resourceMetric.processCount > 0 {
-                            HStack(alignment: .center, spacing: 4) {
-                                Image(systemName: resourceMetric.cpuPercent > 15 ? "bolt.fill" : "cpu")
-                                    .font(.system(size: 9, weight: .semibold))
-                                    .foregroundStyle(resourceMetric.cpuPercent > 15 ? Color.cyan : .white.opacity(0.85))
-                                    .frame(width: 10, height: 10, alignment: .center)
-                                Text("\(resourceMetric.cpuLabel) · \(resourceMetric.memoryLabel)")
-                                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                                    .foregroundStyle(.white.opacity(0.92))
-                            }
-                            .padding(.horizontal, 7)
-                            .frame(height: 22)
-                            .background(Capsule().fill(Color.black.opacity(0.62)))
-                            .overlay(Capsule().strokeBorder(resourceMetric.cpuPercent > 15 ? Color.cyan.opacity(0.45) : Color.white.opacity(0.18), lineWidth: 1))
-                        }
+                        // Real-time Resource Metric Capsule (CPU & Memory, Equatable Subtree)
+                        InstanceThumbnailResourceBadge(isRunning: item.running, metric: resourceMetric)
+                            .equatable()
 
                         if let duration {
                             HStack(alignment: .center, spacing: 3.5) {
@@ -3935,23 +4021,12 @@ struct InstanceCard: View {
                         .help("工作空间与存储：工作空间 \(diskUsage.formattedProfile) · 缓存 \(diskUsage.formattedUserData) · 程序包 \(diskUsage.formattedAppBundle)")
                     }
 
-                    if item.running && resourceMetric.processCount > 0 {
-                        metaPill(
-                            icon: resourceMetric.cpuPercent > 15 ? "bolt.fill" : "cpu",
-                            text: resourceMetric.cpuLabel,
-                            foreground: resourceMetric.cpuPercent > 15 ? .cyan : .secondary,
-                            background: resourceMetric.cpuPercent > 15 ? Color.cyan.opacity(colorScheme == .dark ? 0.16 : 0.10) : Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.04),
-                            border: resourceMetric.cpuPercent > 15 ? Color.cyan.opacity(0.30) : Color.primary.opacity(0.06)
-                        )
-
-                        metaPill(
-                            icon: "memorychip.fill",
-                            text: resourceMetric.memoryLabel,
-                            foreground: .secondary,
-                            background: Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.04),
-                            border: Color.primary.opacity(0.06)
-                        )
-                    }
+                    InstanceCardResourceBadges(
+                        isRunning: item.running,
+                        metric: resourceMetric,
+                        isDarkMode: colorScheme == .dark
+                    )
+                    .equatable()
 
                     Button(action: editMeta) {
                         metaPill(
@@ -4765,7 +4840,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.6.4"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.6.5"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
@@ -4872,7 +4947,7 @@ struct ContentView: View {
             store.refreshRunningStates()
         }
         .onReceive(Timer.publish(every: 2.2, on: .main, in: .common).autoconnect()) { _ in
-            store.refreshRunningStates()
+            store.periodicTick()
         }
         .sheet(isPresented: $showCreate) {
             createInstanceSheet

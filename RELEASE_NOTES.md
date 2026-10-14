@@ -1,3 +1,12 @@
+# v0.6.5
+
+- **指标徽标独立 View 隔离 (Isolated Resource Metric Badges & Zero Card Invalidation)**：
+  - **组件级渲染隔离**：将监控墙卡片与列表卡片中的实时 CPU & 内存标签抽离为独立子视图组件 `InstanceThumbnailResourceBadge` 与 `InstanceCardResourceBadges`，严格声明 `Equatable` 并应用 `.equatable()`。
+  - **阻断卡片全树阴影重绘**：将指标变动渲染彻底隔离在微型胶囊内部，卡片主体（包含 24pt 外发光、玻璃拟态渐变与圆角描边）不再因指标刷新而触发全树重绘，彻底解决采样中暴露的 `ShapeLayerShadowHelper.visitPaint` 性能热点，前台 CPU 占用进一步骤降。
+- **托盘哨兵休眠模式 (Sentinel Low-Power Standby Mode)**：
+  - **自适应降频节流**：当主监控墙窗口处于隐藏或最小化且所有 Antigravity 实例空闲时，`periodicTick()` 自动进入极低能耗「哨兵模式」，将后台轮询频率从 2.2 秒自适应节流至 ~11 秒（每 5 个周期唤醒一次），大幅削减后台定时器唤醒次数，允许 macOS **App Nap** 生效，待机能耗趋近于 0%。
+  - **毫秒级零延迟唤醒**：当任一实例正在运行 Agent 任务，或用户重新唤醒监控墙、调出极速切换面板（⌥Space）时，瞬间恢复 2.2 秒高保真调度，零感知延迟。
+
 # v0.6.4
 
 - **悬浮监控胶囊自由拖拽与智能定位记忆 (Freely Draggable Floating HUD & Smart Placement)**：

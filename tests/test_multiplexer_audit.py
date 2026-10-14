@@ -137,6 +137,19 @@ class TestMultiplexerAudit(unittest.TestCase):
         self.assertIn('lhs.memoryLabel == rhs.memoryLabel', self.content)
         self.assertIn('lhs.cpuLabel == rhs.cpuLabel', self.content)
 
+    def test_sentinel_standby_periodic_tick(self):
+        # periodicTick must implement Sentinel standby mode to throttle idle tray execution
+        self.assertIn('func periodicTick()', self.content)
+        self.assertIn('let isStandby = !shouldCaptureScreenshots && activeTaskCount == 0', self.content)
+        self.assertIn('guard standbyTickCount % 5 == 0 else { return }', self.content)
+
+    def test_isolated_resource_badges_equatable(self):
+        # Badges must be isolated into independent Equatable subviews
+        self.assertIn('struct InstanceThumbnailResourceBadge: View, Equatable', self.content)
+        self.assertIn('struct InstanceCardResourceBadges: View, Equatable', self.content)
+        self.assertIn('InstanceThumbnailResourceBadge(isRunning: item.running, metric: resourceMetric)', self.content)
+        self.assertIn('InstanceCardResourceBadges(', self.content)
+
 
 if __name__ == "__main__":
     unittest.main()
