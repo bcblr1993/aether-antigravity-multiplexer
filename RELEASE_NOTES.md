@@ -1,3 +1,11 @@
+# v0.7.1
+
+- **悬浮胶囊黑框裁切缺陷修复与视觉呼吸留白 (Zero-Artifact HUD Glass Capsule & Margin Shield)**：
+  - **消除原生窗口黑框与截断阴影**：彻底修复部分 macOS 浅色/深色壁纸下悬浮胶囊四角出现矩形灰色背景及深色硬边框的视觉缺陷。通过关闭 WindowServer 底层矩形窗口阴影并赋予 SwiftUI Capsule 充分的外层透明衰减区，让胶囊光晕自然过渡，呈现通透精致的纯胶囊形态。
+  - **透明缓冲带全穿透响应 (Click-Through Padding)**：对胶囊外围的阴影留白区域应用高精度 `hitTest` 过滤，确保胶囊内部拖拽、切换与收起按钮灵敏响应的同时，外围透明区域 100% 穿透至底层应用与桌面。
+- **实例全名完整展示无省略 (Expanded HUD Width & Zero Truncation)**：
+  - 悬浮胶囊宽度拓展至 356pt，彻底修复类似 `Antigravity Second` 等多开名称被截断为 `Antigravity Se...` 的排版问题，实例名称与任务副标题完整呈现。
+
 # v0.7.0
 
 - **Swift Concurrency Actor 隔离遥测架构 (Swift Concurrency Telemetry Actor)**：

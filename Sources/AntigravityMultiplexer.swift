@@ -2095,8 +2095,10 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             return
         }
         if hudPanel == nil {
+            let panelWidth: CGFloat = 392
+            let panelHeight: CGFloat = 78
             let panel = NSPanel(
-                contentRect: NSRect(x: 0, y: 0, width: 315, height: 44),
+                contentRect: NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight),
                 styleMask: [.nonactivatingPanel, .borderless],
                 backing: .buffered,
                 defer: false
@@ -2106,22 +2108,22 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             panel.backgroundColor = .clear
             panel.isOpaque = false
-            panel.hasShadow = true
+            panel.hasShadow = false
             panel.isMovableByWindowBackground = true
 
             let savedX = UserDefaults.standard.object(forKey: "floatingHUD_x") as? Double
             let savedY = UserDefaults.standard.object(forKey: "floatingHUD_y") as? Double
             if let x = savedX, let y = savedY, let screen = NSScreen.main?.visibleFrame {
-                let minX = screen.minX
-                let maxX = max(minX, screen.maxX - 315)
-                let minY = screen.minY
-                let maxY = max(minY, screen.maxY - 44)
+                let minX = screen.minX - 18
+                let maxX = max(minX, screen.maxX - panelWidth + 18)
+                let minY = screen.minY - 18
+                let maxY = max(minY, screen.maxY - panelHeight + 18)
                 let clampedX = min(max(x, minX), maxX)
                 let clampedY = min(max(y, minY), maxY)
                 panel.setFrameOrigin(NSPoint(x: clampedX, y: clampedY))
             } else if let screen = NSScreen.main?.visibleFrame {
                 // Default position: Top-Right of screen below menu bar, avoiding bottom chat/prompt box on laptop screens
-                panel.setFrameOrigin(NSPoint(x: max(screen.minX, screen.maxX - 335), y: max(screen.minY, screen.maxY - 70)))
+                panel.setFrameOrigin(NSPoint(x: max(screen.minX, screen.maxX - panelWidth - 10), y: max(screen.minY, screen.maxY - panelHeight - 10)))
             }
 
             panel.contentView = DraggableHostingView(rootView: FloatingMonitorHUDView(store: self))
@@ -2649,6 +2651,15 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
 
 final class DraggableHostingView<Content: View>: NSHostingView<Content> {
     override var mouseDownCanMoveWindow: Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // Only accept mouse events within the capsule boundary, passing through clicks in the transparent padding
+        let capsuleRect = bounds.insetBy(dx: 14, dy: 14)
+        if !capsuleRect.contains(point) {
+            return nil
+        }
+        return super.hitTest(point) ?? self
+    }
 }
 
 // MARK: - Floating Return to Monitor HUD View
@@ -2773,9 +2784,9 @@ private struct FloatingMonitorHUDView: View {
                 .transition(.opacity)
             }
         }
-        .padding(.leading, 10)
+        .padding(.leading, 12)
         .padding(.trailing, hovered ? 8 : 12)
-        .frame(width: 315, height: 42)
+        .frame(width: 356, height: 42)
         .background {
             ZStack {
                 Capsule()
@@ -2784,8 +2795,8 @@ private struct FloatingMonitorHUDView: View {
                     .fill(
                         LinearGradient(
                             colors: [
-                                Color(red: 0.12, green: 0.14, blue: 0.20).opacity(0.94),
-                                Color(red: 0.07, green: 0.08, blue: 0.12).opacity(0.97)
+                                Color(red: 0.12, green: 0.14, blue: 0.20).opacity(0.96),
+                                Color(red: 0.07, green: 0.08, blue: 0.12).opacity(0.98)
                             ],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
@@ -2793,6 +2804,7 @@ private struct FloatingMonitorHUDView: View {
                     )
             }
         }
+        .clipShape(Capsule())
         .overlay {
             Capsule()
                 .strokeBorder(
@@ -2809,12 +2821,13 @@ private struct FloatingMonitorHUDView: View {
         }
         .shadow(
             color: Color.black.opacity(hovered ? 0.45 : 0.30),
-            radius: hovered ? 12 : 8,
+            radius: hovered ? 10 : 7,
             x: 0,
-            y: hovered ? 5 : 3
+            y: hovered ? 4 : 2
         )
         .scaleEffect(hovered ? 1.02 : 1.0)
         .animation(.spring(response: 0.22, dampingFraction: 0.78), value: hovered)
+        .padding(18)
         .onHover { hovered = $0 }
     }
 }
@@ -5116,7 +5129,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.7.0"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.7.1"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {

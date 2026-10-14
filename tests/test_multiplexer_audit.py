@@ -164,7 +164,7 @@ class TestMultiplexerAudit(unittest.TestCase):
         # Floating HUD must include interactive quick switcher trigger button and liquid glass styling
         self.assertIn('store.toggleQuickSwitcher()', self.content)
         self.assertIn('arrow.left.arrow.right', self.content)
-        self.assertIn('width: 315', self.content)
+        self.assertIn('width: 356', self.content)
 
     def test_kernel_direct_dashboard_badge(self):
         # Top dashboard header must display Kernel Direct badge
