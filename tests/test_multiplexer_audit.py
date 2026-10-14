@@ -185,6 +185,26 @@ class TestMultiplexerAudit(unittest.TestCase):
         self.assertIn('task-stalled-', self.content)
         self.assertIn('age >= 180', self.content)
 
+    def test_dock_badge_diff_guard(self):
+        # Must guard dock badge display() behind label inequality check
+        self.assertIn('lastDockBadgeLabel', self.content)
+        self.assertIn('if targetBadge != lastDockBadgeLabel', self.content)
+
+    def test_status_bar_menu_signature_cache(self):
+        # Must compute signature hash and skip redundant menu rebuilding
+        self.assertIn('lastStatusBarMenuSignature', self.content)
+        self.assertIn('if currentSignature == lastStatusBarMenuSignature && statusItem.menu != nil', self.content)
+
+    def test_isolated_floating_hud_state(self):
+        # Floating HUD must observe isolated FloatingHUDState rather than entire store
+        self.assertIn('class FloatingHUDState: ObservableObject', self.content)
+        self.assertIn('@ObservedObject var hudState: FloatingHUDState', self.content)
+        self.assertIn('syncHUDState()', self.content)
+
+    def test_cdp_connection_close_header(self):
+        # Ephemeral CDP query should pass Connection: close header
+        self.assertIn('req.setValue("close", forHTTPHeaderField: "Connection")', self.content)
+
 
 if __name__ == "__main__":
     unittest.main()

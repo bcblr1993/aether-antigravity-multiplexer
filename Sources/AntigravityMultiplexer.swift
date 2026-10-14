@@ -1198,6 +1198,14 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     }
 }
 
+// MARK: - Isolated Floating HUD Observable State
+
+@MainActor final class FloatingHUDState: ObservableObject {
+    @Published var activeInstanceName: String = "Antigravity"
+    @Published var activeTaskCount: Int = 0
+    @Published var stalledTaskCount: Int = 0
+}
+
 // MARK: - Instance Store & Window / HUD Coordinator
 
 @MainActor final class InstanceStore: ObservableObject {
@@ -1253,6 +1261,10 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     }
 
     var hudPanel: NSPanel?
+    let hudState = FloatingHUDState()
+    private var lastDockBadgeLabel: String? = nil
+    private var lastStatusBarMenuSignature: Int = 0
+    private var lastStatusButtonImage: String? = nil
     private var quickSwitcherPanel: QuickSwitcherPanel?
     private var statusItem: NSStatusItem?
     private var lastOpenWindowBundles: Set<String> = []
@@ -1262,6 +1274,21 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     private var lastOpenTime: [String: Date] = [:]
     private var isScanningTelemetry = false
     private var telemetryTickCount: Int = 0
+
+    func syncHUDState() {
+        let name = activeInstanceName ?? "Antigravity"
+        let active = activeTaskCount
+        let stalled = stalledTaskCount
+        if hudState.activeInstanceName != name {
+            hudState.activeInstanceName = name
+        }
+        if hudState.activeTaskCount != active {
+            hudState.activeTaskCount = active
+        }
+        if hudState.stalledTaskCount != stalled {
+            hudState.stalledTaskCount = stalled
+        }
+    }
 
     func saveHUDPosition(origin: NSPoint) {
         UserDefaults.standard.set(Double(origin.x), forKey: "floatingHUD_x")
@@ -1664,6 +1691,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                         self.activities = finalActivities
                     }
                 }
+                self.syncHUDState()
                 let metrics = result.metrics
                 if self.resourceMetrics != metrics {
                     self.resourceMetrics = metrics
@@ -1730,6 +1758,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
 
             var req = URLRequest(url: listURL)
             req.timeoutInterval = 0.8
+            req.setValue("close", forHTTPHeaderField: "Connection")
             guard let (data, _) = try? await cdpSession.data(for: req),
                   let targets = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { continue }
 
@@ -2084,6 +2113,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         if let newBundle {
             lastFrontmostAntigravityBundle = newBundle
         }
+        syncHUDState()
         updateFloatingHUDVisibility()
     }
 
@@ -2091,7 +2121,9 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
 
     private func updateFloatingHUDVisibility() {
         guard floatingHUDEnabled, activeInstanceName != nil else {
-            hudPanel?.orderOut(nil)
+            if hudPanel?.isVisible == true {
+                hudPanel?.orderOut(nil)
+            }
             return
         }
         if hudPanel == nil {
@@ -2126,10 +2158,12 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 panel.setFrameOrigin(NSPoint(x: max(screen.minX, screen.maxX - panelWidth - 10), y: max(screen.minY, screen.maxY - panelHeight - 10)))
             }
 
-            panel.contentView = DraggableHostingView(rootView: FloatingMonitorHUDView(store: self))
+            panel.contentView = DraggableHostingView(rootView: FloatingMonitorHUDView(hudState: hudState, store: self))
             hudPanel = panel
         }
-        hudPanel?.orderFrontRegardless()
+        if hudPanel?.isVisible != true {
+            hudPanel?.orderFrontRegardless()
+        }
     }
 
     // MARK: - System Notifications (UNUserNotificationCenter) & Dock/Status Bar Badges
@@ -2291,8 +2325,11 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
 
     func updateDockBadge() {
         guard dockBadgeEnabled else {
-            NSApp.dockTile.badgeLabel = nil
-            NSApp.dockTile.display()
+            if lastDockBadgeLabel != nil {
+                NSApp.dockTile.badgeLabel = nil
+                NSApp.dockTile.display()
+                lastDockBadgeLabel = nil
+            }
             return
         }
 
@@ -2308,16 +2345,23 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             item.running && activities[item.id]?.state == .runningTask
         }.count
 
-        if attentionCount > 0 {
-            NSApp.dockTile.badgeLabel = attentionCount > 1 ? "!\(attentionCount)" : "!"
-        } else if stalledCount > 0 {
-            NSApp.dockTile.badgeLabel = stalledCount > 1 ? "⏳\(stalledCount)" : "⏳"
-        } else if runningTasks > 0 {
-            NSApp.dockTile.badgeLabel = "\(runningTasks)"
-        } else {
-            NSApp.dockTile.badgeLabel = nil
+        let targetBadge: String? = {
+            if attentionCount > 0 {
+                return attentionCount > 1 ? "!\(attentionCount)" : "!"
+            } else if stalledCount > 0 {
+                return stalledCount > 1 ? "⏳\(stalledCount)" : "⏳"
+            } else if runningTasks > 0 {
+                return "\(runningTasks)"
+            } else {
+                return nil
+            }
+        }()
+
+        if targetBadge != lastDockBadgeLabel {
+            lastDockBadgeLabel = targetBadge
+            NSApp.dockTile.badgeLabel = targetBadge
+            NSApp.dockTile.display()
         }
-        NSApp.dockTile.display()
     }
 
     private func setupStatusBarItem() {
@@ -2346,20 +2390,53 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         }.count
 
         if let button = statusItem.button {
-            if attentionCount > 0 {
-                button.image = NSImage(systemSymbolName: "bell.badge.fill", accessibilityDescription: "有实例等待确认")
-                button.title = " \(attentionCount)待确认"
-            } else if stalledCount > 0 {
-                button.image = NSImage(systemSymbolName: "clock.badge.exclamationmark.fill", accessibilityDescription: "任务疑似挂起")
-                button.title = " \(stalledCount)挂起"
-            } else if runningTasks > 0 {
-                button.image = NSImage(systemSymbolName: "bolt.fill", accessibilityDescription: "正在运行任务")
-                button.title = " \(runningTasks)"
-            } else {
-                button.image = NSImage(systemSymbolName: "square.grid.2x2.fill", accessibilityDescription: "Antigravity 监控台")
-                button.title = ""
+            let (targetImageName, targetTitle): (String, String) = {
+                if attentionCount > 0 {
+                    return ("bell.badge.fill", " \(attentionCount)待确认")
+                } else if stalledCount > 0 {
+                    return ("clock.badge.exclamationmark.fill", " \(stalledCount)挂起")
+                } else if runningTasks > 0 {
+                    return ("bolt.fill", " \(runningTasks)")
+                } else {
+                    return ("square.grid.2x2.fill", "")
+                }
+            }()
+            if lastStatusButtonImage != targetImageName {
+                button.image = NSImage(systemSymbolName: targetImageName, accessibilityDescription: "Antigravity 监控台")
+                lastStatusButtonImage = targetImageName
+            }
+            if button.title != targetTitle {
+                button.title = targetTitle
             }
         }
+
+        var hasher = Hasher()
+        hasher.combine(instances.count)
+        for item in instances {
+            hasher.combine(item.id)
+            hasher.combine(item.running)
+            hasher.combine(item.name)
+            if let meta = instanceMetas[item.id] {
+                hasher.combine(meta.nickname)
+            }
+            if let act = activities[item.id] {
+                hasher.combine(act.state.label)
+                hasher.combine(act.currentAction)
+                hasher.combine(act.workspace)
+            }
+        }
+        hasher.combine(taskHistory.count)
+        for item in taskHistory.prefix(3) {
+            hasher.combine(item.id)
+            hasher.combine(item.actionSummary)
+            hasher.combine(item.category.rawValue)
+        }
+        let currentSignature = hasher.finalize()
+
+        if currentSignature == lastStatusBarMenuSignature && statusItem.menu != nil {
+            return
+        }
+        lastStatusBarMenuSignature = currentSignature
 
         let menu = NSMenu()
         StatusBarTarget.shared.store = self
@@ -2665,7 +2742,8 @@ final class DraggableHostingView<Content: View>: NSHostingView<Content> {
 // MARK: - Floating Return to Monitor HUD View
 
 private struct FloatingMonitorHUDView: View {
-    @ObservedObject var store: InstanceStore
+    @ObservedObject var hudState: FloatingHUDState
+    let store: InstanceStore
     @State private var hovered = false
     @State private var dragStartOrigin: NSPoint? = nil
 
@@ -2699,19 +2777,19 @@ private struct FloatingMonitorHUDView: View {
                     .help("按住可随意拖动浮窗到屏幕任意位置")
 
                 let hudDotColor: Color = {
-                    if store.stalledTaskCount > 0 {
+                    if hudState.stalledTaskCount > 0 {
                         return Color(red: 0.98, green: 0.65, blue: 0.18)
-                    } else if store.activeTaskCount > 0 {
+                    } else if hudState.activeTaskCount > 0 {
                         return Color(red: 0.15, green: 0.82, blue: 0.96)
                     } else {
                         return .green
                     }
                 }()
                 let hudSubtitle: String = {
-                    if store.stalledTaskCount > 0 {
-                        return "⚠️ \(store.stalledTaskCount) 个任务疑似挂起卡顿"
-                    } else if store.activeTaskCount > 0 {
-                        return "\(store.activeTaskCount) 个实例正在跑任务"
+                    if hudState.stalledTaskCount > 0 {
+                        return "⚠️ \(hudState.stalledTaskCount) 个任务疑似挂起卡顿"
+                    } else if hudState.activeTaskCount > 0 {
+                        return "\(hudState.activeTaskCount) 个实例正在跑任务"
                     } else {
                         return "所有运行实例空闲"
                     }
@@ -2720,16 +2798,16 @@ private struct FloatingMonitorHUDView: View {
                 PulsingStatusDot(
                     active: true,
                     activeColor: hudDotColor,
-                    pulse: store.activeTaskCount > 0
+                    pulse: hudState.activeTaskCount > 0
                 )
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(store.activeInstanceName ?? "Antigravity")
+                    Text(hudState.activeInstanceName)
                         .font(.system(size: 11.5, weight: .bold))
                         .foregroundStyle(.white)
                         .lineLimit(1)
                     Text(hudSubtitle)
                         .font(.system(size: 9.5, weight: .medium))
-                        .foregroundStyle(store.stalledTaskCount > 0 ? Color(red: 0.98, green: 0.75, blue: 0.35) : .white.opacity(0.75))
+                        .foregroundStyle(hudState.stalledTaskCount > 0 ? Color(red: 0.98, green: 0.75, blue: 0.35) : .white.opacity(0.75))
                         .lineLimit(1)
                 }
             }
@@ -5129,7 +5207,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.7.1"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.7.2"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {

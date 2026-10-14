@@ -1,3 +1,11 @@
+# v0.7.2
+
+- **2 小时高负载长稳遥测审计与极低能耗微渲染优化 (2-Hour Long-Run Telemetry Audit & Sub-Zero Render Engine)**：
+  - **状态栏菜单指纹增量缓存 (Status Bar Menu Signature Cache)**：重构 macOS 顶部状态栏渲染管线。针对原先每 2.2 秒无论实例状态是否有变均全量重建 `NSMenu` 和 15+ 个 `NSMenuItem` 的高频开销，引入轻量级状态指纹哈希校验。无状态变动时直接复用现有菜单树，彻底消除菜单栏持续排版重绘与堆内存碎片（长跑 2 小时以上常驻内存与待机 CPU 趋于极平）。
+  - **Dock 徽标状态变动防抖 (Dock Badge Change Guard)**：新增 `lastDockBadgeLabel` 状态对比守卫，仅在任务数量或告警状态发生实质变化时才调用 `NSApp.dockTile.display()`，消除对 macOS 系统 `Dock.app` 守护进程的无效高频 IPC 刷新。
+  - **悬浮 HUD 状态隔离与免重绘订阅 (Isolated HUD State Graph)**：将悬浮胶囊视图（Floating HUD）的状态观测模型与主数据中心解耦，分离出独立的 `FloatingHUDState`。后台资源遥测数据（CPU/内存微幅抖动）更新时不再波及 HUD 视图，消除了 QuartzCore `NSCoreTypesetterTruncateLine` 文字重排版的无谓开销。
+  - **浮窗层级与瞬态网络会话优化 (HUD Order & Ephemeral CDP Connection Pruning)**：优化浮窗显示逻辑，仅在浮窗未处于显示状态时才执行 `orderFrontRegardless()`；在 CDP 瞬态端口嗅探请求中显式注入 `Connection: close` 协议头，消除 Darwin 内核关于套接字连接清理的日志告警。
+
 # v0.7.1
 
 - **悬浮胶囊黑框裁切缺陷修复与视觉呼吸留白 (Zero-Artifact HUD Glass Capsule & Margin Shield)**：
