@@ -7,8 +7,8 @@
 <key>CFBundleIdentifier</key><string>dev.chenxu.antigravity-multiplexer</string>
 <key>CFBundleName</key><string>Aether Antigravity Multiplexer</string>
 <key>CFBundleDisplayName</key><string>Aether Antigravity Multiplexer</string>
-<key>CFBundleVersion</key><string>32</string>
-<key>CFBundleShortVersionString</key><string>0.6.1</string>
+<key>CFBundleVersion</key><string>33</string>
+<key>CFBundleShortVersionString</key><string>0.6.2</string>
 <key>CFBundleIconFile</key><string>Icon.icns</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>NSHighResolutionCapable</key><true/>

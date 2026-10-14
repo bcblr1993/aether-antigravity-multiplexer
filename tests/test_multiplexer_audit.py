@@ -99,6 +99,21 @@ class TestMultiplexerAudit(unittest.TestCase):
         # Published resourceMetrics must only mutate when changed
         self.assertIn('if self.resourceMetrics != metrics', self.content)
 
+    def test_equatable_view_performance_conformance(self):
+        # Major card and row views must conform to Equatable and use .equatable() to prevent body recalculation storms
+        self.assertIn('extension InstanceThumbnailTile: Equatable', self.content)
+        self.assertIn('extension InstanceCard: Equatable', self.content)
+        self.assertIn('extension QuickSwitcherRow: Equatable', self.content)
+
+    def test_active_instance_name_assignment_guarded(self):
+        # updateActiveFrontmostInstance must guard activeInstanceName mutation
+        self.assertIn('if activeInstanceName != newActiveName', self.content)
+
+    def test_per_instance_screenshot_throttling(self):
+        # Background idle instances must not be captured every tick
+        self.assertIn('shouldFetchImage', self.content)
+        self.assertIn('hasThumb && !isFront && !isRunningTask', self.content)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1423,11 +1423,20 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             }
         }
         let currentMetrics = self.resourceMetrics
+        let existingThumbnails = Set(thumbnails.keys)
+        let activeTasks = Set(activities.filter { $0.value.state == .runningTask }.keys)
+        let frontmost = lastFrontmostAntigravityBundle
 
         Task.detached(priority: .utility) {
             let scanned = TelemetryScanner.scan(instances: snapshot, knownConvIDs: knownConvIDs)
             let metrics = shouldCapture ? TelemetryScanner.scanResourceMetrics(instances: snapshot) : currentMetrics
-            let cdpData = await Self.captureCDPScreenshots(for: snapshot, captureThumbnails: shouldCapture)
+            let cdpData = await Self.captureCDPScreenshots(
+                for: snapshot,
+                captureThumbnails: shouldCapture,
+                frontmostBundleID: frontmost,
+                existingThumbnailIDs: existingThumbnails,
+                activeTaskIDs: activeTasks
+            )
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 self.isScanningTelemetry = false
@@ -1447,13 +1456,13 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 if self.resourceMetrics != metrics {
                     self.resourceMetrics = metrics
                 }
-                if shouldCapture {
+                if shouldCapture && !cdpData.thumbnails.isEmpty {
                     for (id, image) in cdpData.thumbnails {
                         self.thumbnails[id] = image
                     }
                 }
-                for (id, url) in cdpData.urls {
-                    self.activeConversationURLs[id] = url
+                if self.activeConversationURLs != cdpData.urls {
+                    self.activeConversationURLs = cdpData.urls
                 }
                 if shouldCapture {
                     self.captureWindowThumbnails()
@@ -1468,7 +1477,10 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     /// Captures live UI screenshots of all running instances in real-time and remembers the active conversation URL!
     private nonisolated static func captureCDPScreenshots(
         for items: [ManagedInstance],
-        captureThumbnails: Bool = true
+        captureThumbnails: Bool = true,
+        frontmostBundleID: String? = nil,
+        existingThumbnailIDs: Set<String> = [],
+        activeTaskIDs: Set<String> = []
     ) async -> (thumbnails: [String: NSImage], urls: [String: String], workspaces: [String: String], sessionTitles: [String: String]) {
         var results: [String: NSImage] = [:]
         var urls: [String: String] = [:]
@@ -1510,7 +1522,12 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 }
             }
 
-            if captureThumbnails,
+            let isFrontmost = (frontmostBundleID == item.bundleID)
+            let isRunningTask = activeTaskIDs.contains(item.id)
+            let hasThumbnail = existingThumbnailIDs.contains(item.id)
+            let shouldFetchImage = captureThumbnails && (!hasThumbnail || isFrontmost || isRunningTask)
+
+            if shouldFetchImage,
                let wsString = mainTarget["webSocketDebuggerUrl"] as? String,
                let wsURL = URL(string: wsString),
                let image = await fetchCDPScreenshot(wsURL: wsURL) {
@@ -1555,11 +1572,16 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         guard CGPreflightScreenCaptureAccess() else { return }
         guard let windowList = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else { return }
 
+        let frontmostBundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         for item in instances where item.running {
             if let specificBundleID, item.bundleID != specificBundleID { continue }
             guard let app = runningApplication(bundleID: item.bundleID, path: item.path) else { continue }
             // Only capture when not hidden/collapsed so we don't overwrite a good snapshot with an empty frame
             if isInstanceCollapsed(app) && thumbnails[item.id] != nil { continue }
+            let isRunningTask = activities[item.id]?.state == .runningTask
+            let isFront = (frontmostBundle == item.bundleID)
+            let hasThumb = thumbnails[item.id] != nil
+            if hasThumb && !isFront && !isRunningTask { continue }
             let pid = app.processIdentifier
             let candidateWindows = windowList.filter { info in
                 guard (info[kCGWindowOwnerPID as String] as? pid_t) == pid,
@@ -1802,13 +1824,22 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     }
 
     private func updateActiveFrontmostInstance() {
+        let newActiveName: String?
+        let newBundle: String?
         if let front = NSWorkspace.shared.frontmostApplication,
            let bundle = front.bundleIdentifier,
            bundle == "com.google.antigravity" || bundle.hasPrefix("local.antigravity.") {
-            activeInstanceName = instances.first(where: { $0.bundleID == bundle })?.name ?? front.localizedName
-            lastFrontmostAntigravityBundle = bundle
+            newActiveName = instances.first(where: { $0.bundleID == bundle })?.name ?? front.localizedName
+            newBundle = bundle
         } else {
-            activeInstanceName = nil
+            newActiveName = nil
+            newBundle = nil
+        }
+        if activeInstanceName != newActiveName {
+            activeInstanceName = newActiveName
+        }
+        if let newBundle {
+            lastFrontmostAntigravityBundle = newBundle
         }
         updateFloatingHUDVisibility()
     }
@@ -2598,6 +2629,7 @@ private struct QuickSwitcherView: View {
                                         store.open(item)
                                     }
                                 )
+                                .equatable()
                                 .id(index)
                             }
                         }
@@ -2921,6 +2953,18 @@ private struct QuickSwitcherRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovered = $0 }
+    }
+}
+
+extension QuickSwitcherRow: Equatable {
+    static func == (lhs: QuickSwitcherRow, rhs: QuickSwitcherRow) -> Bool {
+        lhs.item == rhs.item &&
+        lhs.activity == rhs.activity &&
+        lhs.meta == rhs.meta &&
+        lhs.metric == rhs.metric &&
+        lhs.duration == rhs.duration &&
+        lhs.isSelected == rhs.isSelected &&
+        lhs.shortcutNumber == rhs.shortcutNumber
     }
 }
 
@@ -3529,6 +3573,21 @@ struct InstanceThumbnailTile: View {
     }
 }
 
+extension InstanceThumbnailTile: Equatable {
+    static func == (lhs: InstanceThumbnailTile, rhs: InstanceThumbnailTile) -> Bool {
+        lhs.item == rhs.item &&
+        lhs.activity == rhs.activity &&
+        lhs.meta == rhs.meta &&
+        lhs.resourceMetric == rhs.resourceMetric &&
+        lhs.diskUsage == rhs.diskUsage &&
+        lhs.thumbnail === rhs.thumbnail &&
+        lhs.sourceVersion == rhs.sourceVersion &&
+        lhs.duration == rhs.duration &&
+        lhs.busy == rhs.busy &&
+        lhs.canUpgrade == rhs.canUpgrade
+    }
+}
+
 // MARK: - Detailed List Instance Card View
 
 struct InstanceCard: View {
@@ -3973,6 +4032,19 @@ struct InstanceCard: View {
         .buttonStyle(.plain)
         .disabled(disabled)
         .opacity(disabled ? 0.4 : 1.0)
+    }
+}
+
+extension InstanceCard: Equatable {
+    static func == (lhs: InstanceCard, rhs: InstanceCard) -> Bool {
+        lhs.item == rhs.item &&
+        lhs.activity == rhs.activity &&
+        lhs.meta == rhs.meta &&
+        lhs.resourceMetric == rhs.resourceMetric &&
+        lhs.diskUsage == rhs.diskUsage &&
+        lhs.sourceVersion == rhs.sourceVersion &&
+        lhs.busy == rhs.busy &&
+        lhs.canUpgrade == rhs.canUpgrade
     }
 }
 
@@ -4584,7 +4656,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.6.1"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.6.2"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
@@ -5325,6 +5397,7 @@ struct ContentView: View {
                             clearWorkspace: { pendingClear = item },
                             destroy: { pendingDestroy = item }
                         )
+                        .equatable()
                         .opacity(appeared ? 1 : 0)
                         .offset(y: appeared ? 0 : 12)
                         .animation(
@@ -5381,6 +5454,7 @@ struct ContentView: View {
                 clearWorkspace: {},
                 destroy: {}
             )
+            .equatable()
         }
     }
 
@@ -5447,6 +5521,7 @@ struct ContentView: View {
                             clearWorkspace: { pendingClear = item },
                             destroy: { pendingDestroy = item }
                         )
+                        .equatable()
                         .opacity(appeared ? 1 : 0)
                         .offset(y: appeared ? 0 : 12)
                         .animation(

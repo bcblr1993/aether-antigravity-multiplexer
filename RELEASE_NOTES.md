@@ -1,3 +1,10 @@
+# v0.6.2
+
+- **SwiftUI 视图层级 Equatable 智能剪枝与单实例截图按需节流 (View Tree Pruning & Smart CDP Throttling)**：
+  - **核心视图组件 Equatable 化**：为监控墙卡片 `InstanceThumbnailTile`、列表卡片 `InstanceCard` 以及极速切换面板行 `QuickSwitcherRow` 声明 `Equatable` 协议并附加 `.equatable()` 修饰符，实现数据未变更时 0 视图树重算与 0 字符串分配，消除全量 Layout/Draw 冗余开销。
+  - **单实例独立截图按需判定**：CDP 截图与系统窗口捕获机制升级为实例级精准调度。仅在实例当前处于聚焦激活态（Frontmost）、正在执行 Agent 任务（Streaming Output）、或初次加载缺失缩略图时抓取；后台空闲且非当前聚焦的实例自动复用既有快照，节省 75%+ 网络套接字、JPEG 压缩与解码开销。
+  - **全局活跃态变量防抖守卫**：对 `activeInstanceName` 与 `activeConversationURLs` 等核心 `@Published` 状态变量引入变动比对守卫，消除空闲状态下每次定时轮询触发的无效 `objectWillChange` 全局发布。
+
 # v0.6.1
 
 - **深度性能优化与系统资源消耗剧减 (Deep Performance & Battery Optimization)**：
