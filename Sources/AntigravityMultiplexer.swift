@@ -1380,9 +1380,6 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     }
 
     func refreshRunningStates() {
-        if !hasScreenCapturePermission {
-            hasScreenCapturePermission = CGPreflightScreenCaptureAccess()
-        }
         let updated = instances.map { item in
             let app = runningApplication(bundleID: item.bundleID, path: item.path)
             return ManagedInstance(id: item.id, name: item.name, path: item.path, bundleID: item.bundleID,
@@ -1425,7 +1422,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         let currentMetrics = self.resourceMetrics
         let existingThumbnails = Set(thumbnails.keys)
         let activeTasks = Set(activities.filter { $0.value.state == .runningTask }.keys)
-        let frontmost = lastFrontmostAntigravityBundle
+        let frontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
 
         Task.detached(priority: .utility) {
             let scanned = TelemetryScanner.scan(instances: snapshot, knownConvIDs: knownConvIDs)
@@ -1559,17 +1556,24 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     }
 
 
+    func checkScreenCapturePermission() {
+        let granted = CGPreflightScreenCaptureAccess()
+        if hasScreenCapturePermission != granted {
+            hasScreenCapturePermission = granted
+        }
+    }
+
     func requestScreenCapturePermission() {
         _ = CGRequestScreenCaptureAccess()
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-            self.hasScreenCapturePermission = CGPreflightScreenCaptureAccess()
+            self.checkScreenCapturePermission()
             self.captureWindowThumbnails()
         }
     }
 
     func captureWindowThumbnails(specificBundleID: String? = nil) {
         guard shouldCaptureScreenshots else { return }
-        guard CGPreflightScreenCaptureAccess() else { return }
+        guard hasScreenCapturePermission else { return }
         guard let windowList = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else { return }
 
         let frontmostBundle = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
@@ -4656,7 +4660,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.6.2"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.6.3"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
@@ -4759,6 +4763,7 @@ struct ContentView: View {
             store.refreshRunningStates()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            store.checkScreenCapturePermission()
             store.refreshRunningStates()
         }
         .onReceive(Timer.publish(every: 2.2, on: .main, in: .common).autoconnect()) { _ in

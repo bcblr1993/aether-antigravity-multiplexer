@@ -1,3 +1,12 @@
+# v0.6.3
+
+- **彻底消除 TCC 权限 IPC 轮询开销 (Zero-Cost TCC Permission Guard)**：
+  - 彻底移除周期性 2.2 秒定时器中的 `CGPreflightScreenCaptureAccess()` 查询。修复在用户未授予屏幕录制权限时，因权限为 false 导致每次轮询都重复触发向 macOS `tccd` 守护进程发起同步 IPC 授权检查的系统日志风暴。
+  - 仅在应用获得前台聚焦（`NSApplication.didBecomeActiveNotification`）、用户手动刷新或主动点击授权按钮时才进行单次权限检测，实现后台运行 0 TCC IPC 开销。
+- **精准的前台活跃实例判定与 CDP 截图深度节流 (True Frontmost App Detection for CDP Screenshots)**：
+  - 修复此前使用 `lastFrontmostAntigravityBundle` 判定前台实例时，当用户切换至 Terminal、IDE 或其他第三方软件后，变量未及时清空导致仍将上一实例误判为前台活跃并持续通过 WebSocket 进行 CDP 屏幕快照的漏洞。
+  - 升级为实时比对 macOS 全局前台活动应用（`NSWorkspace.shared.frontmostApplication?.bundleIdentifier`），用户切离 Antigravity 实例后瞬间暂停持续截图，显著节省后台 CPU/网络消耗与内存抖动。
+
 # v0.6.2
 
 - **SwiftUI 视图层级 Equatable 智能剪枝与单实例截图按需节流 (View Tree Pruning & Smart CDP Throttling)**：

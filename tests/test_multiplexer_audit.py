@@ -82,12 +82,12 @@ class TestMultiplexerAudit(unittest.TestCase):
         self.assertIn('if active && pulse', self.content)
 
     def test_tcc_permission_cached_guard(self):
-        # refreshRunningStates must not unconditionally query CGPreflightScreenCaptureAccess on every tick
-        self.assertIn('if !hasScreenCapturePermission', self.content)
+        # refreshRunningStates must not query CGPreflightScreenCaptureAccess on periodic ticks
         refresh_idx = self.content.find("func refreshRunningStates()")
         self.assertNotEqual(refresh_idx, -1)
-        refresh_body = self.content[refresh_idx:refresh_idx + 250]
-        self.assertIn('if !hasScreenCapturePermission', refresh_body)
+        refresh_body = self.content[refresh_idx:refresh_idx + 400]
+        self.assertNotIn("CGPreflightScreenCaptureAccess", refresh_body)
+        self.assertIn("func checkScreenCapturePermission()", self.content)
 
     def test_background_capture_throttled_when_hidden(self):
         # Screenshots and window captures must be throttled when main window is hidden/minimized
