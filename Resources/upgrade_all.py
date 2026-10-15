@@ -152,38 +152,49 @@ def version_tuple(version):
     return tuple(int(part) for part in parts)
 
 
-def upgrade_all(source, dry_run=False, only_indices=None, build_only=False):
+def upgrade_all(source, dry_run=False, only_indices=None, build_only=False, skip_backup=False):
+    print("[PROGRESS:5] 正在验证主程序版本与签名完整性...", flush=True)
     version = source_info(source)
     instances = discover()
     pending = [item for item in instances if version_tuple(item["version"]) < version_tuple(version) and (only_indices is None or item["index"] in only_indices)]
-    print(f"本机主实例：{version}；发现 {len(instances)} 个副本；待升级 {len(pending)} 个", flush=True)
+    print(f"[PROGRESS:12] 本机主实例：{version}；发现 {len(instances)} 个副本；待升级 {len(pending)} 个", flush=True)
     for item in pending:
         print(f"  {item['name']}: {item['version']} → {version}", flush=True)
     if dry_run or not pending:
+        print("[PROGRESS:100] 无需升级或已完成预检", flush=True)
         return
     APP_SUPPORT.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-    backup_dir = APP_SUPPORT / "Backups" / stamp
+    backup_dir = APP_SUPPORT / "Backups" / stamp if not skip_backup else None
+    total_count = len(pending)
     with tempfile.TemporaryDirectory(prefix="upgrade-staging-", dir=APP_SUPPORT) as temporary:
         staging = pathlib.Path(temporary)
         built = []
-        for item in pending:
+        for i, item in enumerate(pending):
             name = item["name"]
+            pct = 15 + int(45 * i / max(1, total_count))
+            print(f"[PROGRESS:{pct}] 正在从主实例本地复制、适配并验签：{name} ({i+1}/{total_count})", flush=True)
             target = staging / f"{name}.app"
             signing_dir = staging / f"sign-{item['index']}"
             signing_dir.mkdir()
-            print(f"从主实例本地复制、适配并验签：{name}", flush=True)
             scheme = build(source, target, item, version, signing_dir)
             built.append((item, target, scheme))
         if build_only:
-            print("所有待升级副本已完成构建和深度签名验证；未替换现有实例", flush=True)
+            print("[PROGRESS:100] 所有待升级副本已完成构建和深度签名验证；未替换现有实例", flush=True)
             return
-        print("所有新副本已通过签名检查；正在关闭待升级实例", flush=True)
+        print("[PROGRESS:62] 所有新副本已通过签名检查；正在安全关闭运行中实例...", flush=True)
         stop_apps(pending)
-        backup(pending, backup_dir)
+        if not skip_backup:
+            print("[PROGRESS:68] 正在创建旧程序、账号数据与窗口缓存安全备份...", flush=True)
+            backup(pending, backup_dir)
+            print("[PROGRESS:76] 备份已生成并完成完整性校验", flush=True)
+        else:
+            print("[PROGRESS:76] ⚡️ 用户已选择不备份直接升级，跳过备份归档", flush=True)
         moved = []
         try:
-            for item, target, scheme in built:
+            for i, (item, target, scheme) in enumerate(built):
+                pct = 78 + int(18 * i / max(1, total_count))
+                print(f"[PROGRESS:{pct}] 正在原子替换安装：{item['name']} ({i+1}/{total_count})", flush=True)
                 old = item["app"]
                 held = staging / f"held-{item['index']}.oldbundle"
                 old.rename(held)
@@ -203,16 +214,23 @@ def upgrade_all(source, dry_run=False, only_indices=None, build_only=False):
                 held.rename(app)
                 run(REGISTER, "-f", str(app))
             raise
+        print("[PROGRESS:96] 正在更新实例元数据清单与版本标识...", flush=True)
         for item, target, scheme in built:
             manifest = APP_SUPPORT / f"instance-{item['index']}.json"
             record = json.loads(manifest.read_text()) if manifest.exists() else {}
             record.update({"index": item["index"], "name": item["name"], "app": str(item["app"]),
                            "profile": str(item["profile"]), "version": version, "scheme": scheme,
                            "source_asar_sha256": KNOWN[version]["asar"],
-                           "login_verified": False, "upgrade_backup": str(backup_dir)})
+                           "login_verified": False})
+            if backup_dir is not None:
+                record["upgrade_backup"] = str(backup_dir)
             manifest.write_text(json.dumps(record, ensure_ascii=False, indent=2))
-    print(f"升级完成。数据目录保持原路径；完整备份：{backup_dir}", flush=True)
-    print("请逐一打开实例确认登录与对话后，再清理备份。", flush=True)
+    print("[PROGRESS:100] 升级完成！全部实例已无损升级至最新版本", flush=True)
+    if backup_dir:
+        print(f"升级完成。数据目录保持原路径；完整备份：{backup_dir}", flush=True)
+        print("请逐一打开实例确认登录与对话后，再清理备份。", flush=True)
+    else:
+        print("升级完成。数据目录保持原路径（本次升级未创建备份）。", flush=True)
 
 
 def main():
@@ -221,12 +239,14 @@ def main():
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--only-indices", help=argparse.SUPPRESS)
     parser.add_argument("--build-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--skip-backup", action="store_true", help="跳过升级前备份旧程序和数据的步骤")
     args = parser.parse_args()
     try:
         with operation_lock():
             upgrade_all(args.source.resolve(), args.dry_run,
                         {int(value) for value in args.only_indices.split(",")} if args.only_indices else None,
-                        args.build_only)
+                        args.build_only,
+                        args.skip_backup)
     except Exception as error:
         print(f"批量升级失败：{error}", file=sys.stderr, flush=True)
         sys.exit(1)

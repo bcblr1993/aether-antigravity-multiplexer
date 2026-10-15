@@ -1251,6 +1251,9 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     @Published var instanceMetas: [String: InstanceUserMeta] = [:]
     @Published var diskUsages: [String: InstanceDiskUsage] = [:]
     @Published var taskHistory: [TaskHistoryItem] = []
+    @Published var operationProgress: Double? = nil
+    @Published var operationStage: String? = nil
+    @Published var activeUpgradeInstances: [ManagedInstance] = []
 
     private var taskStartTimes: [String: Date] = [:]
     var taskHistoryFileURL: URL {
@@ -2612,14 +2615,19 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         catch { self.error = "无法保存验证状态：\(error.localizedDescription)" }
     }
 
-    func upgrade(_ selected: [ManagedInstance]) {
+    func upgrade(_ selected: [ManagedInstance], backup: Bool = true) {
         guard !busy && !selected.isEmpty && selected.allSatisfy({ pendingUpgrades.contains($0) }) else { return }
         guard let script = Bundle.main.url(forResource: "upgrade_all", withExtension: "py") else {
             error = "应用缺少升级组件。"; return
         }
-        runScript(script, arguments: ["--source", "/Applications/Antigravity.app",
-                                      "--only-indices", selected.map { String($0.index) }.joined(separator: ",")],
-                  starting: "正在检查本机主实例和选定副本；此操作不下载程序…\n")
+        activeUpgradeInstances = selected
+        var args = ["--source", "/Applications/Antigravity.app",
+                    "--only-indices", selected.map { String($0.index) }.joined(separator: ",")]
+        if !backup {
+            args.append("--skip-backup")
+        }
+        runScript(script, arguments: args,
+                  starting: "正在检查本机主实例和选定副本；\(backup ? "将执行安全备份" : "⚡️ 已跳过备份直接替换")…\n")
     }
 
     func create(index: Int, destination: URL) {
@@ -2670,6 +2678,9 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         guard !busy else { return }
         withAnimation(.spring(response: 0.25, dampingFraction: 0.82)) {
             output = ""
+            operationProgress = nil
+            operationStage = nil
+            activeUpgradeInstances = []
         }
     }
 
@@ -2678,6 +2689,8 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             busy = true
             error = nil
             output = starting
+            operationProgress = 0.05
+            operationStage = "正在准备操作环境…"
         }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
@@ -2688,17 +2701,22 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             guard !data.isEmpty, let message = String(data: data, encoding: .utf8) else { return }
-            Task { @MainActor in self?.output += message }
+            Task { @MainActor in self?.processStreamChunk(message) }
         }
         process.terminationHandler = { [weak self] completed in
             pipe.fileHandleForReading.readabilityHandler = nil
             let remainder = pipe.fileHandleForReading.readDataToEndOfFile()
             Task { @MainActor in
-                if let text = String(data: remainder, encoding: .utf8) { self?.output += text }
+                if let text = String(data: remainder, encoding: .utf8) { self?.processStreamChunk(text) }
                 withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
                     self?.busy = false
+                    if completed.terminationStatus == 0 {
+                        self?.operationProgress = 1.0
+                        self?.operationStage = "操作已全部顺利完成"
+                    } else {
+                        self?.error = "操作未完成，请查看下方记录。"
+                    }
                 }
-                if completed.terminationStatus != 0 { self?.error = "操作未完成，请查看下方记录。" }
                 self?.refresh()
             }
         }
@@ -2706,8 +2724,43 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             try process.run()
             try? pipe.fileHandleForWriting.close()
         } catch {
-            withAnimation { busy = false }
+            withAnimation {
+                busy = false
+                operationProgress = nil
+                operationStage = nil
+            }
             self.error = "无法启动组件：\(error.localizedDescription)"
+        }
+    }
+
+    private func processStreamChunk(_ chunk: String) {
+        var cleanChunk = ""
+        let lines = chunk.components(separatedBy: "\n")
+        for (index, line) in lines.enumerated() {
+            let isLast = index == lines.count - 1
+            if line.hasPrefix("[PROGRESS:") {
+                if let closeBracket = line.firstIndex(of: "]") {
+                    let numStart = line.index(line.startIndex, offsetBy: 10)
+                    let pctStr = line[numStart..<closeBracket]
+                    let msg = line[line.index(after: closeBracket)...].trimmingCharacters(in: .whitespaces)
+                    if let pct = Double(pctStr) {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
+                            self.operationProgress = min(1.0, max(0.0, pct / 100.0))
+                            if !msg.isEmpty {
+                                self.operationStage = msg
+                            }
+                        }
+                    }
+                }
+            } else {
+                cleanChunk += line
+                if !isLast {
+                    cleanChunk += "\n"
+                }
+            }
+        }
+        if !cleanChunk.isEmpty {
+            self.output += cleanChunk
         }
     }
 }
@@ -5103,11 +5156,14 @@ struct UpgradeRequest: Identifiable {
 }
 
 struct UpgradeConfirmationView: View {
+    @ObservedObject var store: InstanceStore
     let instances: [ManagedInstance]
     let targetVersion: String
-    let busy: Bool
-    let cancel: () -> Void
-    let confirm: () -> Void
+    let dismiss: () -> Void
+
+    @State private var createBackup: Bool = true
+    @State private var isUpgrading: Bool = false
+    @State private var showLogs: Bool = false
 
     private var notes: [SourceReleaseNotes] {
         SourceReleaseNotes.bundled.filter { note in
@@ -5117,6 +5173,23 @@ struct UpgradeConfirmationView: View {
     }
 
     var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            if !isUpgrading && !store.busy {
+                confirmationContent
+            } else {
+                inProgressContent
+            }
+        }
+        .padding(24)
+        .frame(width: 620)
+        .onAppear {
+            if store.busy {
+                isUpgrading = true
+            }
+        }
+    }
+
+    private var confirmationContent: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .center, spacing: 12) {
                 ZStack {
@@ -5130,7 +5203,7 @@ struct UpgradeConfirmationView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(instances.count == 1 ? "升级指定副本" : "批量升级全部副本")
                         .font(.system(size: 19, weight: .bold))
-                    Text("源版本 v\(targetVersion)  ·  共 \(instances.count) 个待升级实例  ·  自动完整备份")
+                    Text("源版本 v\(targetVersion)  ·  共 \(instances.count) 个待升级实例  ·  \(createBackup ? "已选择安全备份" : "已选择不备份极速升级")")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
@@ -5161,6 +5234,43 @@ struct UpgradeConfirmationView: View {
                     }
                     .padding(14)
                     .systemSurface(radius: 13)
+
+                    // 备份选项切换卡 (Backup Toggle Selection Card)
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle(isOn: $createBackup) {
+                            HStack(alignment: .center, spacing: 12) {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                        .fill(createBackup ? Color.green.opacity(0.16) : Color.orange.opacity(0.16))
+                                        .frame(width: 36, height: 36)
+                                    Image(systemName: createBackup ? "shield.lefthalf.filled.badge.checkmark" : "bolt.slash.fill")
+                                        .font(.system(size: 17, weight: .semibold))
+                                        .foregroundStyle(createBackup ? .green : .orange)
+                                }
+                                VStack(alignment: .leading, spacing: 3) {
+                                    HStack(spacing: 8) {
+                                        Text("升级前创建安全备份")
+                                            .font(.system(size: 13.5, weight: .semibold))
+                                        Text(createBackup ? "推荐" : "不备份")
+                                            .font(.system(size: 10, weight: .bold))
+                                            .foregroundStyle(createBackup ? .green : .orange)
+                                            .padding(.horizontal, 6)
+                                            .padding(.vertical, 1.5)
+                                            .background(createBackup ? Color.green.opacity(0.14) : Color.orange.opacity(0.14))
+                                            .clipShape(Capsule())
+                                    }
+                                    Text(createBackup
+                                        ? "自动完整备份旧程序、账号数据与窗口缓存到 Backups 目录；升级若遇异常可一键还原"
+                                        : "⚡️ 跳过备份直接原子替换：升级速度提升 3 倍，且不产生额外备份文件；升级前请确保各副本工作已保存")
+                                        .font(.system(size: 11.5))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                        .toggleStyle(.checkbox)
+                    }
+                    .padding(14)
+                    .systemSurface(radius: 13, isHighlighted: true, tint: createBackup ? .green : .orange)
 
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(alignment: .center) {
@@ -5210,7 +5320,7 @@ struct UpgradeConfirmationView: View {
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                         OfficialReleaseNotesView(fromVersions: instances.map(\.version), targetVersion: targetVersion)
-                            .frame(height: 240)
+                            .frame(height: 200)
                             .padding(10)
                             .systemSurface(radius: 12)
                     }
@@ -5218,31 +5328,351 @@ struct UpgradeConfirmationView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.trailing, 6)
             }
-            .frame(height: 410)
-
-            HStack(alignment: .center, spacing: 8) {
-                Image(systemName: "shield.lefthalf.filled.badge.checkmark")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.green)
-                    .frame(width: 16, height: 16, alignment: .center)
-                Text("升级前请先保存各副本中的工作。工具会先备份旧应用、账号目录和窗口缓存，再做原子替换。")
-                    .font(.system(size: 11.5))
-                    .foregroundStyle(.secondary)
-            }
+            .frame(height: 380)
 
             HStack(alignment: .center, spacing: 10) {
-                Spacer()
-                Button("取消", action: cancel)
+                Button("取消", action: dismiss)
                     .buttonStyle(ModernButtonStyle(variant: .secondary))
                     .keyboardShortcut(.cancelAction)
-                Button("备份并升级", action: confirm)
+
+                Spacer()
+
+                if createBackup {
+                    Button {
+                        startUpgrade(backup: false)
+                    } label: {
+                        Text("跳过备份直接升级")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("无需手动勾选，一键直接升级")
+
+                    Button("备份并升级") {
+                        startUpgrade(backup: true)
+                    }
                     .buttonStyle(ModernButtonStyle(variant: .upgrade))
                     .keyboardShortcut(.return, modifiers: .command)
-                    .disabled(busy || instances.isEmpty)
+                    .disabled(store.busy || instances.isEmpty)
+                } else {
+                    Button {
+                        startUpgrade(backup: true)
+                    } label: {
+                        Text("改为备份并升级")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+
+                    Button("直接升级 (不备份)") {
+                        startUpgrade(backup: false)
+                    }
+                    .buttonStyle(ModernButtonStyle(variant: .upgrade))
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(store.busy || instances.isEmpty)
+                }
             }
         }
-        .padding(24)
-        .frame(width: 600)
+    }
+
+    private var inProgressContent: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .center, spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(statusTint.opacity(0.14))
+                        .frame(width: 44, height: 44)
+                    if store.busy {
+                        Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
+                            .font(.system(size: 22, weight: .semibold))
+                            .foregroundStyle(accent)
+                    } else if store.error == nil {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 22, weight: .semibold))
+                            .foregroundStyle(.green)
+                    } else {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 22, weight: .semibold))
+                            .foregroundStyle(.orange)
+                    }
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(store.busy ? "正在升级实例…" : (store.error == nil ? "实例升级完成！" : "升级未能全部完成"))
+                        .font(.system(size: 19, weight: .bold))
+                    Text(store.busy 
+                        ? "目标版本 v\(targetVersion)  ·  \(createBackup ? "已启用安全备份" : "未备份快速升级")  ·  请保持应用开启"
+                        : (store.error == nil ? "所有选定实例已成功升级至最新版本 v\(targetVersion)" : (store.error ?? "操作出现异常")))
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+
+            // 升级全局进度条与阶段文字 (Glowing Progress Bar)
+            VStack(alignment: .leading, spacing: 9) {
+                HStack(alignment: .center) {
+                    HStack(spacing: 7) {
+                        if store.busy {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
+                        Text(store.operationStage ?? (store.busy ? "正在准备升级环境…" : "升级流程已就绪"))
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(store.error == nil ? Color.primary : Color.orange)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    Text("\(Int((store.operationProgress ?? (store.busy ? 0.05 : 1.0)) * 100))%")
+                        .font(.system(size: 14, weight: .bold, design: .monospaced))
+                        .foregroundStyle(statusTint)
+                }
+
+                ProgressView(value: store.operationProgress ?? (store.busy ? 0.05 : 1.0), total: 1.0)
+                    .progressViewStyle(.linear)
+                    .tint(statusTint)
+            }
+            .padding(16)
+            .systemSurface(radius: 14, isHighlighted: store.busy, tint: statusTint)
+
+            // 升级执行流水线阶段卡片 (Pipeline Stepper)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("执行阶段")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                
+                HStack(spacing: 8) {
+                    pipelineStage(step: 1, title: "官方源验签", threshold: 0.05)
+                    pipelineStage(step: 2, title: "适配与签名", threshold: 0.15)
+                    pipelineStage(step: 3, title: "关闭实例", threshold: 0.62)
+                    pipelineStage(step: 4, title: createBackup ? "安全备份" : "跳过备份", threshold: 0.68)
+                    pipelineStage(step: 5, title: "替换安装", threshold: 0.78)
+                }
+            }
+
+            // 待升级实例卡片列表
+            VStack(alignment: .leading, spacing: 8) {
+                Text("实例升级状态 (\(instances.count))")
+                    .font(.system(size: 11.5, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                
+                ScrollView {
+                    VStack(spacing: 6) {
+                        ForEach(instances) { item in
+                            HStack(alignment: .center) {
+                                Text("#\(String(format: "%02d", item.index))")
+                                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                    .foregroundStyle(accent)
+                                    .frame(width: 28, alignment: .leading)
+                                Text(item.name)
+                                    .font(.system(size: 12.5, weight: .medium))
+                                Spacer()
+                                Text("v\(item.version) → v\(targetVersion)")
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                
+                                instanceStatusPill(for: item)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .systemSurface(radius: 10)
+                        }
+                    }
+                }
+                .frame(maxHeight: 120)
+            }
+
+            // 实时操作日志抽屉
+            VStack(alignment: .leading, spacing: 6) {
+                Button {
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.82)) {
+                        showLogs.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(showLogs ? "收起操作日志" : "查看实时详细日志")
+                            .font(.system(size: 11, weight: .medium))
+                        Image(systemName: showLogs ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                    }
+                    .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+
+                if showLogs {
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            Text(store.output)
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(10)
+                                .id("upgradeLogBottom")
+                        }
+                        .frame(height: 110)
+                        .systemSurface(radius: 10)
+                        .onChange(of: store.output) { _ in
+                            proxy.scrollTo("upgradeLogBottom", anchor: .bottom)
+                        }
+                    }
+                }
+            }
+
+            // 底部操作按钮
+            HStack(alignment: .center, spacing: 10) {
+                if store.busy {
+                    Button("后台运行并收起", action: dismiss)
+                        .buttonStyle(ModernButtonStyle(variant: .secondary))
+                        .help("收起此窗口，升级将在后台继续平稳执行，底部操作栏会持续显示进度")
+
+                    Spacer()
+                    Text("升级进行中，请勿强制退出应用")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Spacer()
+                    if store.error == nil {
+                        Button("完成并关闭", action: dismiss)
+                            .buttonStyle(ModernButtonStyle(variant: .primary))
+                        if instances.count == 1 {
+                            Button("立即打开实例") {
+                                store.open(instances[0])
+                                dismiss()
+                            }
+                            .buttonStyle(ModernButtonStyle(variant: .upgrade))
+                        }
+                    } else {
+                        Button("关闭", action: dismiss)
+                            .buttonStyle(ModernButtonStyle(variant: .secondary))
+                    }
+                }
+            }
+        }
+    }
+
+    private func pipelineStage(step: Int, title: String, threshold: Double) -> some View {
+        let currentProgress = store.operationProgress ?? (store.busy ? 0.05 : 1.0)
+        let isDone = !store.busy ? (store.error == nil) : (currentProgress >= threshold + 0.08)
+        let isActive = store.busy && currentProgress >= threshold && currentProgress < threshold + 0.08
+        
+        return VStack(spacing: 4) {
+            ZStack {
+                Circle()
+                    .fill(isDone ? Color.green.opacity(0.18) : (isActive ? accent.opacity(0.18) : Color.secondary.opacity(0.12)))
+                    .frame(width: 22, height: 22)
+                if isDone {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.green)
+                } else if isActive {
+                    Circle()
+                        .fill(accent)
+                        .frame(width: 8, height: 8)
+                } else {
+                    Text("\(step)")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Text(title)
+                .font(.system(size: 10, weight: isActive ? .semibold : .medium))
+                .foregroundStyle(isDone ? Color.primary : (isActive ? accent : Color.secondary))
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .padding(.horizontal, 4)
+        .systemSurface(radius: 8, isHighlighted: isActive, tint: isActive ? accent : nil)
+    }
+
+    private func instanceStatusPill(for item: ManagedInstance) -> some View {
+        let currentProgress = store.operationProgress ?? (store.busy ? 0.05 : 1.0)
+        if !store.busy {
+            if store.error == nil {
+                return AnyView(
+                    Text("已完成 ✓")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.green)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(Color.green.opacity(0.14))
+                        .clipShape(Capsule())
+                )
+            } else {
+                return AnyView(
+                    Text("异常")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.orange)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(Color.orange.opacity(0.14))
+                        .clipShape(Capsule())
+                )
+            }
+        }
+        
+        if currentProgress >= 0.96 {
+            return AnyView(
+                Text("安装就绪")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.green)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(Color.green.opacity(0.14))
+                    .clipShape(Capsule())
+            )
+        } else if currentProgress >= 0.78 {
+            return AnyView(
+                Text("替换中…")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(accent)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(accent.opacity(0.14))
+                    .clipShape(Capsule())
+            )
+        } else if currentProgress >= 0.68 {
+            return AnyView(
+                Text(createBackup ? "备份中…" : "准备中…")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(Color.orange.opacity(0.14))
+                    .clipShape(Capsule())
+            )
+        } else if currentProgress >= 0.15 {
+            return AnyView(
+                Text("适配中…")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(accent)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(accent.opacity(0.14))
+                    .clipShape(Capsule())
+            )
+        } else {
+            return AnyView(
+                Text("排队中")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(Color.secondary.opacity(0.12))
+                    .clipShape(Capsule())
+            )
+        }
+    }
+
+    private var statusTint: Color {
+        if store.busy { return accent }
+        return store.error == nil ? .green : .orange
+    }
+
+    private func startUpgrade(backup: Bool) {
+        createBackup = backup
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
+            isUpgrading = true
+        }
+        store.upgrade(instances, backup: backup)
     }
 }
 
@@ -5404,11 +5834,10 @@ struct ContentView: View {
         }
         .sheet(item: $upgradeRequest) { request in
             UpgradeConfirmationView(
+                store: store,
                 instances: request.instances,
                 targetVersion: store.sourceVersion,
-                busy: store.busy,
-                cancel: { upgradeRequest = nil },
-                confirm: { store.upgrade(request.instances); upgradeRequest = nil }
+                dismiss: { upgradeRequest = nil }
             )
         }
         .sheet(isPresented: $showUpdateSettings) {
@@ -6248,10 +6677,18 @@ struct ContentView: View {
                         .frame(width: 15, height: 15, alignment: .center)
                 }
 
-                Text(store.busy ? "正在执行实例操作…" : "操作执行记录")
+                Text(store.busy ? (store.operationStage ?? "正在执行实例操作…") : "操作执行记录")
                     .font(.system(size: 12.5, weight: .semibold))
 
-                if let lastLine = store.output.split(separator: "\n").last {
+                if store.busy, let progress = store.operationProgress {
+                    ProgressView(value: progress, total: 1.0)
+                        .progressViewStyle(.linear)
+                        .frame(width: 130)
+                        .tint(accent)
+                    Text("\(Int(progress * 100))%")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundStyle(accent)
+                } else if let lastLine = store.output.split(separator: "\n").last {
                     Text("·  \(String(lastLine))")
                         .font(.system(size: 11.5))
                         .foregroundStyle(.secondary)
@@ -6259,6 +6696,21 @@ struct ContentView: View {
                 }
 
                 Spacer()
+
+                if store.busy && !store.activeUpgradeInstances.isEmpty {
+                    Button {
+                        upgradeRequest = UpgradeRequest(instances: store.activeUpgradeInstances)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.up.forward.app")
+                                .font(.system(size: 11))
+                            Text("查看升级面板")
+                                .font(.system(size: 11, weight: .medium))
+                        }
+                        .foregroundStyle(accent)
+                    }
+                    .buttonStyle(.plain)
+                }
 
                 Button {
                     withAnimation(.spring(response: 0.26, dampingFraction: 0.82)) {
