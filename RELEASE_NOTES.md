@@ -1,3 +1,9 @@
+# v0.7.3
+
+- **适配官方 Google Antigravity 2.23.1 最新主实例 (Official Antigravity 2.23.1 Compatibility)**：
+  - **完成新版本特征哈希校验与完整性建档**：官方主程序升级至 2.23.1（包含 Language Server 通信稳定性强化与偶发异常修复）。管理器已完成对其 `app.asar`、ARM64 原生 `language_server` 二进制的 SHA-256 特征提取与凭据隔离补丁锚点验证。
+  - **无缝恢复一键升级与副本创建**：解除版本适配拦截，顶部仪表盘即时恢复「已支持本机版本」（绿色正常），支持将现有所有副本一键无损升级至 2.23.1，并支持随时基于新官方源创建新的独立多开实例。
+
 # v0.7.2
 
 - **2 小时高负载长稳遥测审计与极低能耗微渲染优化 (2-Hour Long-Run Telemetry Audit & Sub-Zero Render Engine)**：

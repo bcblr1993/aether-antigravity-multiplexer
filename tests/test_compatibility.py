@@ -40,6 +40,13 @@ class CompatibilityTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "ASAR 哈希不匹配"):
                     source_info(source)
 
+    def test_compatibility_table_entries(self):
+        self.assertIn("2.23.1", KNOWN)
+        entry = KNOWN["2.23.1"]
+        self.assertEqual(len(entry["asar"]), 64)
+        self.assertEqual(len(entry["language_server"]), 64)
+        self.assertGreater(entry["keyring_bypass_offset"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
