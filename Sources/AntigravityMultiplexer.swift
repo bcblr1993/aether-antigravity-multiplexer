@@ -1762,12 +1762,26 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             guard let (data, _) = try? await cdpSession.data(for: req),
                   let targets = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { continue }
 
-            guard let mainTarget = targets.first(where: { t in
+            let pageTargets = targets.filter { t in
                 guard (t["type"] as? String) == "page",
                       let u = t["url"] as? String else { return false }
                 return u.hasPrefix("https://127.0.0.1:") || u.hasPrefix("http://127.0.0.1:")
-            }),
-            let currentURL = mainTarget["url"] as? String else { continue }
+            }
+
+            if pageTargets.count > 1 {
+                for duplicate in pageTargets.dropFirst() {
+                    if let targetId = duplicate["id"] as? String,
+                       let closeURL = URL(string: "http://127.0.0.1:\(port)/json/close/\(targetId)") {
+                        var closeReq = URLRequest(url: closeURL)
+                        closeReq.timeoutInterval = 0.5
+                        closeReq.setValue("close", forHTTPHeaderField: "Connection")
+                        _ = try? await cdpSession.data(for: closeReq)
+                    }
+                }
+            }
+
+            guard let mainTarget = pageTargets.first,
+                  let currentURL = mainTarget["url"] as? String else { continue }
 
             if currentURL.contains("/c/") {
                 urls[item.id] = currentURL
@@ -1928,20 +1942,21 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         self.updateFloatingHUDVisibility()
 
         if let app = runningApplication(bundleID: item.bundleID, path: item.path) {
-            // 1. Unhide via AppleScript and activate
-            let script = "tell application \"System Events\" to set visible of (first process whose bundle identifier is \"\(item.bundleID)\") to true"
+            // 1. Unhide via AppleScript and activate without spawning duplicate windows
+            let script = """
+            tell application "System Events"
+                tell (first process whose bundle identifier is "\(item.bundleID)")
+                    set visible to true
+                    set frontmost to true
+                end tell
+            end tell
+            """
             var err: NSDictionary?
             NSAppleScript(source: script)?.executeAndReturnError(&err)
             _ = app.unhide()
-
-            let config = NSWorkspace.OpenConfiguration()
-            config.activates = true
-            config.createsNewApplicationInstance = false
-            NSWorkspace.shared.openApplication(at: item.path, configuration: config) { [weak self] runningApp, _ in
-                DispatchQueue.main.async {
-                    runningApp?.activate(options: [.activateIgnoringOtherApps])
-                    self?.refreshRunningStates()
-                }
+            app.activate(options: [.activateIgnoringOtherApps])
+            DispatchQueue.main.async { [weak self] in
+                self?.refreshRunningStates()
             }
             return
         }
@@ -5275,7 +5290,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.7.4"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.7.5"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {

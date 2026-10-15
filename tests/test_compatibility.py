@@ -47,6 +47,13 @@ class CompatibilityTests(unittest.TestCase):
         self.assertEqual(len(entry["language_server"]), 64)
         self.assertGreater(entry["keyring_bypass_offset"], 0)
 
+    def test_patch_asar_enforces_single_window(self):
+        import pathlib
+        create_instance_py = (pathlib.Path(__file__).resolve().parents[1] / "Resources/create_instance.py").read_text(encoding="utf-8")
+        self.assertIn("utils_1.createWindow = function(url, storageManager)", create_instance_py)
+        self.assertIn("const existing = electron_1.BrowserWindow.getAllWindows()", create_instance_py)
+        self.assertIn("if (electron_1.BrowserWindow.getAllWindows().length > 1) return;", create_instance_py)
+
 
 if __name__ == "__main__":
     unittest.main()

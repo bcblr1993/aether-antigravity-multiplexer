@@ -1,3 +1,10 @@
+# v0.7.5
+
+- **实例单窗口绝对收敛与幽灵多窗口修复 (Single-Window Absolute Invariance & Duplicate Window Pruning)**：
+  - **彻底修复运行中再次调出导致的多窗口 Bug**：此前当实例已在后台运行时，多开管理器在执行聚焦时调用了 `NSWorkspace.openApplication`，导致 macOS LaunchServices 触发重开事件使 Electron 意外派生第二扇空白窗口。现全面优化为通过精准的进程激活与 System Events 原生置顶直接唤醒现有窗口，杜绝无效拉起。
+  - **ASAR 启动层单窗口强力拦截与防重入**：在实例分身启动入口动态注入 `createWindow` 拦截锁。当实例进程内已有现存主窗口时，任何途径（如快捷键 Cmd+N、系统 Dock 菜单或启动阶段早期激活）触发的开窗调用均直接聚焦现有窗口，彻底阻断同一实例创建第二扇多余窗口。
+  - **关闭逻辑修复与从属窗口自愈释放**：修正分身中 `win.on('close')` 的拦截逻辑，确保当检测到多于一扇窗口时允许子窗口正常物理销毁，仅在仅剩最后一扇主窗口时才执行防退收起；并在后台遥测扫描中引入 CDP 幽灵窗口自动识别与秒级关闭机制，全生命周期确保「一个实例恒定一扇窗口」。
+
 # v0.7.4
 
 - **悬浮返回胶囊全硬件加速丝滑拖拽重构 (Hardware-Accelerated 120 FPS WindowServer HUD Dragging)**：

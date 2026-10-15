@@ -206,6 +206,12 @@ class TestMultiplexerAudit(unittest.TestCase):
         # Ephemeral CDP query should pass Connection: close header
         self.assertIn('req.setValue("close", forHTTPHeaderField: "Connection")', self.content)
 
+    def test_single_window_enforcement_and_duplicate_pruning(self):
+        # Must activate running apps without openApplication to prevent duplicate windows, and prune duplicates via CDP
+        self.assertIn('pageTargets.count > 1', self.content)
+        self.assertIn('http://127.0.0.1:\\(port)/json/close/\\(targetId)', self.content)
+        self.assertIn('app.activate(options: [.activateIgnoringOtherApps])', self.content)
+
 
 if __name__ == "__main__":
     unittest.main()
