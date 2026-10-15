@@ -1138,6 +1138,8 @@ enum MultiplexerCommand: String, CaseIterable, Identifiable {
     case switchLanguage = "switchLanguage"
     case openSettings = "openSettings"
     case cleanCaches = "cleanCaches"
+    case startAllAutoPilot = "startAllAutoPilot"
+    case stopAllAutoPilot = "stopAllAutoPilot"
 
     var id: String { rawValue }
 
@@ -1157,6 +1159,8 @@ enum MultiplexerCommand: String, CaseIterable, Identifiable {
         case .switchLanguage: return "globe"
         case .openSettings: return "gearshape.fill"
         case .cleanCaches: return "trash.fill"
+        case .startAllAutoPilot: return "sparkles"
+        case .stopAllAutoPilot: return "play.slash"
         }
     }
 
@@ -1245,6 +1249,16 @@ enum MultiplexerCommand: String, CaseIterable, Identifiable {
         case (.cleanCaches, .ja): return "孤立プロセスとキャッシュの削除"
         case (.cleanCaches, .zhHant): return "清理孤兒進程與臨時快取"
         case (.cleanCaches, _): return "清理孤儿进程与临时磁盘"
+
+        case (.startAllAutoPilot, .en): return "Start Auto-Pilot for All"
+        case (.startAllAutoPilot, .ja): return "全インスタンスで自律運転を開始"
+        case (.startAllAutoPilot, .zhHant): return "開啟所有實例自託管"
+        case (.startAllAutoPilot, _): return "全部开启自托管"
+
+        case (.stopAllAutoPilot, .en): return "Stop Auto-Pilot for All"
+        case (.stopAllAutoPilot, .ja): return "全インスタンスで自律運転を停止"
+        case (.stopAllAutoPilot, .zhHant): return "暫停所有實例自託管"
+        case (.stopAllAutoPilot, _): return "全部暂停自托管"
         }
     }
 
@@ -1279,6 +1293,10 @@ enum MultiplexerCommand: String, CaseIterable, Identifiable {
         case (.openSettings, _): return "配置全局快捷键、触觉反馈及节能选项"
         case (.cleanCaches, .en): return "Reclaim disk space and kill dead processes"
         case (.cleanCaches, _): return "释放无用磁盘占用并回收僵死进程"
+        case (.startAllAutoPilot, .en): return "Silently inject preset prompts when instances become idle"
+        case (.startAllAutoPilot, _): return "当实例空闲时自动向后台静默注入预设文本"
+        case (.stopAllAutoPilot, .en): return "Pause all auto-pilot loops immediately"
+        case (.stopAllAutoPilot, _): return "暂停所有实例的自托管自动发送任务"
         }
     }
 }
@@ -1621,18 +1639,117 @@ struct InstanceActivity: Equatable {
     static let stopped = InstanceActivity()
 }
 
+// MARK: - Auto-Pilot Run State (自托管运行生命周期状态)
+
+enum AutoPilotRunState: String, Codable, Equatable {
+    case disabled = "disabled"
+    case standby = "standby"
+    case debouncing = "debouncing"
+    case injecting = "injecting"
+    case waitingRunning = "waitingRunning"
+    case waitingStalled = "waitingStalled"
+    case pausedNeedsAttention = "pausedNeedsAttention"
+    case completed = "completed"
+    case error = "error"
+
+    func label(lang: AppLanguage) -> String {
+        let eff = lang.effective
+        switch (self, eff) {
+        case (.disabled, .en): return "Disabled"
+        case (.disabled, .ja): return "無効"
+        case (.disabled, .zhHant): return "未開啟"
+        case (.disabled, _): return "未开启"
+
+        case (.standby, .en): return "Standby"
+        case (.standby, .ja): return "待機中"
+        case (.standby, .zhHant): return "就緒待命"
+        case (.standby, _): return "就绪待命"
+
+        case (.debouncing, .en): return "Debouncing"
+        case (.debouncing, .ja): return "空腹判定中"
+        case (.debouncing, .zhHant): return "防抖確認中"
+        case (.debouncing, _): return "防抖确认中"
+
+        case (.injecting, .en): return "Injecting"
+        case (.injecting, .ja): return "バックグラウンド送信中"
+        case (.injecting, .zhHant): return "靜默注入中"
+        case (.injecting, _): return "静默注入中"
+
+        case (.waitingRunning, .en): return "Running"
+        case (.waitingRunning, .ja): return "タスク実行中"
+        case (.waitingRunning, .zhHant): return "任務執行中"
+        case (.waitingRunning, _): return "任务执行中"
+
+        case (.waitingStalled, .en): return "Stalled (Waiting)"
+        case (.waitingStalled, .ja): return "長時間保留中 (保護中)"
+        case (.waitingStalled, .zhHant): return "掛起等待中"
+        case (.waitingStalled, _): return "挂起等待中"
+
+        case (.pausedNeedsAttention, .en): return "Needs Attention"
+        case (.pausedNeedsAttention, .ja): return "ユーザー確認待ち"
+        case (.pausedNeedsAttention, .zhHant): return "需要人工介入"
+        case (.pausedNeedsAttention, _): return "需要人工介入"
+
+        case (.completed, .en): return "Completed"
+        case (.completed, .ja): return "完了"
+        case (.completed, .zhHant): return "已達最大輪數"
+        case (.completed, _): return "已达最大轮数"
+
+        case (.error, .en): return "Error"
+        case (.error, .ja): return "送信エラー"
+        case (.error, .zhHant): return "注入異常"
+        case (.error, _): return "注入异常"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .disabled: return .secondary
+        case .standby: return .blue
+        case .debouncing: return .purple
+        case .injecting: return .cyan
+        case .waitingRunning: return .green
+        case .waitingStalled: return .orange
+        case .pausedNeedsAttention: return .yellow
+        case .completed: return .teal
+        case .error: return .red
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .disabled: return "play.slash"
+        case .standby: return "sparkles"
+        case .debouncing: return "timer"
+        case .injecting: return "paperplane.fill"
+        case .waitingRunning: return "figure.run"
+        case .waitingStalled: return "hourglass"
+        case .pausedNeedsAttention: return "exclamationmark.triangle.fill"
+        case .completed: return "checkmark.seal.fill"
+        case .error: return "xmark.octagon.fill"
+        }
+    }
+}
+
 struct InstanceUserMeta: Codable, Equatable, Hashable {
     var nickname: String = ""
     var tag: String = ""
     var tagColor: String = "blue"
     var colorTag: InstanceColorTag = .none
     var notes: String = ""
+    var autoPilotEnabled: Bool = false
+    var autoPilotPrompt: String = ""
+    var autoPilotMaxRounds: Int = 0
+    var autoPilotCurrentRounds: Int = 0
+    var autoPilotDebounceSeconds: Double = 3.0
 
     var hasCustomContent: Bool {
         !nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
         !tag.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
         colorTag != .none ||
-        !notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+        autoPilotEnabled ||
+        !autoPilotPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var color: Color {
@@ -1652,14 +1769,35 @@ struct InstanceUserMeta: Codable, Equatable, Hashable {
 
     enum CodingKeys: String, CodingKey {
         case nickname, tag, tagColor, colorTag, notes
+        case autoPilotEnabled
+        case autoPilotPrompt
+        case autoPilotMaxRounds
+        case autoPilotCurrentRounds
+        case autoPilotDebounceSeconds
     }
 
-    init(nickname: String = "", tag: String = "", tagColor: String = "blue", colorTag: InstanceColorTag = .none, notes: String = "") {
+    init(
+        nickname: String = "",
+        tag: String = "",
+        tagColor: String = "blue",
+        colorTag: InstanceColorTag = .none,
+        notes: String = "",
+        autoPilotEnabled: Bool = false,
+        autoPilotPrompt: String = "",
+        autoPilotMaxRounds: Int = 0,
+        autoPilotCurrentRounds: Int = 0,
+        autoPilotDebounceSeconds: Double = 3.0
+    ) {
         self.nickname = nickname
         self.tag = tag
         self.tagColor = tagColor
         self.colorTag = colorTag
         self.notes = notes
+        self.autoPilotEnabled = autoPilotEnabled
+        self.autoPilotPrompt = autoPilotPrompt
+        self.autoPilotMaxRounds = autoPilotMaxRounds
+        self.autoPilotCurrentRounds = autoPilotCurrentRounds
+        self.autoPilotDebounceSeconds = autoPilotDebounceSeconds
     }
 
     init(from decoder: Decoder) throws {
@@ -1669,6 +1807,11 @@ struct InstanceUserMeta: Codable, Equatable, Hashable {
         tagColor = try container.decodeIfPresent(String.self, forKey: .tagColor) ?? "blue"
         colorTag = try container.decodeIfPresent(InstanceColorTag.self, forKey: .colorTag) ?? .none
         notes = try container.decodeIfPresent(String.self, forKey: .notes) ?? ""
+        autoPilotEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoPilotEnabled) ?? false
+        autoPilotPrompt = try container.decodeIfPresent(String.self, forKey: .autoPilotPrompt) ?? ""
+        autoPilotMaxRounds = try container.decodeIfPresent(Int.self, forKey: .autoPilotMaxRounds) ?? 0
+        autoPilotCurrentRounds = try container.decodeIfPresent(Int.self, forKey: .autoPilotCurrentRounds) ?? 0
+        autoPilotDebounceSeconds = try container.decodeIfPresent(Double.self, forKey: .autoPilotDebounceSeconds) ?? 3.0
     }
 }
 
@@ -1740,12 +1883,14 @@ enum TaskHistoryCategory: String, Codable, CaseIterable {
     case completed
     case needsAttention
     case error
+    case autoPilot
 
     var label: String {
         switch self {
         case .completed: return "已完成"
         case .needsAttention: return "等待确认"
         case .error: return "执行异常"
+        case .autoPilot: return "自托管"
         }
     }
 
@@ -1754,6 +1899,7 @@ enum TaskHistoryCategory: String, Codable, CaseIterable {
         case .completed: return .green
         case .needsAttention: return .orange
         case .error: return .red
+        case .autoPilot: return .cyan
         }
     }
 
@@ -1762,6 +1908,7 @@ enum TaskHistoryCategory: String, Codable, CaseIterable {
         case .completed: return "checkmark.circle.fill"
         case .needsAttention: return "bell.badge.fill"
         case .error: return "exclamationmark.triangle.fill"
+        case .autoPilot: return "sparkles"
         }
     }
 }
@@ -2542,6 +2689,9 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     @Published var instances: [ManagedInstance] = []
     @Published var activities: [String: InstanceActivity] = [:]
     @Published var thumbnails: [String: NSImage] = [:]
+    @Published var autoPilotStates: [String: AutoPilotRunState] = [:]
+    @Published var autoPilotDebounceRemaining: [String: Int] = [:]
+    var autoPilotDebounceTasks: [String: Task<Void, Never>] = [:]
     @Published var backups: [BackupBatch] = []
     @Published var busy = false
     @Published var output = ""
@@ -2780,6 +2930,10 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             NotificationCenter.default.post(name: .openPreferencesRequested, object: nil)
         case .cleanCaches:
             cleanOrphanProcessesAndCache()
+        case .startAllAutoPilot:
+            startAllAutoPilot()
+        case .stopAllAutoPilot:
+            stopAllAutoPilot()
         }
     }
 
@@ -2941,6 +3095,360 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         }
         if let encoded = try? JSONEncoder().encode(instanceMetas) {
             UserDefaults.standard.set(encoded, forKey: "instance_user_metas")
+        }
+    }
+
+    // MARK: - Auto-Pilot Autonomous Dispatch Engine (自托管静默调度引擎)
+
+    func autoPilotState(for item: ManagedInstance) -> AutoPilotRunState {
+        autoPilotStates[item.id] ?? .disabled
+    }
+
+    func toggleAutoPilot(for item: ManagedInstance) {
+        var m = meta(for: item)
+        m.autoPilotEnabled.toggle()
+        if m.autoPilotEnabled {
+            if m.autoPilotPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                m.autoPilotPrompt = "继续下一步"
+            }
+            m.autoPilotCurrentRounds = 0
+            saveInstanceMeta(for: item.id, meta: m)
+            evaluateAutoPilotInitialState(for: item)
+        } else {
+            cancelAutoPilotDebounce(for: item.id)
+            autoPilotStates[item.id] = .disabled
+            saveInstanceMeta(for: item.id, meta: m)
+        }
+    }
+
+    func updateAutoPilotConfig(for item: ManagedInstance, enabled: Bool, prompt: String, maxRounds: Int, debounceSeconds: Double) {
+        var m = meta(for: item)
+        let wasEnabled = m.autoPilotEnabled
+        m.autoPilotEnabled = enabled
+        m.autoPilotPrompt = prompt
+        m.autoPilotMaxRounds = maxRounds
+        m.autoPilotDebounceSeconds = max(1.0, debounceSeconds)
+        if enabled && !wasEnabled {
+            m.autoPilotCurrentRounds = 0
+        }
+        saveInstanceMeta(for: item.id, meta: m)
+        if enabled {
+            evaluateAutoPilotInitialState(for: item)
+        } else {
+            cancelAutoPilotDebounce(for: item.id)
+            autoPilotStates[item.id] = .disabled
+        }
+    }
+
+    func startAllAutoPilot() {
+        for item in instances where item.running {
+            var m = meta(for: item)
+            m.autoPilotEnabled = true
+            if m.autoPilotPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                m.autoPilotPrompt = "继续下一步"
+            }
+            m.autoPilotCurrentRounds = 0
+            saveInstanceMeta(for: item.id, meta: m)
+            evaluateAutoPilotInitialState(for: item)
+        }
+    }
+
+    func stopAllAutoPilot() {
+        for item in instances {
+            cancelAutoPilotDebounce(for: item.id)
+            autoPilotStates[item.id] = .disabled
+            var m = meta(for: item)
+            if m.autoPilotEnabled {
+                m.autoPilotEnabled = false
+                saveInstanceMeta(for: item.id, meta: m)
+            }
+        }
+    }
+
+    private func evaluateAutoPilotInitialState(for item: ManagedInstance) {
+        let meta = meta(for: item)
+        guard meta.autoPilotEnabled else {
+            autoPilotStates[item.id] = .disabled
+            return
+        }
+        guard item.running else {
+            autoPilotStates[item.id] = .standby
+            return
+        }
+        let currentActivity = activities[item.id]
+        let st = currentActivity?.state ?? .stopped
+        handleAutoPilotStateChange(for: item, newState: st)
+    }
+
+    func cancelAutoPilotDebounce(for itemID: String) {
+        autoPilotDebounceTasks[itemID]?.cancel()
+        autoPilotDebounceTasks.removeValue(forKey: itemID)
+        autoPilotDebounceRemaining.removeValue(forKey: itemID)
+    }
+
+    func processAutoPilotStateChanges(newActivities: [String: InstanceActivity]) {
+        for item in instances {
+            if item.running {
+                let act = newActivities[item.id] ?? InstanceActivity(state: .idle)
+                handleAutoPilotStateChange(for: item, newState: act.state)
+            } else if autoPilotStates[item.id] != .disabled {
+                cancelAutoPilotDebounce(for: item.id)
+                autoPilotStates[item.id] = .standby
+            }
+        }
+    }
+
+    func handleAutoPilotStateChange(for item: ManagedInstance, newState: TaskRunState) {
+        let meta = meta(for: item)
+        guard meta.autoPilotEnabled else {
+            if autoPilotStates[item.id] != .disabled {
+                autoPilotStates[item.id] = .disabled
+                cancelAutoPilotDebounce(for: item.id)
+            }
+            return
+        }
+
+        switch newState {
+        case .runningTask:
+            cancelAutoPilotDebounce(for: item.id)
+            autoPilotStates[item.id] = .waitingRunning
+
+        case .stalled:
+            // Long-running build, test execution, or deep reasoning:
+            // MUST passively wait and NEVER interrupt!
+            cancelAutoPilotDebounce(for: item.id)
+            autoPilotStates[item.id] = .waitingStalled
+
+        case .needsAttention:
+            // Waiting for user confirmation or choices:
+            // MUST safely pause and wait for user, never inject blindly!
+            cancelAutoPilotDebounce(for: item.id)
+            autoPilotStates[item.id] = .pausedNeedsAttention
+
+        case .stopped, .error:
+            cancelAutoPilotDebounce(for: item.id)
+            autoPilotStates[item.id] = (newState == .error) ? .error : .standby
+
+        case .idle:
+            // Circuit Breaker: check max rounds limit
+            if meta.autoPilotMaxRounds > 0 && meta.autoPilotCurrentRounds >= meta.autoPilotMaxRounds {
+                cancelAutoPilotDebounce(for: item.id)
+                autoPilotStates[item.id] = .completed
+                return
+            }
+
+            guard !meta.autoPilotPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                autoPilotStates[item.id] = .standby
+                return
+            }
+
+            // If already debouncing or injecting, avoid spawning duplicate tasks
+            let currentState = autoPilotStates[item.id]
+            if currentState == .debouncing || currentState == .injecting {
+                return
+            }
+
+            // Start debounce confirmation timer
+            let debounceSec = max(1.0, meta.autoPilotDebounceSeconds)
+            autoPilotStates[item.id] = .debouncing
+            autoPilotDebounceRemaining[item.id] = Int(debounceSec)
+
+            cancelAutoPilotDebounce(for: item.id)
+
+            let task = Task { [weak self] in
+                guard let self = self else { return }
+                var remaining = Int(debounceSec)
+                while remaining > 0 {
+                    if Task.isCancelled { return }
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    if Task.isCancelled { return }
+                    remaining -= 1
+                    await MainActor.run {
+                        self.autoPilotDebounceRemaining[item.id] = remaining
+                    }
+                }
+
+                // Debounce completed: confirm state is STILL .idle and instance is running
+                await MainActor.run {
+                    guard !Task.isCancelled else { return }
+                    let latestState = self.activities[item.id]?.state ?? .stopped
+                    guard latestState == .idle else {
+                        // Task started running or state changed during debounce
+                        return
+                    }
+
+                    let latestMeta = self.meta(for: item)
+                    guard latestMeta.autoPilotEnabled else { return }
+                    if latestMeta.autoPilotMaxRounds > 0 && latestMeta.autoPilotCurrentRounds >= latestMeta.autoPilotMaxRounds {
+                        self.autoPilotStates[item.id] = .completed
+                        return
+                    }
+
+                    self.autoPilotStates[item.id] = .injecting
+                    self.autoPilotDebounceRemaining.removeValue(forKey: item.id)
+
+                    Task {
+                        let success = await self.injectPromptViaCDP(item: item, prompt: latestMeta.autoPilotPrompt)
+                        await MainActor.run {
+                            if success {
+                                var updated = latestMeta
+                                updated.autoPilotCurrentRounds += 1
+                                self.saveInstanceMeta(for: item.id, meta: updated)
+
+                                if updated.autoPilotMaxRounds > 0 && updated.autoPilotCurrentRounds >= updated.autoPilotMaxRounds {
+                                    self.autoPilotStates[item.id] = .completed
+                                } else {
+                                    self.autoPilotStates[item.id] = .waitingRunning
+                                }
+
+                                self.recordTaskEvent(
+                                    item: item,
+                                    category: .autoPilot,
+                                    action: "🤖 自托管已静默发送预设文本 (第 \(updated.autoPilotCurrentRounds) 轮): \"\(updated.autoPilotPrompt)\"",
+                                    workspace: self.activities[item.id]?.workspace ?? "",
+                                    stepIndex: self.activities[item.id]?.stepIndex ?? 0,
+                                    duration: nil
+                                )
+                            } else {
+                                self.autoPilotStates[item.id] = .error
+                            }
+                        }
+                    }
+                }
+            }
+            autoPilotDebounceTasks[item.id] = task
+        }
+    }
+
+    /// Silent background prompt injection via Chromium DevTools Protocol (CDP).
+    /// Dispatches preset prompt to background window without bringing it to front or stealing focus.
+    func injectPromptViaCDP(item: ManagedInstance, prompt: String) async -> Bool {
+        guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        let appSupportRoot = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support")
+        let portFile = appSupportRoot.appendingPathComponent(item.name).appendingPathComponent("DevToolsActivePort")
+
+        guard let content = try? String(contentsOf: portFile, encoding: .utf8),
+              let firstLine = content.components(separatedBy: .newlines).first,
+              let port = Int(firstLine.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let listURL = URL(string: "http://127.0.0.1:\(port)/json/list") else {
+            return false
+        }
+
+        var req = URLRequest(url: listURL)
+        req.timeoutInterval = 1.0
+        req.setValue("close", forHTTPHeaderField: "Connection")
+        guard let (data, _) = try? await Self.cdpSession.data(for: req),
+              let targets = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return false
+        }
+
+        let pageTargets = targets.filter { t in
+            guard (t["type"] as? String) == "page",
+                  let u = t["url"] as? String else { return false }
+            return u.hasPrefix("https://127.0.0.1:") || u.hasPrefix("http://127.0.0.1:")
+        }
+
+        guard let mainTarget = pageTargets.first,
+              let wsString = mainTarget["webSocketDebuggerUrl"] as? String,
+              let wsURL = URL(string: wsString) else {
+            return false
+        }
+
+        guard let promptJSONData = try? JSONSerialization.data(withJSONObject: [prompt]),
+              let promptJSONStr = String(data: promptJSONData, encoding: .utf8) else {
+            return false
+        }
+
+        let jsPayload = """
+        (() => {
+            const promptText = (\(promptJSONStr))[0];
+            const editor = document.querySelector('[data-lexical-editor="true"]')
+                        || document.querySelector('[aria-label="Message input"]')
+                        || document.querySelector('div[contenteditable="true"]')
+                        || document.querySelector('textarea');
+            if (!editor) {
+                return { success: false, reason: "input_not_found" };
+            }
+
+            editor.focus();
+
+            if (editor.tagName === 'TEXTAREA') {
+                editor.value = promptText;
+                editor.dispatchEvent(new Event('input', { bubbles: true }));
+                editor.dispatchEvent(new Event('change', { bubbles: true }));
+            } else {
+                document.execCommand('selectAll', false, null);
+                const inserted = document.execCommand('insertText', false, promptText);
+                if (!inserted) {
+                    editor.innerText = promptText;
+                    editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: promptText }));
+                }
+            }
+
+            // Click send button
+            let sendBtn = document.querySelector('button[aria-label="Send message"]')
+                       || document.querySelector('button[aria-label*="Send"]')
+                       || document.querySelector('button.send-button');
+
+            if (!sendBtn) {
+                const btns = Array.from(document.querySelectorAll('button'));
+                sendBtn = btns.find(b => {
+                    const label = b.getAttribute('aria-label') || '';
+                    const txt = b.innerText || '';
+                    return label.toLowerCase().includes('send') || txt.toLowerCase().includes('send') || label.includes('发送');
+                });
+            }
+
+            if (sendBtn && !sendBtn.disabled) {
+                sendBtn.click();
+                return { success: true, method: "button_click" };
+            }
+
+            // Fallback: dispatch Enter key event
+            const enterEvent = new KeyboardEvent('keydown', {
+                key: 'Enter',
+                code: 'Enter',
+                keyCode: 13,
+                which: 13,
+                bubbles: true,
+                cancelable: true
+            });
+            editor.dispatchEvent(enterEvent);
+            return { success: true, method: "enter_key" };
+        })()
+        """
+
+        guard let evalRequestObj = try? JSONSerialization.data(withJSONObject: [
+            "id": 1001,
+            "method": "Runtime.evaluate",
+            "params": [
+                "expression": jsPayload,
+                "returnByValue": true
+            ]
+        ]), let evalRequestStr = String(data: evalRequestObj, encoding: .utf8) else {
+            return false
+        }
+
+        let task = Self.cdpSession.webSocketTask(with: wsURL)
+        task.resume()
+        defer { task.cancel(with: .goingAway, reason: nil) }
+
+        do {
+            try await task.send(.string(evalRequestStr))
+            let response = try await task.receive()
+            guard case .string(let text) = response,
+                  let respData = text.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: respData) as? [String: Any],
+                  let res = obj["result"] as? [String: Any],
+                  let resultVal = res["result"] as? [String: Any],
+                  let valDict = resultVal["value"] as? [String: Any],
+                  let success = valDict["success"] as? Bool else {
+                return false
+            }
+            return success
+        } catch {
+            return false
         }
     }
 
@@ -3231,6 +3739,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                     }
                 }
                 self.processActivityChangesAndNotify(newActivities: finalActivities)
+                self.processAutoPilotStateChanges(newActivities: finalActivities)
                 if self.activities != finalActivities {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         self.activities = finalActivities
@@ -5813,6 +6322,7 @@ struct InstanceThumbnailTile: View {
     let logs: () -> Void
     let verify: () -> Void
     let editMeta: () -> Void
+    var editAutoPilot: (() -> Void)? = nil
     let clearWorkspace: () -> Void
     let destroy: () -> Void
 
@@ -6150,6 +6660,10 @@ struct InstanceThumbnailTile: View {
                         .lineLimit(1)
                 }
 
+                if let store = InstanceStore.current {
+                    AutoPilotPillView(store: store, item: item, onConfigure: editAutoPilot)
+                }
+
                 if !meta.notes.isEmpty {
                     HStack(spacing: 3) {
                         Image(systemName: "note.text")
@@ -6365,6 +6879,14 @@ struct InstanceThumbnailTile: View {
                 editMeta()
             }
 
+            tileMenuItem(
+                title: meta.autoPilotEnabled ? "🤖 配置/关闭自托管…" : "🤖 开启自托管…",
+                symbol: "sparkles"
+            ) {
+                showMorePopover = false
+                editAutoPilot?()
+            }
+
             Divider().padding(.vertical, 3)
 
             tileMenuItem(
@@ -6508,6 +7030,7 @@ struct InstanceCard: View {
     let logs: () -> Void
     let verify: () -> Void
     let editMeta: () -> Void
+    var editAutoPilot: (() -> Void)? = nil
     let clearWorkspace: () -> Void
     let destroy: () -> Void
 
@@ -6637,6 +7160,10 @@ struct InstanceCard: View {
                     .overlay {
                         Capsule()
                             .strokeBorder(item.running ? activity.state.color.opacity(0.30) : Color.primary.opacity(0.08), lineWidth: 1)
+                    }
+
+                    if let store = InstanceStore.current {
+                        AutoPilotPillView(store: store, item: item, onConfigure: editAutoPilot)
                     }
 
                     if item.isOriginal {
@@ -6796,6 +7323,14 @@ struct InstanceCard: View {
                         ) {
                             showMorePopover = false
                             editMeta()
+                        }
+                        popoverMenuButton(
+                            title: meta.autoPilotEnabled ? "🤖 配置/关闭自托管…" : "🤖 开启自托管…",
+                            symbol: "sparkles",
+                            destructive: false
+                        ) {
+                            showMorePopover = false
+                            editAutoPilot?()
                         }
                         popoverMenuButton(
                             title: "在访达中显示独立工作空间",
@@ -7379,6 +7914,311 @@ struct EditInstanceMetaSheet: View {
             .buttonStyle(.plain)
             .help("在访达中显示该目录")
         }
+    }
+}
+
+// MARK: - Auto-Pilot Pill Badge View
+
+struct AutoPilotPillView: View {
+    @ObservedObject var store: InstanceStore
+    let item: ManagedInstance
+    @Binding var showingConfigSheet: Bool
+    var onConfigure: (() -> Void)? = nil
+
+    init(store: InstanceStore, item: ManagedInstance, showingConfigSheet: Binding<Bool> = .constant(false), onConfigure: (() -> Void)? = nil) {
+        self.store = store
+        self.item = item
+        self._showingConfigSheet = showingConfigSheet
+        self.onConfigure = onConfigure
+    }
+
+    var body: some View {
+        let meta = store.meta(for: item)
+        let state = store.autoPilotState(for: item)
+        let remaining = store.autoPilotDebounceRemaining[item.id]
+
+        if meta.autoPilotEnabled {
+            Button(action: {
+                if let onConfigure {
+                    onConfigure()
+                } else {
+                    showingConfigSheet = true
+                }
+            }) {
+                HStack(spacing: 4.5) {
+                    Image(systemName: state.systemImage)
+                        .font(.system(size: 9.5, weight: .bold))
+                    Text(displayText(state: state, remaining: remaining, lang: store.appLanguage))
+                        .font(.system(size: 10, weight: .semibold))
+                    if meta.autoPilotMaxRounds > 0 {
+                        Text("(\(meta.autoPilotCurrentRounds)/\(meta.autoPilotMaxRounds))")
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .opacity(0.85)
+                    }
+                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(
+                    Capsule()
+                        .fill(state.color.opacity(0.16))
+                )
+                .overlay(
+                    Capsule()
+                        .strokeBorder(state.color.opacity(0.40), lineWidth: 0.9)
+                )
+                .foregroundStyle(state.color)
+            }
+            .buttonStyle(.plain)
+            .help(store.appLanguage == .zhHans || store.appLanguage == .zhHant
+                  ? "🤖 自托管已启用：点击配置预设指令与防抖确认参数"
+                  : "🤖 Auto-Pilot active: Click to configure prompt and debounce")
+        }
+    }
+
+    private func displayText(state: AutoPilotRunState, remaining: Int?, lang: AppLanguage) -> String {
+        if state == .debouncing, let rem = remaining {
+            return "\(state.label(lang: lang)) (\(rem)s)"
+        }
+        return state.label(lang: lang)
+    }
+}
+
+// MARK: - Auto-Pilot Configuration Sheet
+
+struct AutoPilotConfigSheet: View {
+    @ObservedObject var store: InstanceStore
+    let item: ManagedInstance
+    let onDismiss: () -> Void
+
+    @State private var enabled: Bool
+    @State private var promptText: String
+    @State private var maxRounds: Int
+    @State private var debounceSeconds: Double
+    @State private var isTestingInjection = false
+    @State private var testResultMsg: String? = nil
+
+    private let promptTemplates: [(title: String, prompt: String)] = [
+        ("继续下一步", "继续下一步"),
+        ("深入分析", "请继续分析当前工作区代码并给出改进建议与完整实现"),
+        ("测试驱动", "运行所有关联测试并针对失败项进行修复直至全部通过"),
+        ("代码重构", "检查代码规范、死代码与可读性并执行针对性重构")
+    ]
+
+    init(store: InstanceStore, item: ManagedInstance, onDismiss: @escaping () -> Void) {
+        self.store = store
+        self.item = item
+        self.onDismiss = onDismiss
+        let currentMeta = store.meta(for: item)
+        _enabled = State(initialValue: currentMeta.autoPilotEnabled)
+        _promptText = State(initialValue: currentMeta.autoPilotPrompt.isEmpty ? "继续下一步" : currentMeta.autoPilotPrompt)
+        _maxRounds = State(initialValue: currentMeta.autoPilotMaxRounds)
+        _debounceSeconds = State(initialValue: max(1.0, currentMeta.autoPilotDebounceSeconds))
+    }
+
+    var body: some View {
+        let state = store.autoPilotState(for: item)
+        let currentMeta = store.meta(for: item)
+
+        VStack(alignment: .leading, spacing: 16) {
+            // Header
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(LinearGradient(colors: [Color.cyan.opacity(0.8), Color.blue], startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .frame(width: 40, height: 40)
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text("自托管配置 (Auto-Pilot)")
+                            .font(.system(size: 15, weight: .bold))
+                        Text("· \(item.name)")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("当实例空闲时，后台静默自动向当前窗口注入预设指令，绝不抢占前台焦点与鼠标")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                Spacer()
+            }
+
+            Divider()
+
+            // Status Bar Banner
+            HStack {
+                HStack(spacing: 6) {
+                    Image(systemName: state.systemImage)
+                        .font(.system(size: 11, weight: .bold))
+                    Text("当前调度状态: \(state.label(lang: store.appLanguage))")
+                        .font(.system(size: 11.5, weight: .semibold))
+                }
+                .foregroundStyle(state.color)
+                Spacer()
+                if currentMeta.autoPilotMaxRounds > 0 {
+                    Text("已执行: \(currentMeta.autoPilotCurrentRounds) / \(currentMeta.autoPilotMaxRounds) 轮")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text("已执行: \(currentMeta.autoPilotCurrentRounds) 轮 (无限循环)")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 8).fill(state.color.opacity(0.10)))
+
+            // Enable Toggle
+            Toggle(isOn: $enabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("启用此实例的后台静默自托管")
+                        .font(.system(size: 12.5, weight: .medium))
+                    Text("开启后将在任务执行完成并连续空闲达到确认防抖时间后，自动注入文本继续执行")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
+
+            // Preset Prompt
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("预设自动发送文本")
+                        .font(.system(size: 12, weight: .semibold))
+                    Spacer()
+                    Text("快捷填入:")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                    ForEach(promptTemplates, id: \.title) { tmpl in
+                        Button(action: { promptText = tmpl.prompt }) {
+                            Text(tmpl.title)
+                                .font(.system(size: 10))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(Color.primary.opacity(0.06)))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                TextEditor(text: $promptText)
+                    .font(.system(size: 12, design: .monospaced))
+                    .frame(height: 70)
+                    .padding(5)
+                    .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.04)))
+                    .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Color.primary.opacity(0.12), lineWidth: 1))
+            }
+
+            // Sliders: Debounce Seconds & Max Rounds
+            HStack(spacing: 20) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("空闲防抖确认:")
+                            .font(.system(size: 11.5, weight: .medium))
+                        Text("\(Int(debounceSeconds)) 秒")
+                            .font(.system(size: 11.5, weight: .bold, design: .monospaced))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    Slider(value: $debounceSeconds, in: 1...10, step: 1)
+                    Text("避免 Agent 多步工具调用间 1~2 秒假空闲误触发")
+                        .font(.system(size: 9.5))
+                        .foregroundStyle(.secondary)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("循环最大轮数:")
+                            .font(.system(size: 11.5, weight: .medium))
+                        Text(maxRounds == 0 ? "无限制 (连续)" : "\(maxRounds) 轮")
+                            .font(.system(size: 11.5, weight: .bold, design: .monospaced))
+                            .foregroundStyle(Color.accentColor)
+                    }
+                    Stepper(value: $maxRounds, in: 0...100) {
+                        Text(maxRounds == 0 ? "连续运行直至人工介入" : "达到 \(maxRounds) 轮后安全停止")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            // Invariant Notice Banner
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 5) {
+                    Image(systemName: "shield.lefthalf.filled")
+                        .font(.system(size: 10.5, weight: .bold))
+                        .foregroundStyle(.blue)
+                    Text("安全守护与不打扰保证")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.blue)
+                }
+                Text("• 长时间挂起保护：当任务在编译、跑测试或深度推理处于挂起状态时，持续等待，绝不打断。\n• 人工介入锁定：若遇到 Agent 询问或弹窗确认，自托管立即暂停并通知您，绝不盲目乱发。\n• 零焦点抢占：采用 Chromium DevTools Protocol 底层注入，窗口在后台静默运行，不抢鼠标键盘。")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .lineSpacing(2)
+            }
+            .padding(10)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.blue.opacity(0.06)))
+
+            if let msg = testResultMsg {
+                Text(msg)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(msg.contains("成功") ? .green : .red)
+            }
+
+            Divider()
+
+            // Footer Actions
+            HStack {
+                Button(action: {
+                    guard !isTestingInjection else { return }
+                    isTestingInjection = true
+                    testResultMsg = "正在通过 CDP 静默注入..."
+                    Task {
+                        let ok = await store.injectPromptViaCDP(item: item, prompt: promptText)
+                        await MainActor.run {
+                            isTestingInjection = false
+                            if ok {
+                                testResultMsg = "✅ 测试注入成功！预设指令已静默递送并触发提交"
+                            } else {
+                                testResultMsg = "❌ 注入失败：未检测到 DevToolsActivePort 或对话窗口未加载"
+                            }
+                        }
+                    }
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: isTestingInjection ? "arrow.triangle.2.circlepath" : "paperplane")
+                        Text("立即后台测试发送")
+                    }
+                }
+                .buttonStyle(ModernButtonStyle(variant: .secondary, compact: true))
+                .disabled(!item.running || isTestingInjection || promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                Spacer()
+
+                Button("取消") {
+                    onDismiss()
+                }
+                .buttonStyle(ModernButtonStyle(variant: .ghost, compact: true))
+
+                Button("保存并应用") {
+                    store.updateAutoPilotConfig(
+                        for: item,
+                        enabled: enabled,
+                        prompt: promptText.trimmingCharacters(in: .whitespacesAndNewlines),
+                        maxRounds: maxRounds,
+                        debounceSeconds: debounceSeconds
+                    )
+                    onDismiss()
+                }
+                .buttonStyle(ModernButtonStyle(variant: .primary, compact: true))
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
     }
 }
 
@@ -7983,6 +8823,7 @@ struct ContentView: View {
     @State private var pendingDestroy: ManagedInstance?
     @State private var pendingClear: ManagedInstance?
     @State private var editingMetaItem: ManagedInstance?
+    @State private var editingAutoPilotItem: ManagedInstance?
     @State private var showOptionsPopover = false
     @State private var destination = URL(fileURLWithPath: "/Applications")
     @State private var selectedFilter: InstanceFilter = .all
@@ -7992,7 +8833,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.2"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.3"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
@@ -8166,6 +9007,15 @@ struct ContentView: View {
                 },
                 onDismiss: {
                     editingMetaItem = nil
+                }
+            )
+        }
+        .sheet(item: $editingAutoPilotItem) { item in
+            AutoPilotConfigSheet(
+                store: store,
+                item: item,
+                onDismiss: {
+                    editingAutoPilotItem = nil
                 }
             )
         }
@@ -9128,6 +9978,7 @@ struct ContentView: View {
                             logs: { store.showLogs(item) },
                             verify: { store.toggleVerified(item) },
                             editMeta: { editingMetaItem = item },
+                            editAutoPilot: { editingAutoPilotItem = item },
                             clearWorkspace: { pendingClear = item },
                             destroy: { pendingDestroy = item }
                         )
@@ -9185,6 +10036,7 @@ struct ContentView: View {
                 logs: { store.showLogs(primary) },
                 verify: {},
                 editMeta: { editingMetaItem = primary },
+                editAutoPilot: { editingAutoPilotItem = primary },
                 clearWorkspace: {},
                 destroy: {}
             )
@@ -9252,6 +10104,7 @@ struct ContentView: View {
                             logs: { store.showLogs(item) },
                             verify: { store.toggleVerified(item) },
                             editMeta: { editingMetaItem = item },
+                            editAutoPilot: { editingAutoPilotItem = item },
                             clearWorkspace: { pendingClear = item },
                             destroy: { pendingDestroy = item }
                         )
