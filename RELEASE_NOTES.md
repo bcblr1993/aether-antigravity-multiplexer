@@ -1,3 +1,27 @@
+# v0.8.0
+
+- **三态外观主题引擎 (Theme Engine - Follow System / Light / Dark)**：
+  - **三态外观自适应**：支持跟随系统主题 (`system`)、浅色高透晶体 (`light`) 与深色曜石质感 (`dark`) 三态随心切换。
+  - **全链路动态响应**：`ContentView` 主控制台、`FloatingMonitorHUDView` 桌面悬浮胶囊、`QuickSwitcherView` 极速切换器与各类设置弹窗全量响应 `.preferredColorScheme`，切换过渡丝滑自然。
+  - **偏好设置即时持久化**：偏好选项浮层集成高质感分段选择器，状态持久化至 `UserDefaults`，重启保持用户习惯。
+- **多语言全球化适配引擎 (Multi-Language i18n & Zero-Dependency L10n)**：
+  - **多语种覆盖**：支持跟随系统语言 (`system`)、简体中文 (`zh-Hans`)、English (`en`)、日本語 (`ja`) 与繁體中文 (`zh-Hant`)。
+  - **微秒级性能架构**：零第三方依赖，纯原生 Swift 静态多分支编译期优化查表，无任何额外 JSON I/O 或内存开销。
+  - **全域界面本地化**：仪表盘看板、指标条、筛选胶囊、视图切换、选项偏好、全局快捷键指南、极速切换器与浮动 HUD 全面支持动态多语言热重载。
+- **macOS 触觉力反馈引擎 (Haptic Feedback Physics Engine)**：
+  - **物理级触控反馈**：基于 macOS 原生 `NSHapticFeedbackManager` 打造细腻力反馈，涵盖 `alignment` 对齐定位、`levelChange` 状态切换与 `generic` 交互微震。
+  - **高频操作自然回馈**：在极速切换器键盘上下移动（↑/↓）、回车调出实例、窗口平铺重排、主题及语言变更时提供舒适的触控板微震反馈。
+  - **偏好自主可控**：偏好设置面板内置触觉力反馈开关，用户可按需随心开启或关闭。
+- **智能桌面多窗口平铺预设 (Smart Window Tiling Presets)**：
+  - **左右双分屏 (Side-by-Side Split)**：将运行中的实例均匀并排分配在当前桌面左右半屏，双机协同无缝对照。
+  - **四宫格平铺 (2×2 Quad Grid)**：四分天下，精准居中平铺 4 窗口，掌控多开执行脉络。
+  - **瀑布级联排布 (Cascade Windows)**：阶梯式错落排布所有运行实例窗口，主实例置顶，整洁有序。
+  - **原生原子级调度**：结合 macOS 屏幕实际可见区域 (`visibleFrame`) 与 AppleScript 驱动，毫秒级就位。
+- **分身智能节能模式 (Smart Eco Energy Saver)**：
+  - 选项偏好中新增智能节能模式开关，对处于后台且无任务执行的空闲分身实例进行能效优化，大幅降低整机发热与功耗。
+- **全量 86 项自动化测试质量门禁坚实保障 (86/86 Automated Test Verification Gate)**：
+  - 全新加入 `test_theme_and_i18n.py` 自动化测试套件，连同既有的 77 项安全核心审计测试，全部 86 项测试 100% 满分通过。
+
 # v0.7.9
 
 - **macOS Liquid Glass 全维设计重构 (macOS Liquid Glass Full Visual Overhaul)**：

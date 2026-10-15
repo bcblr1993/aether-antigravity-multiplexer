@@ -8,6 +8,700 @@ import Darwin
 
 private let accent = Color.accentColor
 
+// MARK: - Haptic Feedback Manager
+
+final class HapticManager {
+    static let shared = HapticManager()
+    private init() {}
+
+    func play(_ pattern: NSHapticFeedbackManager.FeedbackPattern = .generic, performanceTime: NSHapticFeedbackManager.PerformanceTime = .default) {
+        guard UserDefaults.standard.object(forKey: "hapticsEnabled") as? Bool ?? true else { return }
+        NSHapticFeedbackManager.defaultPerformer.perform(pattern, performanceTime: performanceTime)
+    }
+}
+
+// MARK: - App Theme & Appearance
+
+enum AppTheme: String, CaseIterable, Identifiable {
+    case system = "system"
+    case light = "light"
+    case dark = "dark"
+
+    var id: String { rawValue }
+
+    var symbol: String {
+        switch self {
+        case .system: return "circle.righthalf.filled"
+        case .light: return "sun.max.fill"
+        case .dark: return "moon.stars.fill"
+        }
+    }
+
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+
+    func localized(lang: AppLanguage) -> String {
+        switch self {
+        case .system: return L10n.tr(.themeSystem, lang: lang)
+        case .light: return L10n.tr(.themeLight, lang: lang)
+        case .dark: return L10n.tr(.themeDark, lang: lang)
+        }
+    }
+}
+
+// MARK: - Internationalization & Localization (i18n)
+
+enum AppLanguage: String, CaseIterable, Identifiable {
+    case system = "system"
+    case zhHans = "zh-Hans"
+    case en = "en"
+    case ja = "ja"
+    case zhHant = "zh-Hant"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .system: return "Auto"
+        case .zhHans: return "简体中文"
+        case .en: return "English"
+        case .ja: return "日本語"
+        case .zhHant: return "繁體中文"
+        }
+    }
+
+    var effective: AppLanguage {
+        if self == .system {
+            let preferred = Locale.preferredLanguages.first ?? "zh-Hans"
+            if preferred.hasPrefix("en") { return .en }
+            if preferred.hasPrefix("ja") { return .ja }
+            if preferred.hasPrefix("zh-Hant") || preferred.hasPrefix("zh-TW") || preferred.hasPrefix("zh-HK") { return .zhHant }
+            return .zhHans
+        }
+        return self
+    }
+}
+
+enum L10nKey {
+    // Header
+    case appSubtitle
+    case collapseAll
+    case refreshTooltip
+    case taskHistoryTooltip
+    case manageBackupsTooltip
+    case checkUpdatesTooltip
+    case updateSettingsTooltip
+    case upgradeAllCount
+    case createInstance
+    case kernelDirectHelp
+
+    // Metrics
+    case metricRunningTitle
+    case metricRunningCount
+    case metricRunningSubtitleActive
+    case metricRunningSubtitleIdle
+    case metricSourceTitle
+    case metricDiskTitle
+    case metricDiskSubtitle
+    case metricCompatTitle
+    case metricCompatAllLatest
+    case metricCompatUpgradeable
+
+    // Filters & View Modes
+    case filterAll
+    case filterRunning
+    case filterBusyTask
+    case filterWithTags
+    case viewGrid
+    case viewList
+    case quickSwitcher
+    case optionsAndPrefs
+
+    // Preferences & Popover
+    case prefTitle
+    case prefThemeSection
+    case themeSystem
+    case themeLight
+    case themeDark
+    case prefLangSection
+    case langSystem
+    case prefTilingSection
+    case tileSplitLeftRight
+    case tileQuadGrid
+    case tileCascade
+    case prefHapticsTitle
+    case prefHapticsSubtitle
+    case prefHotkeysTitle
+    case prefHotkeysSubtitle
+    case prefHotkeysGuide
+    case prefSoloFocusTitle
+    case prefSoloFocusSubtitle
+    case prefFloatingHUDTitle
+    case prefFloatingHUDSubtitle
+    case prefEcoModeTitle
+    case prefEcoModeSubtitle
+    case prefNotificationsTitle
+    case prefNotificationsSubtitle
+
+    // Instance Tile & Card
+    case clickToLaunch
+    case bringToFront
+    case restoreWindow
+    case hideToBackground
+    case quitInstance
+    case upgradeInstance
+    case openInstance
+    case switchInstance
+    case verifiedBadge
+    case officialMainBadge
+    case upgradableTo
+    case moreOptionsTooltip
+
+    // Task states
+    case stateStopped
+    case stateRunningTask
+    case stateStalled
+    case stateNeedsAttention
+    case stateIdle
+    case stateError
+
+    // Floating HUD
+    case hudStalled
+    case hudActive
+    case hudIdle
+    case hudBackToWall
+
+    // Quick Switcher
+    case quickSwitcherPlaceholder
+    case quickSwitcherNoMatch
+    case legendSelect
+    case legendBringFront
+    case legendDirect
+    case legendClose
+    case quickSwitcherSummary
+
+    // UI Convenience Aliases
+    static var optionsTitle: L10nKey { .prefTitle }
+    static var themeTitle: L10nKey { .prefThemeSection }
+    static var langTitle: L10nKey { .prefLangSection }
+    static var tilePresetsTitle: L10nKey { .prefTilingSection }
+    static var hapticsEnabled: L10nKey { .prefHapticsTitle }
+    static var hapticsSubtitle: L10nKey { .prefHapticsSubtitle }
+    static var ecoModeEnabled: L10nKey { .prefEcoModeTitle }
+    static var ecoModeSubtitle: L10nKey { .prefEcoModeSubtitle }
+    static var toolbarCollapseAll: L10nKey { .collapseAll }
+    static var toolbarCreateInstance: L10nKey { .createInstance }
+    static var metricRunningMonitor: L10nKey { .metricRunningTitle }
+    static var metricPrimaryVersion: L10nKey { .metricSourceTitle }
+    static var metricDiskUsage: L10nKey { .metricDiskTitle }
+    static var metricCompatibility: L10nKey { .metricCompatTitle }
+    static var toolbarQuickSwitcher: L10nKey { .quickSwitcher }
+    static var toolbarOptions: L10nKey { .optionsAndPrefs }
+    static var hudCollapse: L10nKey { .hudBackToWall }
+    static var qsSearchPlaceholder: L10nKey { .quickSwitcherPlaceholder }
+    static var qsNoMatch: L10nKey { .quickSwitcherNoMatch }
+    static var qsSelect: L10nKey { .legendSelect }
+    static var qsActivate: L10nKey { .legendBringFront }
+    static var qsDirect: L10nKey { .legendDirect }
+    static var qsClose: L10nKey { .legendClose }
+    static var hudStalledTasks: L10nKey { .hudStalled }
+    static var hudRunningTasks: L10nKey { .hudActive }
+}
+
+struct L10n {
+    static func tr(_ key: L10nKey, lang: AppLanguage) -> String {
+        let eff = lang.effective
+        switch eff {
+        case .en:
+            return stringEN(key)
+        case .ja:
+            return stringJA(key)
+        case .zhHant:
+            return stringZHHant(key)
+        default:
+            return stringZHHans(key)
+        }
+    }
+
+    private static func stringZHHans(_ key: L10nKey) -> String {
+        switch key {
+        case .appSubtitle: return "Apple Silicon 多实例监控与隔离工作台 · 实时任务感知与一键调出"
+        case .collapseAll: return "收起全部窗口"
+        case .refreshTooltip: return "刷新实例与任务状态"
+        case .taskHistoryTooltip: return "任务事件与执行动态中心"
+        case .manageBackupsTooltip: return "管理升级备份"
+        case .checkUpdatesTooltip: return "检查管理器更新"
+        case .updateSettingsTooltip: return "管理器自动更新设置"
+        case .upgradeAllCount: return "升级全部"
+        case .createInstance: return "创建实例"
+        case .kernelDirectHelp: return "内核直接通信：使用 macOS Darwin libproc 直读进程指标，0 子进程开销，微秒级能效"
+
+        case .metricRunningTitle: return "实时运行与任务监控"
+        case .metricRunningCount: return "运行中"
+        case .metricRunningSubtitleActive: return "个实例正在执行 Agent 任务"
+        case .metricRunningSubtitleIdle: return "所有已启动实例均处于空闲就绪状态"
+        case .metricSourceTitle: return "官方主实例版本"
+        case .metricDiskTitle: return "工作空间总磁盘占用"
+        case .metricDiskSubtitle: return "个实例独立数据与存储"
+        case .metricCompatTitle: return "创建与升级适配"
+        case .metricCompatAllLatest: return "全部独立副本均为最新版本"
+        case .metricCompatUpgradeable: return "个副本可升级至"
+
+        case .filterAll: return "全部"
+        case .filterRunning: return "运行中"
+        case .filterBusyTask: return "跑任务中"
+        case .filterWithTags: return "有备注标签"
+        case .viewGrid: return "网格"
+        case .viewList: return "列表"
+        case .quickSwitcher: return "极速切换"
+        case .optionsAndPrefs: return "选项与偏好"
+
+        case .prefTitle: return "工作台偏好与窗口管理"
+        case .prefThemeSection: return "外观主题 (Theme)"
+        case .themeSystem: return "跟随系统"
+        case .themeLight: return "浅色模式"
+        case .themeDark: return "深色模式"
+        case .prefLangSection: return "显示语言 (Language)"
+        case .langSystem: return "跟随系统"
+        case .prefTilingSection: return "多窗口桌面平铺 (Window Tiling)"
+        case .tileSplitLeftRight: return "左右双分屏"
+        case .tileQuadGrid: return "四宫格平铺"
+        case .tileCascade: return "瀑布级联排布"
+        case .prefHapticsTitle: return "触觉力反馈 (Haptic Feedback)"
+        case .prefHapticsSubtitle: return "切换实例、停靠浮窗与点击时提供细腻物理微震"
+        case .prefHotkeysTitle: return "全局快捷键 (⌥Space / ⌥1~9)"
+        case .prefHotkeysSubtitle: return "任意桌面呼出极速切换面板或直达 1~9 号实例"
+        case .prefHotkeysGuide: return "快捷键快速指南"
+        case .prefSoloFocusTitle: return "专注单窗口模式"
+        case .prefSoloFocusSubtitle: return "调出某实例时自动隐藏其他实例窗口，保持桌面整洁"
+        case .prefFloatingHUDTitle: return "桌面悬浮返回胶囊"
+        case .prefFloatingHUDSubtitle: return "在实例窗口右下角浮现微型返回条，点一下即可收起回监控台"
+        case .prefEcoModeTitle: return "分身智能节能模式"
+        case .prefEcoModeSubtitle: return "无任务运行的后台分身自动降低重绘能耗"
+        case .prefNotificationsTitle: return "任务系统通知 (精准调出)"
+        case .prefNotificationsSubtitle: return "实例 Agent 任务完成或需介入时弹送系统通知，点击直达"
+
+        case .clickToLaunch: return "点击缩略图启动实例"
+        case .bringToFront: return "调出实例"
+        case .restoreWindow: return "恢复窗口"
+        case .hideToBackground: return "收起"
+        case .quitInstance: return "退出"
+        case .upgradeInstance: return "升级"
+        case .openInstance: return "打开"
+        case .switchInstance: return "切换"
+        case .verifiedBadge: return "已验证"
+        case .officialMainBadge: return "官方主实例源"
+        case .upgradableTo: return "可升"
+        case .moreOptionsTooltip: return "更多实例操作"
+
+        case .stateStopped: return "未启动"
+        case .stateRunningTask: return "任务执行中"
+        case .stateStalled: return "疑似挂起"
+        case .stateNeedsAttention: return "等待确认"
+        case .stateIdle: return "空闲就绪"
+        case .stateError: return "任务异常"
+
+        case .hudStalled: return "个任务疑似挂起卡顿"
+        case .hudActive: return "个实例正在跑任务"
+        case .hudIdle: return "所有运行实例空闲"
+        case .hudBackToWall: return "收起回监控台"
+
+        case .quickSwitcherPlaceholder: return "搜索实例名称、标签或工作区… (↑↓ 移动, ⏎ 调出, ⌥1~9 直达)"
+        case .quickSwitcherNoMatch: return "未匹配到实例"
+        case .legendSelect: return "选择"
+        case .legendBringFront: return "调出"
+        case .legendDirect: return "直达/收起"
+        case .legendClose: return "关闭"
+        case .quickSwitcherSummary: return "运行中 · 共"
+        }
+    }
+
+    private static func stringEN(_ key: L10nKey) -> String {
+        switch key {
+        case .appSubtitle: return "Apple Silicon Multi-Instance Studio · Real-Time Perception & Focus"
+        case .collapseAll: return "Collapse All"
+        case .refreshTooltip: return "Refresh instances and telemetry"
+        case .taskHistoryTooltip: return "Task events and activity center"
+        case .manageBackupsTooltip: return "Manage upgrade backups"
+        case .checkUpdatesTooltip: return "Check for manager updates"
+        case .updateSettingsTooltip: return "Manager auto-update settings"
+        case .upgradeAllCount: return "Upgrade All"
+        case .createInstance: return "New Instance"
+        case .kernelDirectHelp: return "Kernel Direct: Darwin libproc zero-overhead metrics with microsecond efficiency"
+
+        case .metricRunningTitle: return "Live Runtime & Task Monitor"
+        case .metricRunningCount: return "Running"
+        case .metricRunningSubtitleActive: return "instance(s) executing Agent tasks"
+        case .metricRunningSubtitleIdle: return "All running instances are idle & ready"
+        case .metricSourceTitle: return "Official Core Version"
+        case .metricDiskTitle: return "Total Workspace Disk Usage"
+        case .metricDiskSubtitle: return "instances isolated storage"
+        case .metricCompatTitle: return "Compatibility & Upgrade"
+        case .metricCompatAllLatest: return "All clone instances are up-to-date"
+        case .metricCompatUpgradeable: return "clone(s) upgradeable to"
+
+        case .filterAll: return "All"
+        case .filterRunning: return "Running"
+        case .filterBusyTask: return "Busy Tasks"
+        case .filterWithTags: return "Tagged"
+        case .viewGrid: return "Grid"
+        case .viewList: return "List"
+        case .quickSwitcher: return "Quick Switch"
+        case .optionsAndPrefs: return "Preferences"
+
+        case .prefTitle: return "Studio Preferences & Window Manager"
+        case .prefThemeSection: return "Appearance & Theme"
+        case .themeSystem: return "System"
+        case .themeLight: return "Light Crystal"
+        case .themeDark: return "Dark Obsidian"
+        case .prefLangSection: return "Display Language"
+        case .langSystem: return "System Default"
+        case .prefTilingSection: return "Window Tiling Presets"
+        case .tileSplitLeftRight: return "Side-by-Side Split"
+        case .tileQuadGrid: return "2×2 Quad Grid"
+        case .tileCascade: return "Cascade Windows"
+        case .prefHapticsTitle: return "Haptic Feedback (Trackpad)"
+        case .prefHapticsSubtitle: return "Provide delicate mechanical clicks on switching, snapping, and clicking"
+        case .prefHotkeysTitle: return "Global Hotkeys (⌥Space / ⌥1~9)"
+        case .prefHotkeysSubtitle: return "Summon Quick Switcher anywhere or jump directly to instances 1~9"
+        case .prefHotkeysGuide: return "Hotkey Quick Reference"
+        case .prefSoloFocusTitle: return "Solo Focus Mode"
+        case .prefSoloFocusSubtitle: return "Automatically hide other windows when bringing an instance to front"
+        case .prefFloatingHUDTitle: return "Desktop Return Capsule"
+        case .prefFloatingHUDSubtitle: return "Floating mini-bar at bottom right of instance to return with one click"
+        case .prefEcoModeTitle: return "Smart Eco Energy Saver"
+        case .prefEcoModeSubtitle: return "Throttle rendering of idle background clones to save power and thermals"
+        case .prefNotificationsTitle: return "Task Notifications (Precise Focus)"
+        case .prefNotificationsSubtitle: return "Notify on task completion or required input with direct jump"
+
+        case .clickToLaunch: return "Click thumbnail to launch instance"
+        case .bringToFront: return "Bring to Front"
+        case .restoreWindow: return "Restore Window"
+        case .hideToBackground: return "Collapse"
+        case .quitInstance: return "Quit"
+        case .upgradeInstance: return "Upgrade"
+        case .openInstance: return "Open"
+        case .switchInstance: return "Switch"
+        case .verifiedBadge: return "Verified"
+        case .officialMainBadge: return "Official Core Source"
+        case .upgradableTo: return "Upgradable"
+        case .moreOptionsTooltip: return "More instance options"
+
+        case .stateStopped: return "Stopped"
+        case .stateRunningTask: return "Task Active"
+        case .stateStalled: return "Suspiciously Stalled"
+        case .stateNeedsAttention: return "Action Required"
+        case .stateIdle: return "Idle & Ready"
+        case .stateError: return "Task Error"
+
+        case .hudStalled: return "task(s) appear stalled"
+        case .hudActive: return "instance(s) executing tasks"
+        case .hudIdle: return "All running instances idle"
+        case .hudBackToWall: return "Back to Studio"
+
+        case .quickSwitcherPlaceholder: return "Search instance name, tag or workspace… (↑↓ Navigate, ⏎ Focus, ⌥1~9 Jump)"
+        case .quickSwitcherNoMatch: return "No matching instances"
+        case .legendSelect: return "Select"
+        case .legendBringFront: return "Focus"
+        case .legendDirect: return "Direct/Hide"
+        case .legendClose: return "Close"
+        case .quickSwitcherSummary: return "running · Total"
+        }
+    }
+
+    private static func stringJA(_ key: L10nKey) -> String {
+        switch key {
+        case .appSubtitle: return "Apple Silicon マルチインスタンス監視・隔離スタジオ · リアルタイム認識と即時起動"
+        case .collapseAll: return "全ウィンドウ格納"
+        case .refreshTooltip: return "インスタンスとタスク状態を更新"
+        case .taskHistoryTooltip: return "タスクイベント・実行動態センター"
+        case .manageBackupsTooltip: return "更新バックアップ管理"
+        case .checkUpdatesTooltip: return "マネージャー更新を確認"
+        case .updateSettingsTooltip: return "自動更新設定"
+        case .upgradeAllCount: return "すべて更新"
+        case .createInstance: return "インスタンス作成"
+        case .kernelDirectHelp: return "カーネル直接通信：macOS Darwin libproc により0子プロセスでマイクロ秒級の省電力計測"
+
+        case .metricRunningTitle: return "稼働・タスクリアルタイム監視"
+        case .metricRunningCount: return "稼働中"
+        case .metricRunningSubtitleActive: return "個のインスタンスでAgentタスク実行中"
+        case .metricRunningSubtitleIdle: return "稼働中のインスタンスはすべて待機中"
+        case .metricSourceTitle: return "公式マスターバージョン"
+        case .metricDiskTitle: return "ワークスペース総ディスク使用量"
+        case .metricDiskSubtitle: return "個のインスタンスの独立ストレージ"
+        case .metricCompatTitle: return "作成・更新の互換性"
+        case .metricCompatAllLatest: return "すべての複製が最新バージョンです"
+        case .metricCompatUpgradeable: return "個の複製を次に更新可能："
+
+        case .filterAll: return "すべて"
+        case .filterRunning: return "稼働中"
+        case .filterBusyTask: return "タスク中"
+        case .filterWithTags: return "タグ付き"
+        case .viewGrid: return "グリッド"
+        case .viewList: return "リスト"
+        case .quickSwitcher: return "高速切替"
+        case .optionsAndPrefs: return "設定・機能"
+
+        case .prefTitle: return "スタジオ環境設定とウィンドウ管理"
+        case .prefThemeSection: return "外観テーマ (Theme)"
+        case .themeSystem: return "システム連動"
+        case .themeLight: return "ライト (白水晶)"
+        case .themeDark: return "ダーク (黒曜石)"
+        case .prefLangSection: return "表示言語 (Language)"
+        case .langSystem: return "システム言語"
+        case .prefTilingSection: return "マルチウィンドウ整列 (Tiling)"
+        case .tileSplitLeftRight: return "左右2分割"
+        case .tileQuadGrid: return "4分割グリッド"
+        case .tileCascade: return "カスケード配置"
+        case .prefHapticsTitle: return "触覚フィードバック (Trackpad)"
+        case .prefHapticsSubtitle: return "切替やスナップ時に微細な触覚クリック感を提供"
+        case .prefHotkeysTitle: return "グローバルショートカット (⌥Space / ⌥1~9)"
+        case .prefHotkeysSubtitle: return "どこからでも高速切替パネル呼出または1~9番直達"
+        case .prefHotkeysGuide: return "ショートカットガイド"
+        case .prefSoloFocusTitle: return "シングルウィンドウ集中モード"
+        case .prefSoloFocusSubtitle: return "インスタンス表示時に他ウィンドウを自動で隠す"
+        case .prefFloatingHUDTitle: return "デスクトップ浮動カプセル"
+        case .prefFloatingHUDSubtitle: return "インスタンス右下に表示される格納バーでワンクリック復帰"
+        case .prefEcoModeTitle: return "スマート省電力モード"
+        case .prefEcoModeSubtitle: return "待機中のバックグラウンド描画を抑制し省電力を実現"
+        case .prefNotificationsTitle: return "タスク通知 (即時フォーカス)"
+        case .prefNotificationsSubtitle: return "タスク完了や確認時に通知しクリックで直接呼出"
+
+        case .clickToLaunch: return "サムネイルをクリックして起動"
+        case .bringToFront: return "表示"
+        case .restoreWindow: return "復元"
+        case .hideToBackground: return "格納"
+        case .quitInstance: return "終了"
+        case .upgradeInstance: return "更新"
+        case .openInstance: return "開く"
+        case .switchInstance: return "切替"
+        case .verifiedBadge: return "検証済み"
+        case .officialMainBadge: return "公式マスター源"
+        case .upgradableTo: return "更新可"
+        case .moreOptionsTooltip: return "その他の操作"
+
+        case .stateStopped: return "未起動"
+        case .stateRunningTask: return "タスク実行中"
+        case .stateStalled: return "応答なし検知"
+        case .stateNeedsAttention: return "確認待ち"
+        case .stateIdle: return "待機中"
+        case .stateError: return "タスク異常"
+
+        case .hudStalled: return "件のタスクが応答停止の疑い"
+        case .hudActive: return "個のインスタンスでタスク実行中"
+        case .hudIdle: return "全稼働インスタンス待機中"
+        case .hudBackToWall: return "モニターに戻る"
+
+        case .quickSwitcherPlaceholder: return "インスタンス名、タグ、ワークスペースを検索… (↑↓ 移動, ⏎ 呼出, ⌥1~9 直達)"
+        case .quickSwitcherNoMatch: return "一致するインスタンスがありません"
+        case .legendSelect: return "選択"
+        case .legendBringFront: return "呼出"
+        case .legendDirect: return "直達/格納"
+        case .legendClose: return "閉じる"
+        case .quickSwitcherSummary: return "稼働中 · 合計"
+        }
+    }
+
+    private static func stringZHHant(_ key: L10nKey) -> String {
+        switch key {
+        case .appSubtitle: return "Apple Silicon 多實例監控與隔離工作台 · 實時任務感知與一鍵調出"
+        case .collapseAll: return "收起全部視窗"
+        case .refreshTooltip: return "刷新實例與任務狀態"
+        case .taskHistoryTooltip: return "任務事件與執行動態中心"
+        case .manageBackupsTooltip: return "管理升級備份"
+        case .checkUpdatesTooltip: return "檢查管理器更新"
+        case .updateSettingsTooltip: return "管理器自動更新設定"
+        case .upgradeAllCount: return "升級全部"
+        case .createInstance: return "建立實例"
+        case .kernelDirectHelp: return "核心直接通訊：使用 macOS Darwin libproc 直讀進程指標，0 子進程開銷，微秒級能效"
+
+        case .metricRunningTitle: return "實時運行與任務監控"
+        case .metricRunningCount: return "運行中"
+        case .metricRunningSubtitleActive: return "個實例正在執行 Agent 任務"
+        case .metricRunningSubtitleIdle: return "所有已啟動實例均處於空閒就緒狀態"
+        case .metricSourceTitle: return "官方主實例版本"
+        case .metricDiskTitle: return "工作空間總磁碟佔用"
+        case .metricDiskSubtitle: return "個實例獨立數據與存儲"
+        case .metricCompatTitle: return "建立與升級適配"
+        case .metricCompatAllLatest: return "全部獨立副本均為最新版本"
+        case .metricCompatUpgradeable: return "個副本可升級至"
+
+        case .filterAll: return "全部"
+        case .filterRunning: return "運行中"
+        case .filterBusyTask: return "執行任務中"
+        case .filterWithTags: return "有備註標籤"
+        case .viewGrid: return "網格"
+        case .viewList: return "清單"
+        case .quickSwitcher: return "極速切換"
+        case .optionsAndPrefs: return "選項與偏好"
+
+        case .prefTitle: return "工作台偏好與視窗管理"
+        case .prefThemeSection: return "外觀主題 (Theme)"
+        case .themeSystem: return "跟隨系統"
+        case .themeLight: return "淺色模式"
+        case .themeDark: return "深色模式"
+        case .prefLangSection: return "顯示語言 (Language)"
+        case .langSystem: return "跟隨系統"
+        case .prefTilingSection: return "多視窗桌面平鋪 (Window Tiling)"
+        case .tileSplitLeftRight: return "左右雙分屏"
+        case .tileQuadGrid: return "四宮格平鋪"
+        case .tileCascade: return "瀑布串聯排列"
+        case .prefHapticsTitle: return "觸覺力反饋 (Haptic Feedback)"
+        case .prefHapticsSubtitle: return "切換實例、停靠浮窗與點擊時提供細膩物理微震"
+        case .prefHotkeysTitle: return "全域快捷鍵 (⌥Space / ⌥1~9)"
+        case .prefHotkeysSubtitle: return "任意桌面呼出極速切換面板或直達 1~9 號實例"
+        case .prefHotkeysGuide: return "快捷鍵快速指南"
+        case .prefSoloFocusTitle: return "專注單視窗模式"
+        case .prefSoloFocusSubtitle: return "調出某實例時自動隱藏其他實例視窗，保持桌面整潔"
+        case .prefFloatingHUDTitle: return "桌面懸浮返回膠囊"
+        case .prefFloatingHUDSubtitle: return "在實例視窗右下角浮現微型返回條，點一下即可收起回監控台"
+        case .prefEcoModeTitle: return "分身智能節能模式"
+        case .prefEcoModeSubtitle: return "無任務運行的後台分身自動降低重繪能耗"
+        case .prefNotificationsTitle: return "任務系統通知 (精準調出)"
+        case .prefNotificationsSubtitle: return "實例 Agent 任務完成或需介入時彈送系統通知，點擊直達"
+
+        case .clickToLaunch: return "點擊縮略圖啟動實例"
+        case .bringToFront: return "調出實例"
+        case .restoreWindow: return "恢復視窗"
+        case .hideToBackground: return "收起"
+        case .quitInstance: return "結束"
+        case .upgradeInstance: return "升級"
+        case .openInstance: return "開啟"
+        case .switchInstance: return "切換"
+        case .verifiedBadge: return "已驗證"
+        case .officialMainBadge: return "官方主實例源"
+        case .upgradableTo: return "可升"
+        case .moreOptionsTooltip: return "更多實例操作"
+
+        case .stateStopped: return "未啟動"
+        case .stateRunningTask: return "任務執行中"
+        case .stateStalled: return "疑似卡頓"
+        case .stateNeedsAttention: return "等待確認"
+        case .stateIdle: return "空閒就緒"
+        case .stateError: return "任務異常"
+
+        case .hudStalled: return "個任務疑似卡頓"
+        case .hudActive: return "個實例正在跑任務"
+        case .hudIdle: return "所有運行實例空閒"
+        case .hudBackToWall: return "收起回監控台"
+
+        case .quickSwitcherPlaceholder: return "搜尋實例名稱、標籤或工作區… (↑↓ 移動, ⏎ 調出, ⌥1~9 直達)"
+        case .quickSwitcherNoMatch: return "未匹配到實例"
+        case .legendSelect: return "選擇"
+        case .legendBringFront: return "調出"
+        case .legendDirect: return "直達/收起"
+        case .legendClose: return "關閉"
+        case .quickSwitcherSummary: return "運行中 · 共"
+        }
+    }
+}
+
+// MARK: - Window Tiling Layout Presets
+
+enum WindowTileLayout: String, CaseIterable, Identifiable {
+    case splitLeftRight = "split"
+    case quadGrid = "grid"
+    case cascade = "cascade"
+
+    var id: String { rawValue }
+
+    func localized(lang: AppLanguage) -> String {
+        switch self {
+        case .splitLeftRight: return L10n.tr(.tileSplitLeftRight, lang: lang)
+        case .quadGrid: return L10n.tr(.tileQuadGrid, lang: lang)
+        case .cascade: return L10n.tr(.tileCascade, lang: lang)
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .splitLeftRight: return "rectangle.split.2x1"
+        case .quadGrid: return "rectangle.split.2x2"
+        case .cascade: return "square.stack.3d.forward.dottedline"
+        }
+    }
+}
+
+final class WindowTileManager {
+    static let shared = WindowTileManager()
+    private init() {}
+
+    static func applyLayout(_ layout: WindowTileLayout, instances: [ManagedInstance]) {
+        shared.applyLayout(layout, instances: instances)
+    }
+
+    func applyLayout(_ layout: WindowTileLayout, instances: [ManagedInstance]) {
+        let running = instances.filter { $0.running }.sorted { $0.index < $1.index }
+        guard !running.isEmpty else { return }
+
+        guard let screen = NSScreen.main else { return }
+        let visible = screen.visibleFrame
+        let screenX = Int(visible.origin.x)
+        let screenY = Int(screen.frame.height - (visible.origin.y + visible.height))
+        let screenW = Int(visible.width)
+        let screenH = Int(visible.height)
+
+        switch layout {
+        case .splitLeftRight:
+            if running.count == 1 {
+                setWindowBounds(bundleID: running[0].bundleID, x: screenX, y: screenY, w: screenW, h: screenH)
+            } else {
+                let halfW = screenW / 2
+                setWindowBounds(bundleID: running[0].bundleID, x: screenX, y: screenY, w: halfW, h: screenH)
+                let rightInstances = Array(running.dropFirst())
+                let rightH = screenH / max(1, rightInstances.count)
+                for (idx, item) in rightInstances.enumerated() {
+                    setWindowBounds(bundleID: item.bundleID, x: screenX + halfW, y: screenY + idx * rightH, w: halfW, h: rightH)
+                }
+            }
+        case .quadGrid:
+            let cols = running.count > 2 ? 2 : max(1, running.count)
+            let rows = (running.count + cols - 1) / cols
+            let cellW = screenW / cols
+            let cellH = screenH / max(1, rows)
+            for (idx, item) in running.prefix(4).enumerated() {
+                let col = idx % cols
+                let row = idx / cols
+                setWindowBounds(bundleID: item.bundleID, x: screenX + col * cellW, y: screenY + row * cellH, w: cellW, h: cellH)
+            }
+        case .cascade:
+            let offset = 42
+            let baseW = Int(Double(screenW) * 0.72)
+            let baseH = Int(Double(screenH) * 0.75)
+            for (idx, item) in running.enumerated() {
+                let x = screenX + 50 + (idx * offset) % max(1, (screenW - baseW - 60))
+                let y = screenY + 40 + (idx * offset) % max(1, (screenH - baseH - 60))
+                setWindowBounds(bundleID: item.bundleID, x: x, y: y, w: baseW, h: baseH)
+            }
+        }
+        HapticManager.shared.play(.alignment)
+    }
+
+    private func setWindowBounds(bundleID: String, x: Int, y: Int, w: Int, h: Int) {
+        let scriptSource = """
+        tell application "System Events"
+            set matchingProcs to (processes whose bundle identifier is "\(bundleID)")
+            if (count of matchingProcs) > 0 then
+                set p to item 1 of matchingProcs
+                if (count of windows of p) > 0 then
+                    set position of window 1 of p to {\(x), \(y)}
+                    set size of window 1 of p to {\(w), \(h)}
+                end if
+            end if
+        end tell
+        """
+        if let script = NSAppleScript(source: scriptSource) {
+            var errorInfo: NSDictionary?
+            script.executeAndReturnError(&errorInfo)
+        }
+    }
+}
+
 // MARK: - Design System & Custom Styles
 
 private struct GlassCardModifier: ViewModifier {
@@ -1372,6 +2066,36 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             updateDockBadge()
         }
     }
+    @Published var appTheme: AppTheme = {
+        let raw = UserDefaults.standard.string(forKey: "appTheme") ?? AppTheme.system.rawValue
+        return AppTheme(rawValue: raw) ?? .system
+    }() {
+        didSet {
+            UserDefaults.standard.set(appTheme.rawValue, forKey: "appTheme")
+        }
+    }
+    @Published var appLanguage: AppLanguage = {
+        let raw = UserDefaults.standard.string(forKey: "appLanguage") ?? AppLanguage.system.rawValue
+        return AppLanguage(rawValue: raw) ?? .system
+    }() {
+        didSet {
+            UserDefaults.standard.set(appLanguage.rawValue, forKey: "appLanguage")
+        }
+    }
+    @Published var hapticsEnabled: Bool = UserDefaults.standard.object(forKey: "hapticsEnabled") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(hapticsEnabled, forKey: "hapticsEnabled") }
+    }
+    @Published var ecoModeEnabled: Bool = UserDefaults.standard.object(forKey: "ecoModeEnabled") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(ecoModeEnabled, forKey: "ecoModeEnabled") }
+    }
+
+    var effectiveLanguage: AppLanguage {
+        appLanguage.effective
+    }
+
+    func tr(_ key: L10nKey) -> String {
+        L10n.tr(key, lang: appLanguage)
+    }
     @Published var activeInstanceName: String? = nil
     @Published var activeConversationURLs: [String: String] = [:]
     @Published var resourceMetrics: [String: InstanceResourceMetric] = [:]
@@ -2057,6 +2781,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     }
 
     func open(_ item: ManagedInstance) {
+        HapticManager.shared.play(.alignment)
         let now = Date()
         if let last = lastOpenTime[item.id], now.timeIntervalSince(last) < 0.6 {
             return
@@ -2180,6 +2905,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     }
 
     func toggleQuickSwitcher() {
+        HapticManager.shared.play(.levelChange)
         if let panel = quickSwitcherPanel, panel.isVisible {
             panel.orderOut(nil)
             return
@@ -2217,6 +2943,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     }
 
     func hideInstance(_ item: ManagedInstance) {
+        HapticManager.shared.play(.generic)
         guard let app = runningApplication(bundleID: item.bundleID, path: item.path) else { return }
         enforceRunInBackgroundSetting(for: [item])
         _ = app.hide()
@@ -3078,11 +3805,11 @@ private struct FloatingMonitorHUDView: View {
                     }()
                     let hudSubtitle: String = {
                         if hudState.stalledTaskCount > 0 {
-                            return "⚠️ \(hudState.stalledTaskCount) 个任务疑似挂起卡顿"
+                            return "⚠️ \(hudState.stalledTaskCount) " + store.tr(.hudStalled)
                         } else if hudState.activeTaskCount > 0 {
-                            return "\(hudState.activeTaskCount) 个实例正在跑任务"
+                            return "\(hudState.activeTaskCount) " + store.tr(.hudActive)
                         } else {
-                            return "所有运行实例空闲"
+                            return store.tr(.hudIdle)
                         }
                     }()
 
@@ -3140,7 +3867,7 @@ private struct FloatingMonitorHUDView: View {
                     HStack(alignment: .center, spacing: 4) {
                         Image(systemName: "square.grid.2x2.fill")
                             .font(.system(size: 10.5, weight: .semibold))
-                        Text("收起回监控台")
+                        Text(store.tr(.hudCollapse))
                             .font(.system(size: 11, weight: .semibold))
                     }
                     .foregroundStyle(.white)
@@ -3235,6 +3962,7 @@ private struct FloatingMonitorHUDView: View {
         .scaleEffect(hovered ? 1.02 : 1.0)
         .animation(.spring(response: 0.22, dampingFraction: 0.78), value: hovered)
         .padding(18)
+        .preferredColorScheme(store.appTheme.colorScheme)
         .onHover { hovered = $0 }
     }
 }
@@ -3385,7 +4113,7 @@ private struct QuickSwitcherView: View {
                     .font(.system(size: 17, weight: .bold))
                     .foregroundStyle(Color(red: 0.52, green: 0.32, blue: 0.98))
 
-                TextField("搜索实例名称、标签或工作区… (↑↓ 移动, ⏎ 调出, ⌥1~9 直达)", text: $searchText)
+                TextField(store.tr(.qsSearchPlaceholder), text: $searchText)
                     .textFieldStyle(.plain)
                     .font(.system(size: 14.5, weight: .medium))
                     .focused($isSearchFocused)
@@ -3425,7 +4153,7 @@ private struct QuickSwitcherView: View {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 24))
                         .foregroundStyle(.secondary)
-                    Text("未匹配到实例")
+                    Text(store.tr(.qsNoMatch))
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(.secondary)
                 }
@@ -3445,6 +4173,7 @@ private struct QuickSwitcherView: View {
                                     isSelected: index == selectedIndex,
                                     shortcutNumber: shortcutNumber(for: item),
                                     onSelect: {
+                                        HapticManager.shared.play(.generic)
                                         doDismiss()
                                         store.open(item)
                                     }
@@ -3470,10 +4199,10 @@ private struct QuickSwitcherView: View {
             // 3. Bottom Status Bar & Shortcuts Legend
             HStack(alignment: .center) {
                 HStack(spacing: 12) {
-                    legendItem(key: "↑ ↓", label: "选择")
-                    legendItem(key: "⏎", label: "调出")
-                    legendItem(key: "⌥ 1~9", label: "直达/收起")
-                    legendItem(key: "Esc", label: "关闭")
+                    legendItem(key: "↑ ↓", label: store.tr(.qsSelect))
+                    legendItem(key: "⏎", label: store.tr(.qsActivate))
+                    legendItem(key: "⌥ 1~9", label: store.tr(.qsDirect))
+                    legendItem(key: "Esc", label: store.tr(.qsClose))
                 }
 
                 Spacer()
@@ -3482,7 +4211,9 @@ private struct QuickSwitcherView: View {
                     Circle()
                         .fill(store.runningCount > 0 ? Color.green : Color.secondary.opacity(0.4))
                         .frame(width: 6, height: 6)
-                    Text("\(store.runningCount) 运行中 · 共 \(store.instances.count) 个实例")
+                    Text(store.effectiveLanguage == .en
+                        ? "\(store.runningCount) running · \(store.instances.count) instances total"
+                        : "\(store.runningCount) 运行中 · 共 \(store.instances.count) 个实例")
                         .font(.system(size: 11, weight: .medium, design: .rounded))
                         .foregroundStyle(.secondary)
                 }
@@ -3530,6 +4261,7 @@ private struct QuickSwitcherView: View {
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.25 : 0.08), radius: 4, x: 0, y: 2)
         .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.55 : 0.22), radius: 28, y: 14)
+        .preferredColorScheme(store.appTheme.colorScheme)
         .onAppear {
             isSearchFocused = true
             selectedIndex = 0
@@ -3581,17 +4313,20 @@ private struct QuickSwitcherView: View {
             } else if event.keyCode == 126 { // Up
                 if selectedIndex > 0 {
                     selectedIndex -= 1
+                    HapticManager.shared.play(.alignment)
                 }
                 return nil
             } else if event.keyCode == 125 { // Down
                 if selectedIndex < filteredInstances.count - 1 {
                     selectedIndex += 1
+                    HapticManager.shared.play(.alignment)
                 }
                 return nil
             } else if event.keyCode == 36 || event.keyCode == 76 { // Return / Enter
                 if !filteredInstances.isEmpty {
                     let safeIndex = min(max(0, selectedIndex), filteredInstances.count - 1)
                     let target = filteredInstances[safeIndex]
+                    HapticManager.shared.play(.generic)
                     doDismiss()
                     store?.open(target)
                 }
@@ -6024,6 +6759,12 @@ private enum ViewMode: String, CaseIterable, Identifiable {
         case .list: return "list.bullet.rectangle.fill"
         }
     }
+    func localized(lang: AppLanguage) -> String {
+        switch self {
+        case .grid: return L10n.tr(.viewGrid, lang: lang)
+        case .list: return L10n.tr(.viewList, lang: lang)
+        }
+    }
 }
 
 private enum InstanceFilter: String, CaseIterable, Identifiable {
@@ -6033,6 +6774,15 @@ private enum InstanceFilter: String, CaseIterable, Identifiable {
     case withTags = "带标签/备注"
     case upgradable = "可升级"
     var id: String { rawValue }
+    func localized(lang: AppLanguage) -> String {
+        switch self {
+        case .all: return L10n.tr(.filterAll, lang: lang)
+        case .running: return L10n.tr(.filterRunning, lang: lang)
+        case .busyTask: return L10n.tr(.filterBusyTask, lang: lang)
+        case .withTags: return L10n.tr(.filterWithTags, lang: lang)
+        case .upgradable: return L10n.tr(.upgradableTo, lang: lang)
+        }
+    }
 }
 
 final class MainWindowDelegate: NSObject, NSWindowDelegate {
@@ -6079,7 +6829,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.7.9"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.0"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
@@ -6252,6 +7002,7 @@ struct ContentView: View {
         .alert("操作未完成", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
             Button("好") { store.error = nil }
         } message: { Text(store.error ?? "") }
+        .preferredColorScheme(store.appTheme.colorScheme)
     }
 
     // MARK: - Top Dashboard Header
@@ -6342,7 +7093,7 @@ struct ContentView: View {
                         }
                         .help("内核直接通信：使用 macOS Darwin libproc 直读进程指标，0 子进程开销，微秒级能效")
                     }
-                    Text("Apple Silicon 多实例监控与隔离工作台 · 实时任务感知与一键调出")
+                    Text(store.tr(.appSubtitle))
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
@@ -6360,7 +7111,7 @@ struct ContentView: View {
                             Image(systemName: "arrow.down.right.and.arrow.up.left")
                                 .font(.system(size: 11.5, weight: .semibold))
                                 .frame(width: 13, height: 13, alignment: .center)
-                            Text("收起全部窗口")
+                            Text(store.tr(.toolbarCollapseAll))
                         }
                     }
                     .buttonStyle(ModernButtonStyle(variant: .secondary))
@@ -6437,7 +7188,7 @@ struct ContentView: View {
                         Image(systemName: "plus")
                             .font(.system(size: 12, weight: .bold))
                             .frame(width: 13, height: 13, alignment: .center)
-                        Text("创建实例")
+                        Text(store.tr(.toolbarCreateInstance))
                     }
                 }
                 .buttonStyle(ModernButtonStyle(variant: .primary))
@@ -6451,7 +7202,7 @@ struct ContentView: View {
     private var metricsStrip: some View {
         HStack(alignment: .center, spacing: 12) {
             metricTile(
-                title: "实时运行与任务监控",
+                title: store.tr(.metricRunningMonitor),
                 value: "\(store.runningCount) / \(store.instances.count) 运行中",
                 subtitle: store.activeTaskCount > 0 ? "⚡ 当前有 \(store.activeTaskCount) 个实例正在执行 Agent 任务" : "所有已启动实例均处于空闲就绪状态",
                 symbol: "waveform.path.ecg.rectangle.fill",
@@ -6466,7 +7217,7 @@ struct ContentView: View {
             )
 
             metricTile(
-                title: "官方主实例版本",
+                title: store.tr(.metricPrimaryVersion),
                 value: store.sourceVersion == "—" ? "—" : "v\(store.sourceVersion)",
                 subtitle: "/Applications/Antigravity.app",
                 symbol: "checkmark.shield.fill",
@@ -6474,7 +7225,7 @@ struct ContentView: View {
             )
 
             metricTile(
-                title: "工作空间总磁盘占用",
+                title: store.tr(.metricDiskUsage),
                 value: store.totalDiskUsageBytes > 0 ? store.formattedTotalDiskUsage : "统计中…",
                 subtitle: "\(store.instances.count) 个实例独立数据与存储",
                 symbol: "internaldrive.fill",
@@ -6482,7 +7233,7 @@ struct ContentView: View {
             )
 
             metricTile(
-                title: "创建与升级适配",
+                title: store.tr(.metricCompatibility),
                 value: store.compatibility,
                 subtitle: store.pendingUpgrades.isEmpty
                     ? "全部独立副本均为最新版本"
@@ -6565,7 +7316,7 @@ struct ContentView: View {
                         }
                     } label: {
                         HStack(alignment: .center, spacing: 4.5) {
-                            Text(filter.rawValue)
+                            Text(filter.localized(lang: store.appLanguage))
                                 .font(.system(size: 11.5, weight: active ? .semibold : .medium))
                             Text("\(count)")
                                 .font(.system(size: 10.5, weight: .bold, design: .rounded))
@@ -6634,7 +7385,7 @@ struct ContentView: View {
                             Image(systemName: mode.symbol)
                                 .font(.system(size: 11, weight: .semibold))
                                 .frame(width: 13, height: 13, alignment: .center)
-                            Text(mode.rawValue)
+                            Text(mode.localized(lang: store.appLanguage))
                                 .font(.system(size: 11.5, weight: active ? .semibold : .medium))
                         }
                         .foregroundStyle(active ? Color.primary : Color.secondary)
@@ -6693,7 +7444,7 @@ struct ContentView: View {
                     Image(systemName: "command.square")
                         .font(.system(size: 11.5, weight: .semibold))
                         .foregroundStyle(Color(red: 0.52, green: 0.28, blue: 0.98))
-                    Text("极速切换")
+                    Text(store.tr(.toolbarQuickSwitcher))
                         .font(.system(size: 11.5, weight: .medium))
                     Text("⌥Space")
                         .font(.system(size: 9.5, weight: .bold, design: .monospaced))
@@ -6737,7 +7488,7 @@ struct ContentView: View {
                     Image(systemName: "slider.horizontal.3")
                         .font(.system(size: 11.5, weight: .semibold))
                         .frame(width: 13, height: 13, alignment: .center)
-                    Text("选项与偏好")
+                    Text(store.tr(.toolbarOptions))
                         .font(.system(size: 11.5, weight: .medium))
                 }
                 .foregroundStyle(showOptionsPopover ? Color.primary : Color.secondary)
@@ -6766,14 +7517,133 @@ struct ContentView: View {
                 Image(systemName: "slider.horizontal.3")
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(accent)
-                Text("工作台偏好与窗口管理")
+                Text(store.tr(.optionsTitle))
                     .font(.system(size: 13, weight: .bold))
                 Spacer()
             }
 
             Divider()
 
+            // 1. Appearance / Theme Segmented Control
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "circle.lefthalf.filled")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(accent)
+                    Text(store.tr(.themeTitle))
+                        .font(.system(size: 11.5, weight: .semibold))
+                }
+                HStack(spacing: 4) {
+                    ForEach(AppTheme.allCases) { theme in
+                        let active = store.appTheme == theme
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.18)) {
+                                store.appTheme = theme
+                            }
+                            HapticManager.shared.play(.levelChange)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: theme.symbol)
+                                    .font(.system(size: 10, weight: .semibold))
+                                Text(theme.localized(lang: store.appLanguage))
+                                    .font(.system(size: 11, weight: active ? .semibold : .medium))
+                            }
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 24)
+                            .foregroundStyle(active ? Color.primary : Color.secondary)
+                            .background {
+                                if active {
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .fill(Color.primary.opacity(colorScheme == .dark ? 0.16 : 0.10))
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(3)
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(colorScheme == .dark ? 0.05 : 0.03)))
+            }
+
+            // 2. Language Picker
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "globe")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(accent)
+                    Text(store.tr(.langTitle))
+                        .font(.system(size: 11.5, weight: .semibold))
+                    Spacer()
+                    Picker("", selection: $store.appLanguage) {
+                        ForEach(AppLanguage.allCases) { lang in
+                            Text(lang.displayName).tag(lang)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                    .frame(width: 140)
+                    .onChange(of: store.appLanguage) { _ in
+                        HapticManager.shared.play(.levelChange)
+                    }
+                }
+            }
+
+            // 3. Window Tiling Presets
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: "macwindow.on.rectangle")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(accent)
+                    Text(store.tr(.tilePresetsTitle))
+                        .font(.system(size: 11.5, weight: .semibold))
+                }
+                HStack(spacing: 6) {
+                    ForEach(WindowTileLayout.allCases) { layout in
+                        Button {
+                            HapticManager.shared.play(.alignment)
+                            WindowTileManager.applyLayout(layout, instances: store.instances)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: layout.symbol)
+                                    .font(.system(size: 10))
+                                Text(layout.localized(lang: store.appLanguage))
+                                    .font(.system(size: 10.5, weight: .medium))
+                            }
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 24)
+                            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.04)))
+                        }
+                        .buttonStyle(.plain)
+                        .help(layout.localized(lang: store.appLanguage))
+                    }
+                }
+            }
+
+            Divider()
+
             VStack(alignment: .leading, spacing: 12) {
+                Toggle(isOn: $store.hapticsEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(store.tr(.hapticsEnabled))
+                            .font(.system(size: 12, weight: .semibold))
+                        Text(store.tr(.hapticsSubtitle))
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+
+                Toggle(isOn: $store.ecoModeEnabled) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(store.tr(.ecoModeEnabled))
+                            .font(.system(size: 12, weight: .semibold))
+                        Text(store.tr(.ecoModeSubtitle))
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+
                 Toggle(isOn: $store.globalHotkeysEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("全局快捷键 (⌥Space / ⌥1~9)")
@@ -6916,7 +7786,7 @@ struct ContentView: View {
             }
         }
         .padding(16)
-        .frame(width: 330)
+        .frame(width: 356)
     }
 
     // MARK: - Thumbnail Monitor Wall View (Grid Mode)
