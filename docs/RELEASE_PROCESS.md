@@ -56,15 +56,18 @@
 
 发布新版本时，必须严格按照以下顺序执行。**严禁跳过发布后清理环节**：
 
-### 步骤 1：确认代码变更与本地回归测试
-1. 运行所有单元测试，确保全绿：
-   ```bash
-   swift test
-   ```
-2. 递增 [Info.plist](file:///Users/chenxu/IdeaProjects/aether-antigravity-multiplexer/Info.plist) 中的版本号与 Build 号：
+### 步骤 1：确认代码变更与执行发版前强制测试门禁
+发版前必须全量运行并通过测试套件（覆盖升级备份可选性、进度条流式协议、单实例单窗口守恒及磁盘清理测试）：
+```bash
+python3 -m unittest discover -s tests
+```
+> [!IMPORTANT]
+> 打包脚本 `scripts/package-release.sh` 与发布脚本 `scripts/publish-release.sh` 均已配置自动测试门禁；任一测试失败时将立即中断打包与发布，杜绝带病发版。
+
+1. 递增 [Info.plist](file:///Users/chenxu/IdeaProjects/aether-antigravity-multiplexer/Info.plist) 中的版本号与 Build 号：
    - `CFBundleShortVersionString` (如 `0.7.6`)
    - `CFBundleVersion` (如 `44`)
-3. 更新 [RELEASE_NOTES.md](file:///Users/chenxu/IdeaProjects/aether-antigravity-multiplexer/RELEASE_NOTES.md)，写入新版本的功能摘要与修复项。
+2. 更新 [RELEASE_NOTES.md](file:///Users/chenxu/IdeaProjects/aether-antigravity-multiplexer/RELEASE_NOTES.md)，写入新版本的功能摘要与修复项。
 
 ### 步骤 2：提交代码并创建 Git 标签
 ```bash

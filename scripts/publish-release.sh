@@ -18,6 +18,13 @@ echo "📌 目标发布版本: ${TAG}"
 [[ -f "$APPCAST" ]] || { echo "❌ 缺失更新清单: $APPCAST" >&2; exit 1; }
 [[ -f "$SUMS" ]] || { echo "❌ 缺失校验文件: $SUMS" >&2; exit 1; }
 
+echo "🧪 [Pre-Publish Audit] 正在执行全量自动化回归测试校验..."
+python3 -m unittest discover -s tests || {
+  echo "❌ 测试未通过，阻止发布！请先修复用例。" >&2
+  exit 1
+}
+echo "✅ 测试校验全部通过"
+
 # 2. 检查 Git 标签
 if ! git rev-parse "$TAG" >/dev/null 2>&1; then
   echo "❌ Git 标签 $TAG 不存在，请先确认代码提交并执行 git tag $TAG" >&2

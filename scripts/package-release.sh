@@ -11,6 +11,13 @@ ACCOUNT='AntigravityMultiplexer'
 GENERATOR='.build/artifacts/sparkle/Sparkle/bin/generate_appcast'
 mkdir -p dist
 
+echo "🧪 [Pre-Release Audit] 正在执行发版前强制功能与回归测试门禁..."
+python3 -m unittest discover -s tests || {
+  echo "❌ 测试未通过，发版流程强制中断！请修复测试后再尝试打包。" >&2
+  exit 1
+}
+echo "✅ 强制测试门禁全部通过 (含升级备份可选性、进度条流式协议、单窗口及磁盘清理测试)"
+
 ./build.sh
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$APP/Contents/Info.plist")" == \
    "$(.build/artifacts/sparkle/Sparkle/bin/generate_keys --account "$ACCOUNT" -p | tail -1 | tr -d '[:space:]')" ]] || {
