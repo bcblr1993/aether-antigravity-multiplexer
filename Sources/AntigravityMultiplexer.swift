@@ -718,10 +718,12 @@ final class WindowTileManager {
         let running = instances.filter { $0.running }.sorted { $0.index < $1.index }
         guard !running.isEmpty else { return }
 
-        guard let screen = NSScreen.main else { return }
-        let visible = screen.visibleFrame
+        let mouseLoc = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first(where: { NSMouseInRect(mouseLoc, $0.frame, false) }) ?? NSScreen.main ?? NSScreen.screens.first
+        guard let targetScreen = screen else { return }
+        let visible = targetScreen.visibleFrame
         let screenX = Int(visible.origin.x)
-        let screenY = Int(screen.frame.height - (visible.origin.y + visible.height))
+        let screenY = Int(targetScreen.frame.height - (visible.origin.y + visible.height))
         let screenW = Int(visible.width)
         let screenH = Int(visible.height)
 
@@ -969,6 +971,314 @@ struct GlassShimmerOverlay: View {
             } else {
                 shimmerOffset = -1.2
             }
+        }
+    }
+}
+
+// MARK: - Live Metric Sample & Sparkline Charts (P2)
+
+struct MetricSample: Equatable, Hashable {
+    let timestamp: Date
+    let value: Double
+}
+
+struct SparklineView: View {
+    let samples: [Double]
+    var minVal: Double? = nil
+    var maxVal: Double? = nil
+    var color: Color = .purple
+    var showGradient: Bool = true
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let h = geo.size.height
+            if samples.count >= 2 && w > 0 && h > 0 {
+                let actualMin = minVal ?? (samples.min() ?? 0.0)
+                let actualMax = maxVal ?? max(actualMin + 1.0, samples.max() ?? 100.0)
+                let range = max(0.001, actualMax - actualMin)
+
+                let points: [CGPoint] = samples.enumerated().map { idx, val in
+                    let x = CGFloat(idx) / CGFloat(samples.count - 1) * w
+                    let normalized = CGFloat(max(0.0, min(1.0, (val - actualMin) / range)))
+                    let y = h - (normalized * (h - 4.0) + 2.0)
+                    return CGPoint(x: x, y: y)
+                }
+
+                ZStack {
+                    if showGradient {
+                        Path { path in
+                            path.move(to: CGPoint(x: 0, y: h))
+                            path.addLine(to: points[0])
+                            for pt in points.dropFirst() {
+                                path.addLine(to: pt)
+                            }
+                            path.addLine(to: CGPoint(x: w, y: h))
+                            path.closeSubpath()
+                        }
+                        .fill(
+                            LinearGradient(
+                                colors: [color.opacity(0.24), color.opacity(0.02)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                    }
+
+                    Path { path in
+                        path.move(to: points[0])
+                        for pt in points.dropFirst() {
+                            path.addLine(to: pt)
+                        }
+                    }
+                    .stroke(
+                        color,
+                        style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round)
+                    )
+                }
+                .drawingGroup(opaque: false)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+// MARK: - 6-Color Tag Classification (P3)
+
+enum InstanceColorTag: String, CaseIterable, Identifiable, Codable {
+    case blue = "blue"
+    case green = "green"
+    case purple = "purple"
+    case orange = "orange"
+    case yellow = "yellow"
+    case pink = "pink"
+    case none = "none"
+
+    var id: String { rawValue }
+
+    var color: Color {
+        switch self {
+        case .blue: return Color(red: 0.22, green: 0.55, blue: 0.98)
+        case .green: return Color(red: 0.20, green: 0.78, blue: 0.45)
+        case .purple: return Color(red: 0.62, green: 0.38, blue: 0.98)
+        case .orange: return Color(red: 0.98, green: 0.52, blue: 0.20)
+        case .yellow: return Color(red: 0.98, green: 0.78, blue: 0.20)
+        case .pink: return Color(red: 0.98, green: 0.35, blue: 0.60)
+        case .none: return .secondary
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .blue: return "tag.fill"
+        case .green: return "bolt.fill"
+        case .purple: return "sparkles"
+        case .orange: return "flame.fill"
+        case .yellow: return "terminal.fill"
+        case .pink: return "cube.transparent.fill"
+        case .none: return "tag"
+        }
+    }
+
+    func localized(lang: AppLanguage) -> String {
+        let eff = lang.effective
+        switch (self, eff) {
+        case (.blue, .en): return "Core Dev"
+        case (.blue, .ja): return "コア開発"
+        case (.blue, .zhHant): return "核心開發"
+        case (.blue, _): return "核心开发"
+
+        case (.green, .en): return "Production"
+        case (.green, .ja): return "本番稼働"
+        case (.green, .zhHant): return "生產部署"
+        case (.green, _): return "生产部署"
+
+        case (.purple, .en): return "Automated Testing"
+        case (.purple, .ja): return "自動テスト"
+        case (.purple, .zhHant): return "自動化測試"
+        case (.purple, _): return "自动化测试"
+
+        case (.orange, .en): return "Experiment"
+        case (.orange, .ja): return "実験・検証"
+        case (.orange, .zhHant): return "演算法實驗"
+        case (.orange, _): return "算法实验"
+
+        case (.yellow, .en): return "Data Crawler"
+        case (.yellow, .ja): return "クローラー"
+        case (.yellow, .zhHant): return "資料爬蟲"
+        case (.yellow, _): return "数据爬虫"
+
+        case (.pink, .en): return "Sandbox"
+        case (.pink, .ja): return "サンドボックス"
+        case (.pink, .zhHant): return "臨時沙箱"
+        case (.pink, _): return "临时沙箱"
+
+        case (.none, .en): return "No Tag"
+        case (.none, .ja): return "タグなし"
+        case (.none, .zhHant): return "無標籤"
+        case (.none, _): return "无标签"
+        }
+    }
+}
+
+// MARK: - Universal Command Palette (P1)
+
+enum MultiplexerCommand: String, CaseIterable, Identifiable {
+    case launchAll = "launchAll"
+    case stopAll = "stopAll"
+    case restartAll = "restartAll"
+    case tileSplit = "tileSplit"
+    case tileGrid = "tileGrid"
+    case tileCascade = "tileCascade"
+    case collapseAll = "collapseAll"
+    case createNew = "createNew"
+    case upgradeAll = "upgradeAll"
+    case switchTheme = "switchTheme"
+    case switchDensity = "switchDensity"
+    case switchLanguage = "switchLanguage"
+    case openSettings = "openSettings"
+    case cleanCaches = "cleanCaches"
+
+    var id: String { rawValue }
+
+    var systemImage: String {
+        switch self {
+        case .launchAll: return "play.fill"
+        case .stopAll: return "stop.fill"
+        case .restartAll: return "arrow.clockwise"
+        case .tileSplit: return "rectangle.split.2x1.fill"
+        case .tileGrid: return "square.grid.2x2.fill"
+        case .tileCascade: return "square.stack.fill"
+        case .collapseAll: return "rectangle.compress.vertical"
+        case .createNew: return "plus.rectangle.on.rectangle"
+        case .upgradeAll: return "arrow.triangle.2.circlepath"
+        case .switchTheme: return "circle.lefthalf.filled"
+        case .switchDensity: return "square.grid.3x3.fill"
+        case .switchLanguage: return "globe"
+        case .openSettings: return "gearshape.fill"
+        case .cleanCaches: return "trash.fill"
+        }
+    }
+
+    var shortcutHint: String? {
+        switch self {
+        case .launchAll: return "⌘R"
+        case .stopAll: return "⌘."
+        case .tileSplit: return "⌥⌘2"
+        case .tileGrid: return "⌥⌘4"
+        case .tileCascade: return "⌥⌘C"
+        case .collapseAll: return "⌥0"
+        case .createNew: return "⌘N"
+        default: return nil
+        }
+    }
+
+    func title(lang: AppLanguage) -> String {
+        let eff = lang.effective
+        switch (self, eff) {
+        case (.launchAll, .en): return "Launch All Instances"
+        case (.launchAll, .ja): return "すべてのインスタンスを起動"
+        case (.launchAll, .zhHant): return "啟動所有實例"
+        case (.launchAll, _): return "启动所有实例"
+
+        case (.stopAll, .en): return "Quit All Instances"
+        case (.stopAll, .ja): return "すべてのインスタンスを終了"
+        case (.stopAll, .zhHant): return "安全結束所有實例"
+        case (.stopAll, _): return "安全退出所有实例"
+
+        case (.restartAll, .en): return "Restart All Running Instances"
+        case (.restartAll, .ja): return "実行中インスタンスを再起動"
+        case (.restartAll, .zhHant): return "重啟所有運行中實例"
+        case (.restartAll, _): return "重启所有运行中实例"
+
+        case (.tileSplit, .en): return "Tile Windows: Side-by-Side (Split)"
+        case (.tileSplit, .ja): return "ウィンドウ整列: 左右2分割"
+        case (.tileSplit, .zhHant): return "左右雙分屏平鋪"
+        case (.tileSplit, _): return "左右双分屏平铺"
+
+        case (.tileGrid, .en): return "Tile Windows: 2×2 Quad Grid"
+        case (.tileGrid, .ja): return "ウィンドウ整列: 4分割グリッド"
+        case (.tileGrid, .zhHant): return "四宮格平鋪"
+        case (.tileGrid, _): return "四宫格平铺"
+
+        case (.tileCascade, .en): return "Tile Windows: Cascade"
+        case (.tileCascade, .ja): return "ウィンドウ整列: カスケード"
+        case (.tileCascade, .zhHant): return "瀑布級聯排布"
+        case (.tileCascade, _): return "瀑布级联排布"
+
+        case (.collapseAll, .en): return "Collapse All Windows & Open Console"
+        case (.collapseAll, .ja): return "全画面を閉じて管理画面へ"
+        case (.collapseAll, .zhHant): return "收起所有實例並打開監控台"
+        case (.collapseAll, _): return "收起所有实例回监控台"
+
+        case (.createNew, .en): return "Create New Instance"
+        case (.createNew, .ja): return "新しいインスタンスを作成"
+        case (.createNew, .zhHant): return "新建分身實例"
+        case (.createNew, _): return "新建分身实例"
+
+        case (.upgradeAll, .en): return "Upgrade & Re-patch Eligible Instances"
+        case (.upgradeAll, .ja): return "対象インスタンスを一括更新"
+        case (.upgradeAll, .zhHant): return "一鍵適配與升級待更新副本"
+        case (.upgradeAll, _): return "一键适配与升级待更新副本"
+
+        case (.switchTheme, .en): return "Cycle Appearance Theme"
+        case (.switchTheme, .ja): return "外観テーマを切り替え"
+        case (.switchTheme, .zhHant): return "切換外觀主題"
+        case (.switchTheme, _): return "切换外观主题"
+
+        case (.switchDensity, .en): return "Cycle View Density"
+        case (.switchDensity, .ja): return "表示密度を切り替え"
+        case (.switchDensity, .zhHant): return "切換視圖密度"
+        case (.switchDensity, _): return "切换视图密度"
+
+        case (.switchLanguage, .en): return "Cycle Display Language"
+        case (.switchLanguage, .ja): return "言語を切り替え"
+        case (.switchLanguage, .zhHant): return "切換顯示語言"
+        case (.switchLanguage, _): return "切换界面语言"
+
+        case (.openSettings, .en): return "Open Preferences"
+        case (.openSettings, .ja): return "環境設定を開く"
+        case (.openSettings, .zhHant): return "打開偏好設定"
+        case (.openSettings, _): return "打开偏好设置"
+
+        case (.cleanCaches, .en): return "Clean Orphan Processes & Cache"
+        case (.cleanCaches, .ja): return "孤立プロセスとキャッシュの削除"
+        case (.cleanCaches, .zhHant): return "清理孤兒進程與臨時快取"
+        case (.cleanCaches, _): return "清理孤儿进程与临时磁盘"
+        }
+    }
+
+    func subtitle(lang: AppLanguage) -> String {
+        let eff = lang.effective
+        switch (self, eff) {
+        case (.launchAll, .en): return "Launch all stopped instances at once"
+        case (.launchAll, _): return "一键同时拉起未运行的实例"
+        case (.stopAll, .en): return "Safely terminate all running instances"
+        case (.stopAll, _): return "优雅关闭所有处于运行状态的实例"
+        case (.restartAll, .en): return "Restart all running instances"
+        case (.restartAll, _): return "快速重新拉起当前正在运行的实例"
+        case (.tileSplit, .en): return "Align running windows side-by-side"
+        case (.tileSplit, _): return "将运行中窗口左右并列分配"
+        case (.tileGrid, .en): return "Tile up to 4 windows into a 2x2 grid"
+        case (.tileGrid, _): return "将运行中窗口居中平铺为田字格"
+        case (.tileCascade, .en): return "Cascade windows with progressive offset"
+        case (.tileCascade, _): return "阶梯式层叠排列所有运行窗口"
+        case (.collapseAll, .en): return "Hide all instance windows and reveal console"
+        case (.collapseAll, _): return "隐藏所有实例窗口并置顶监控控制台"
+        case (.createNew, .en): return "Create an isolated Antigravity workspace clone"
+        case (.createNew, _): return "创建具备独立隔离环境的全新分身"
+        case (.upgradeAll, .en): return "Batch upgrade clones to match host version"
+        case (.upgradeAll, _): return "无损同步主程序最新引擎与补丁"
+        case (.switchTheme, .en): return "Switch between System, Light, and Dark"
+        case (.switchTheme, _): return "在系统、浅色高透晶体与曜石深色间切换"
+        case (.switchDensity, .en): return "Switch between Comfortable, Compact, and Matrix"
+        case (.switchDensity, _): return "在舒适、紧凑与矩阵多开密度间切换"
+        case (.switchLanguage, .en): return "Switch between Chinese, English, and Japanese"
+        case (.switchLanguage, _): return "循环切换应用界面显示语言"
+        case (.openSettings, .en): return "Configure hotkeys, haptics, and auto-sync"
+        case (.openSettings, _): return "配置全局快捷键、触觉反馈及节能选项"
+        case (.cleanCaches, .en): return "Reclaim disk space and kill dead processes"
+        case (.cleanCaches, _): return "释放无用磁盘占用并回收僵死进程"
         }
     }
 }
@@ -1315,15 +1625,20 @@ struct InstanceUserMeta: Codable, Equatable, Hashable {
     var nickname: String = ""
     var tag: String = ""
     var tagColor: String = "blue"
+    var colorTag: InstanceColorTag = .none
     var notes: String = ""
 
     var hasCustomContent: Bool {
         !nickname.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
         !tag.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+        colorTag != .none ||
         !notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var color: Color {
+        if colorTag != .none {
+            return colorTag.color
+        }
         switch tagColor {
         case "purple": return .purple
         case "green": return .green
@@ -1333,6 +1648,27 @@ struct InstanceUserMeta: Codable, Equatable, Hashable {
         case "teal": return .teal
         default: return .blue
         }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case nickname, tag, tagColor, colorTag, notes
+    }
+
+    init(nickname: String = "", tag: String = "", tagColor: String = "blue", colorTag: InstanceColorTag = .none, notes: String = "") {
+        self.nickname = nickname
+        self.tag = tag
+        self.tagColor = tagColor
+        self.colorTag = colorTag
+        self.notes = notes
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        nickname = try container.decodeIfPresent(String.self, forKey: .nickname) ?? ""
+        tag = try container.decodeIfPresent(String.self, forKey: .tag) ?? ""
+        tagColor = try container.decodeIfPresent(String.self, forKey: .tagColor) ?? "blue"
+        colorTag = try container.decodeIfPresent(InstanceColorTag.self, forKey: .colorTag) ?? .none
+        notes = try container.decodeIfPresent(String.self, forKey: .notes) ?? ""
     }
 }
 
@@ -1480,6 +1816,8 @@ struct TaskHistoryItem: Identifiable, Codable, Equatable {
 extension Notification.Name {
     static let openTaskHistoryRequested = Notification.Name("openTaskHistoryRequested")
     static let openMainWindowRequested = Notification.Name("openMainWindowRequested")
+    static let openCreateInstanceRequested = Notification.Name("openCreateInstanceRequested")
+    static let openPreferencesRequested = Notification.Name("openPreferencesRequested")
 }
 
 struct ManagedInstance: Identifiable, Hashable {
@@ -2284,6 +2622,181 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     @Published var activeUpgradeInstances: [ManagedInstance] = []
     var openMainWindowHandler: (() -> Void)? = nil
 
+    // MARK: - Metric Sample History & 20-Point Buffer (P2)
+    static let sampleBufferCapacity = 20
+    @Published var globalCpuHistory: [MetricSample] = []
+    @Published var globalRamHistory: [MetricSample] = []
+    @Published var instanceMetricHistories: [String: [MetricSample]] = [:]
+
+    func appendMetricSample(instanceID: String?, cpu: Double, ram: Double) {
+        let now = Date()
+        if let id = instanceID {
+            var list = instanceMetricHistories[id] ?? []
+            list.append(MetricSample(timestamp: now, value: cpu))
+            if list.count > Self.sampleBufferCapacity {
+                list.removeFirst(list.count - Self.sampleBufferCapacity)
+            }
+            instanceMetricHistories[id] = list
+        } else {
+            globalCpuHistory.append(MetricSample(timestamp: now, value: cpu))
+            if globalCpuHistory.count > Self.sampleBufferCapacity {
+                globalCpuHistory.removeFirst(globalCpuHistory.count - Self.sampleBufferCapacity)
+            }
+            globalRamHistory.append(MetricSample(timestamp: now, value: ram))
+            if globalRamHistory.count > Self.sampleBufferCapacity {
+                globalRamHistory.removeFirst(globalRamHistory.count - Self.sampleBufferCapacity)
+            }
+        }
+    }
+
+    // MARK: - Batch Multi-Selection State Machine (P3)
+    @Published var isSelectionMode: Bool = false
+    @Published var selectedInstanceIds: Set<String> = []
+
+    func toggleSelection(id: String) {
+        if selectedInstanceIds.contains(id) {
+            selectedInstanceIds.remove(id)
+            if selectedInstanceIds.isEmpty {
+                isSelectionMode = false
+            }
+        } else {
+            selectedInstanceIds.insert(id)
+            isSelectionMode = true
+        }
+        HapticManager.shared.play(.alignment)
+    }
+
+    func selectAllInstances() {
+        selectedInstanceIds = Set(instances.map(\.id))
+        isSelectionMode = true
+        HapticManager.shared.play(.alignment)
+    }
+
+    func clearSelection() {
+        selectedInstanceIds.removeAll()
+        isSelectionMode = false
+        HapticManager.shared.play(.generic)
+    }
+
+    func batchOpenSelected() {
+        let targets = instances.filter { selectedInstanceIds.contains($0.id) }
+        for item in targets {
+            open(item)
+        }
+        clearSelection()
+        HapticManager.shared.play(.levelChange)
+    }
+
+    func batchQuitSelected() {
+        let targets = instances.filter { selectedInstanceIds.contains($0.id) && $0.running }
+        for item in targets {
+            quit(item)
+        }
+        clearSelection()
+        HapticManager.shared.play(.levelChange)
+    }
+
+    func batchTileSelected() {
+        let targets = instances.filter { selectedInstanceIds.contains($0.id) && $0.running }
+        if !targets.isEmpty {
+            WindowTileManager.applyLayout(.quadGrid, instances: targets)
+        }
+        HapticManager.shared.play(.levelChange)
+    }
+
+    // MARK: - Window Geometry Memory (P4)
+    @Published var windowGeometries: [String: [Double]] = {
+        (UserDefaults.standard.dictionary(forKey: "windowGeometries") as? [String: [Double]]) ?? [:]
+    }() {
+        didSet {
+            UserDefaults.standard.set(windowGeometries, forKey: "windowGeometries")
+        }
+    }
+
+    func saveWindowGeometry(id: String, rect: CGRect) {
+        windowGeometries[id] = [Double(rect.origin.x), Double(rect.origin.y), Double(rect.size.width), Double(rect.size.height)]
+    }
+
+    func loadWindowGeometry(id: String) -> CGRect? {
+        guard let arr = windowGeometries[id], arr.count == 4 else { return nil }
+        return CGRect(x: arr[0], y: arr[1], width: arr[2], height: arr[3])
+    }
+
+    // MARK: - Universal Command Dispatcher (P1)
+    func executeCommand(_ command: MultiplexerCommand) {
+        HapticManager.shared.play(.levelChange)
+        switch command {
+        case .launchAll:
+            for item in instances where !item.running {
+                open(item)
+            }
+        case .stopAll:
+            for item in instances where item.running {
+                quit(item)
+            }
+        case .restartAll:
+            let running = instances.filter(\.running)
+            for item in running {
+                quit(item)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+                for item in running {
+                    self?.open(item)
+                }
+            }
+        case .tileSplit:
+            WindowTileManager.applyLayout(.splitLeftRight, instances: instances)
+        case .tileGrid:
+            WindowTileManager.applyLayout(.quadGrid, instances: instances)
+        case .tileCascade:
+            WindowTileManager.applyLayout(.cascade, instances: instances)
+        case .collapseAll:
+            collapseAllToMonitorWall()
+        case .createNew:
+            NotificationCenter.default.post(name: .openCreateInstanceRequested, object: nil)
+        case .upgradeAll:
+            upgradeAllEligible()
+        case .switchTheme:
+            switch appTheme {
+            case .system: appTheme = .light
+            case .light: appTheme = .dark
+            case .dark: appTheme = .system
+            }
+        case .switchDensity:
+            switch viewDensity {
+            case .comfortable: viewDensity = .compact
+            case .compact: viewDensity = .matrix
+            case .matrix: viewDensity = .comfortable
+            }
+        case .switchLanguage:
+            switch appLanguage {
+            case .system: appLanguage = .zhHans
+            case .zhHans: appLanguage = .en
+            case .en: appLanguage = .ja
+            case .ja: appLanguage = .zhHant
+            case .zhHant: appLanguage = .system
+            }
+        case .openSettings:
+            NotificationCenter.default.post(name: .openPreferencesRequested, object: nil)
+        case .cleanCaches:
+            cleanOrphanProcessesAndCache()
+        }
+    }
+
+    func cleanOrphanProcessesAndCache() {
+        Task { @MainActor in
+            _ = try? await Task.sleep(nanoseconds: 300_000_000)
+            refresh()
+        }
+    }
+
+    func upgradeAllEligible() {
+        let eligible = cloneInstances.filter { $0.version.compare(sourceVersion, options: .numeric) == .orderedAscending }
+        if !eligible.isEmpty {
+            upgrade(eligible, backup: true)
+        }
+    }
+
     private var taskStartTimes: [String: Date] = [:]
     var taskHistoryFileURL: URL {
         support.appendingPathComponent("task_history.json")
@@ -2727,6 +3240,17 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 let metrics = result.metrics
                 if self.resourceMetrics != metrics {
                     self.resourceMetrics = metrics
+                }
+                if self.runningCount > 0 {
+                    var totalCpu: Double = 0.0
+                    var totalRamMB: Double = 0.0
+                    for (id, metric) in metrics {
+                        totalCpu += metric.cpuPercent
+                        let ramMB = Double(metric.rssBytes) / (1024.0 * 1024.0)
+                        totalRamMB += ramMB
+                        self.appendMetricSample(instanceID: id, cpu: metric.cpuPercent, ram: ramMB)
+                    }
+                    self.appendMetricSample(instanceID: nil, cpu: totalCpu, ram: totalRamMB)
                 }
                 if shouldCapture && !result.cdpData.thumbnails.isEmpty {
                     for (id, image) in result.cdpData.thumbnails {
@@ -3455,6 +3979,9 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         if let button = item.button {
             button.image = NSImage(systemSymbolName: "square.grid.2x2.fill", accessibilityDescription: "Antigravity 监控台")
             button.imagePosition = .imageLeading
+            button.target = StatusBarTarget.shared
+            button.action = #selector(StatusBarTarget.handleStatusBarButtonClick(_:))
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
         statusItem = item
         updateStatusBarMenu()
@@ -3621,7 +4148,8 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         quitItem.target = StatusBarTarget.shared
         menu.addItem(quitItem)
 
-        statusItem.menu = menu
+        StatusBarTarget.shared.cachedMenu = menu
+        statusItem.menu = nil
     }
 
     // MARK: - Existing Instance & Backup Operations
@@ -3827,6 +4355,48 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
 @MainActor private final class StatusBarTarget: NSObject {
     static let shared = StatusBarTarget()
     weak var store: InstanceStore?
+    var statusPopover: NSPopover?
+    var cachedMenu: NSMenu?
+
+    @objc func handleStatusBarButtonClick(_ sender: NSStatusBarButton) {
+        let event = NSApp.currentEvent
+        if event?.type == .rightMouseUp || (event?.modifierFlags.contains(.control) ?? false) {
+            if let menu = cachedMenu {
+                sender.menu = menu
+                sender.performClick(nil)
+                sender.menu = nil
+            }
+        } else {
+            toggleStatusPopover(sender)
+        }
+    }
+
+    @objc func toggleStatusPopover(_ sender: NSStatusBarButton) {
+        guard let store else { return }
+        if let popover = statusPopover, popover.isShown {
+            popover.performClose(nil)
+            return
+        }
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.animates = true
+        popover.contentSize = NSSize(width: 320, height: 260)
+        popover.contentViewController = NSHostingController(
+            rootView: StatusPopoverView(
+                store: store,
+                onOpenMainWindow: { [weak popover] in
+                    popover?.performClose(nil)
+                    NotificationCenter.default.post(name: .openMainWindowRequested, object: nil)
+                },
+                onOpenQuickSwitcher: { [weak popover, weak store] in
+                    popover?.performClose(nil)
+                    store?.toggleQuickSwitcher()
+                }
+            )
+        )
+        self.statusPopover = popover
+        popover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .minY)
+    }
 
     @objc func toggleQuickSwitcher() {
         store?.toggleQuickSwitcher()
@@ -4267,6 +4837,20 @@ private struct QuickSwitcherView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var keyMonitor: Any?
 
+    private var isCommandMode: Bool {
+        searchText.hasPrefix(">")
+    }
+
+    private var filteredCommands: [MultiplexerCommand] {
+        let q = searchText.dropFirst().trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if q.isEmpty { return MultiplexerCommand.allCases }
+        return MultiplexerCommand.allCases.filter { cmd in
+            cmd.rawValue.lowercased().contains(q) ||
+            cmd.title(lang: store.appLanguage).lowercased().contains(q) ||
+            cmd.subtitle(lang: store.appLanguage).lowercased().contains(q)
+        }
+    }
+
     private var filteredInstances: [ManagedInstance] {
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if q.isEmpty { return store.instances }
@@ -4286,11 +4870,11 @@ private struct QuickSwitcherView: View {
         VStack(spacing: 0) {
             // 1. Search Bar Header
             HStack(spacing: 10) {
-                Image(systemName: "command.square.fill")
+                Image(systemName: isCommandMode ? "terminal.fill" : "command.square.fill")
                     .font(.system(size: 17, weight: .bold))
-                    .foregroundStyle(Color(red: 0.52, green: 0.32, blue: 0.98))
+                    .foregroundStyle(isCommandMode ? Color.purple : Color(red: 0.52, green: 0.32, blue: 0.98))
 
-                TextField(store.tr(.qsSearchPlaceholder), text: $searchText)
+                TextField(isCommandMode ? "输入指令名称直接执行…" : store.tr(.qsSearchPlaceholder), text: $searchText)
                     .textFieldStyle(.plain)
                     .font(.system(size: 14.5, weight: .medium))
                     .focused($isSearchFocused)
@@ -4310,12 +4894,12 @@ private struct QuickSwitcherView: View {
                 }
 
                 HStack(spacing: 4) {
-                    Text("Esc")
-                        .font(.system(size: 10.5, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 5.5)
+                    Text(isCommandMode ? "指令模式" : "输入 > 指令")
+                        .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                        .foregroundStyle(isCommandMode ? Color.purple : .secondary)
+                        .padding(.horizontal, 6)
                         .frame(height: 20)
-                        .background(Capsule().fill(Color.primary.opacity(0.08)))
+                        .background(Capsule().fill(isCommandMode ? Color.purple.opacity(0.15) : Color.primary.opacity(0.08)))
                 }
             }
             .padding(.horizontal, 16)
@@ -4324,8 +4908,47 @@ private struct QuickSwitcherView: View {
             Divider()
                 .opacity(0.6)
 
-            // 2. Instances List
-            if filteredInstances.isEmpty {
+            // 2. List (Commands or Instances)
+            if isCommandMode {
+                if filteredCommands.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "terminal")
+                            .font(.system(size: 24))
+                            .foregroundStyle(.secondary)
+                        Text("未找到匹配的系统命令")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(.vertical, 40)
+                } else {
+                    ScrollViewReader { proxy in
+                        ScrollView(.vertical, showsIndicators: true) {
+                            LazyVStack(spacing: 6) {
+                                ForEach(Array(filteredCommands.enumerated()), id: \.element.id) { index, cmd in
+                                    CommandPaletteRow(
+                                        command: cmd,
+                                        isSelected: index == selectedIndex,
+                                        lang: store.appLanguage,
+                                        onSelect: {
+                                            doDismiss()
+                                            store.executeCommand(cmd)
+                                        }
+                                    )
+                                    .id(index)
+                                }
+                            }
+                            .padding(10)
+                        }
+                        .onChange(of: selectedIndex) { newIndex in
+                            withAnimation(.easeOut(duration: 0.15)) {
+                                proxy.scrollTo(newIndex, anchor: .center)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 330)
+                }
+            } else if filteredInstances.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
                         .font(.system(size: 24))
@@ -4377,9 +5000,13 @@ private struct QuickSwitcherView: View {
             HStack(alignment: .center) {
                 HStack(spacing: 12) {
                     legendItem(key: "↑ ↓", label: store.tr(.qsSelect))
-                    legendItem(key: "⏎", label: store.tr(.qsActivate))
-                    legendItem(key: "⌥ 1~9", label: store.tr(.qsDirect))
-                    legendItem(key: "Esc", label: store.tr(.qsClose))
+                    legendItem(key: "⏎", label: isCommandMode ? "执行命令" : store.tr(.qsActivate))
+                    if isCommandMode {
+                        legendItem(key: "Esc", label: store.tr(.qsClose))
+                    } else {
+                        legendItem(key: "⌥ 1~9", label: store.tr(.qsDirect))
+                        legendItem(key: "Esc", label: store.tr(.qsClose))
+                    }
                 }
 
                 Spacer()
@@ -4484,6 +5111,7 @@ private struct QuickSwitcherView: View {
             guard let window = event.window, window is QuickSwitcherPanel, window.isVisible else {
                 return event
             }
+            let maxCount = isCommandMode ? filteredCommands.count : filteredInstances.count
             if event.keyCode == 53 { // Esc
                 doDismiss()
                 return nil
@@ -4494,18 +5122,27 @@ private struct QuickSwitcherView: View {
                 }
                 return nil
             } else if event.keyCode == 125 { // Down
-                if selectedIndex < filteredInstances.count - 1 {
+                if selectedIndex < maxCount - 1 {
                     selectedIndex += 1
                     HapticManager.shared.play(.alignment)
                 }
                 return nil
             } else if event.keyCode == 36 || event.keyCode == 76 { // Return / Enter
-                if !filteredInstances.isEmpty {
-                    let safeIndex = min(max(0, selectedIndex), filteredInstances.count - 1)
-                    let target = filteredInstances[safeIndex]
-                    HapticManager.shared.play(.generic)
-                    doDismiss()
-                    store?.open(target)
+                if isCommandMode {
+                    if !filteredCommands.isEmpty {
+                        let safeIndex = min(max(0, selectedIndex), filteredCommands.count - 1)
+                        let cmd = filteredCommands[safeIndex]
+                        doDismiss()
+                        store?.executeCommand(cmd)
+                    }
+                } else {
+                    if !filteredInstances.isEmpty {
+                        let safeIndex = min(max(0, selectedIndex), filteredInstances.count - 1)
+                        let target = filteredInstances[safeIndex]
+                        HapticManager.shared.play(.generic)
+                        doDismiss()
+                        store?.open(target)
+                    }
                 }
                 return nil
             }
@@ -4749,6 +5386,324 @@ extension QuickSwitcherRow: Equatable {
         lhs.duration == rhs.duration &&
         lhs.isSelected == rhs.isSelected &&
         lhs.shortcutNumber == rhs.shortcutNumber
+    }
+}
+
+// MARK: - Command Palette Row (P1)
+
+private struct CommandPaletteRow: View {
+    let command: MultiplexerCommand
+    let isSelected: Bool
+    let lang: AppLanguage
+    let onSelect: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(isSelected ? Color(red: 0.52, green: 0.32, blue: 0.98) : Color.primary.opacity(0.06))
+                    Image(systemName: command.systemImage)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(isSelected ? Color.white : Color.primary)
+                }
+                .frame(width: 28, height: 28)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(command.title(lang: lang))
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(isSelected ? Color.white : Color.primary)
+                    Text(command.subtitle(lang: lang))
+                        .font(.system(size: 11))
+                        .foregroundStyle(isSelected ? Color.white.opacity(0.8) : Color.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                if let shortcut = command.shortcutHint {
+                    Text(shortcut)
+                        .font(.system(size: 10.5, weight: .bold, design: .monospaced))
+                        .foregroundStyle(isSelected ? Color.white.opacity(0.9) : Color.secondary)
+                        .padding(.horizontal, 6)
+                        .frame(height: 19)
+                        .background(
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .fill(isSelected ? Color.white.opacity(0.2) : Color.primary.opacity(0.06))
+                        )
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(Color(red: 0.52, green: 0.32, blue: 0.98))
+                } else if hovered {
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.045))
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovered = $0 }
+    }
+}
+
+// MARK: - Floating Batch Action Bar (P3)
+
+struct BatchActionBarView: View {
+    @ObservedObject var store: InstanceStore
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(Color.accentColor)
+                Text(store.effectiveLanguage == .en
+                    ? "Selected \(store.selectedInstanceIds.count) of \(store.instances.count)"
+                    : "已选择 \(store.selectedInstanceIds.count) / \(store.instances.count) 个实例")
+                    .font(.system(size: 12.5, weight: .semibold, design: .rounded))
+            }
+            .padding(.leading, 6)
+
+            Divider()
+                .frame(height: 16)
+                .opacity(0.5)
+
+            Button {
+                store.batchOpenSelected()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 11))
+                    Text(store.effectiveLanguage == .en ? "Launch Selected" : "批量启动")
+                }
+            }
+            .buttonStyle(ModernButtonStyle(variant: .primary, compact: true))
+
+            Button {
+                store.batchQuitSelected()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 11))
+                    Text(store.effectiveLanguage == .en ? "Quit Selected" : "批量退出")
+                }
+            }
+            .buttonStyle(ModernButtonStyle(variant: .danger, compact: true))
+
+            Button {
+                store.batchTileSelected()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "square.grid.2x2.fill")
+                        .font(.system(size: 11))
+                    Text(store.effectiveLanguage == .en ? "Tile 2×2" : "四宫格平铺")
+                }
+            }
+            .buttonStyle(ModernButtonStyle(variant: .secondary, compact: true))
+
+            Button {
+                store.selectAllInstances()
+            } label: {
+                Text(store.effectiveLanguage == .en ? "Select All" : "全选")
+            }
+            .buttonStyle(ModernButtonStyle(variant: .ghost, compact: true))
+
+            Button {
+                store.clearSelection()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 4)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background {
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .fill(.ultraThinMaterial)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.35), Color.primary.opacity(0.08)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 1.0
+                )
+        }
+        .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.35 : 0.12), radius: 12, y: 6)
+    }
+}
+
+// MARK: - Menu Bar Liquid Glass Popover (P4)
+
+struct StatusPopoverView: View {
+    @ObservedObject var store: InstanceStore
+    let onOpenMainWindow: () -> Void
+    let onOpenQuickSwitcher: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        VStack(spacing: 12) {
+            // Header summary
+            HStack(spacing: 8) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .frame(width: 22, height: 22)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Aether Multiplexer")
+                        .font(.system(size: 12.5, weight: .bold))
+                    Text(store.effectiveLanguage == .en
+                        ? "\(store.runningCount) running · \(store.instances.count) total"
+                        : "\(store.runningCount) 个实例运行中 · 共 \(store.instances.count) 个")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button {
+                    onOpenQuickSwitcher()
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "command.square.fill")
+                            .font(.system(size: 10))
+                        Text("⌥Space")
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    }
+                    .padding(.horizontal, 6)
+                    .frame(height: 20)
+                    .background(Capsule().fill(Color.primary.opacity(0.08)))
+                }
+                .buttonStyle(.plain)
+            }
+
+            // Global Sparkline Metric Summary
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack {
+                        Text("CPU")
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(String(format: "%.1f%%", store.globalCpuHistory.last?.value ?? 0.0))
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    }
+                    SparklineView(
+                        samples: store.globalCpuHistory.map(\.value),
+                        minVal: 0,
+                        maxVal: 100,
+                        color: Color.purple
+                    )
+                    .frame(height: 28)
+                }
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.primary.opacity(0.04)))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack {
+                        Text("RAM")
+                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text(String(format: "%.0fMB", store.globalRamHistory.last?.value ?? 0.0))
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    }
+                    SparklineView(
+                        samples: store.globalRamHistory.map(\.value),
+                        minVal: 0,
+                        maxVal: max(1024, (store.globalRamHistory.map(\.value).max() ?? 1024) * 1.2),
+                        color: Color.blue
+                    )
+                    .frame(height: 28)
+                }
+                .padding(8)
+                .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.primary.opacity(0.04)))
+            }
+
+            // Running instances mini list
+            let running = store.instances.filter(\.running)
+            if !running.isEmpty {
+                VStack(spacing: 6) {
+                    ForEach(running.prefix(4)) { item in
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(Color.green)
+                                .frame(width: 6, height: 6)
+
+                            let meta = store.meta(for: item)
+                            Text(meta.nickname.isEmpty ? item.name : meta.nickname)
+                                .font(.system(size: 12, weight: .medium))
+                                .lineLimit(1)
+
+                            Spacer()
+
+                            let metric = store.metric(for: item)
+                            Text(String(format: "%.1f%%", metric.cpuPercent))
+                                .font(.system(size: 10.5, design: .monospaced))
+                                .foregroundStyle(.secondary)
+
+                            Button {
+                                store.open(item)
+                            } label: {
+                                Image(systemName: "arrow.up.forward.app")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(Color.accentColor)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.primary.opacity(0.03)))
+                    }
+                }
+            }
+
+            // Bottom Actions
+            HStack(spacing: 6) {
+                Button {
+                    WindowTileManager.applyLayout(.splitLeftRight, instances: store.instances)
+                } label: {
+                    Label("双分屏", systemImage: "rectangle.split.2x1.fill")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(ModernButtonStyle(variant: .secondary, compact: true))
+
+                Button {
+                    WindowTileManager.applyLayout(.quadGrid, instances: store.instances)
+                } label: {
+                    Label("四宫格", systemImage: "square.grid.2x2.fill")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(ModernButtonStyle(variant: .secondary, compact: true))
+
+                Spacer()
+
+                Button {
+                    onOpenMainWindow()
+                } label: {
+                    Label("监控主台", systemImage: "macwindow")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(ModernButtonStyle(variant: .primary, compact: true))
+            }
+        }
+        .padding(14)
+        .frame(width: 320)
+        .preferredColorScheme(store.appTheme.colorScheme)
     }
 }
 
@@ -7037,7 +7992,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.1"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.2"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
@@ -7112,6 +8067,13 @@ struct ContentView: View {
                 }
             }
 
+            if store.isSelectionMode && !store.selectedInstanceIds.isEmpty {
+                BatchActionBarView(store: store)
+                    .padding(.bottom, 22)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .zIndex(10)
+            }
+
             if store.busy || !store.output.isEmpty {
                 operationConsoleDrawer
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -7132,6 +8094,12 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .openMainWindowRequested)) { _ in
             openWindow(id: "main")
             NSApp.activate(ignoringOtherApps: true)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openCreateInstanceRequested)) { _ in
+            showCreate = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openPreferencesRequested)) { _ in
+            showOptionsPopover = true
         }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didLaunchApplicationNotification)) { _ in
             store.refreshRunningStates()
@@ -7415,6 +8383,7 @@ struct ContentView: View {
                 subtitle: store.activeTaskCount > 0 ? "⚡ 当前有 \(store.activeTaskCount) 个实例正在执行 Agent 任务" : "所有已启动实例均处于空闲就绪状态",
                 symbol: "waveform.path.ecg.rectangle.fill",
                 tint: store.activeTaskCount > 0 ? Color(red: 0.15, green: 0.82, blue: 0.96) : accent,
+                sparklineSamples: store.globalCpuHistory.map(\.value),
                 leadingIndicator: {
                     AnyView(PulsingStatusDot(
                         active: store.runningCount > 0,
@@ -7437,7 +8406,8 @@ struct ContentView: View {
                 value: store.totalDiskUsageBytes > 0 ? store.formattedTotalDiskUsage : "统计中…",
                 subtitle: "\(store.instances.count) 个实例独立数据与存储",
                 symbol: "internaldrive.fill",
-                tint: .cyan
+                tint: .cyan,
+                sparklineSamples: store.globalRamHistory.map(\.value)
             )
 
             metricTile(
@@ -7458,6 +8428,7 @@ struct ContentView: View {
         subtitle: String,
         symbol: String,
         tint: Color,
+        sparklineSamples: [Double]? = nil,
         leadingIndicator: (() -> AnyView)? = nil
     ) -> some View {
         HStack(alignment: .center, spacing: 13) {
@@ -7502,6 +8473,12 @@ struct ContentView: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 0)
+
+            if let samples = sparklineSamples, samples.count >= 2 {
+                SparklineView(samples: samples, minVal: 0, color: tint)
+                    .frame(width: 46, height: 26)
+                    .opacity(0.85)
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
@@ -7577,6 +8554,32 @@ struct ContentView: View {
                         lineWidth: 0.95
                     )
             }
+
+            // Multi-selection mode toggle
+            Button {
+                withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                    if store.isSelectionMode {
+                        store.clearSelection()
+                    } else {
+                        store.isSelectionMode = true
+                    }
+                }
+            } label: {
+                HStack(spacing: 4.5) {
+                    Image(systemName: store.isSelectionMode ? "checkmark.circle.fill" : "checklist")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text(store.isSelectionMode ? (store.effectiveLanguage == .en ? "Select Mode" : "多选模式") : (store.effectiveLanguage == .en ? "Batch Select" : "批量选择"))
+                        .font(.system(size: 11.5, weight: store.isSelectionMode ? .semibold : .medium))
+                }
+                .foregroundStyle(store.isSelectionMode ? Color.accentColor : Color.secondary)
+                .padding(.horizontal, 9)
+                .frame(height: 32)
+                .background {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(store.isSelectionMode ? Color.accentColor.opacity(0.14) : Color.primary.opacity(0.04))
+                }
+            }
+            .buttonStyle(.plain)
 
             Spacer()
 
