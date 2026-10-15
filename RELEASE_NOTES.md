@@ -1,3 +1,11 @@
+# v0.7.4
+
+- **悬浮返回胶囊全硬件加速丝滑拖拽重构 (Hardware-Accelerated 120 FPS WindowServer HUD Dragging)**：
+  - **WindowServer 原生拖拽接管**：彻底重构悬浮胶囊条（Floating Return HUD）的拖拽响应内核，废弃原先在 SwiftUI 事件循环中通过 `DragGesture` 计算相对偏移并重复调用 `setFrameOrigin` 导致的抖动、卡顿与坐标跳变（Rubber-banding）痛点，改用 macOS 底层 `window.performDrag(with: event)`。
+  - **120 FPS 满帧硬件加速跟手响应**：由 macOS WindowServer 显示合成器在内核层以屏幕物理刷新率（ProMotion 120Hz / 60Hz）直接驱动窗口位移，实现无延迟、零掉帧、犹如原生系统窗口标题栏般的丝滑跟手体验。
+  - **智能指针反馈与抓取触感**：在可拖拽区域（抓手图标、实例名称与状态文字等）智能提供 `openHand`（可抓取手掌）与 `closedHand`（抓取中握拳）鼠标光标反馈；同时确保右侧控制按钮（「收起回监控台」、「快捷切换 ⇄」、「关闭 ×」）互不干扰、灵敏点击响应。
+  - **智能屏幕贴边防跑飞与断连屏幕自愈**：拖拽释放时自动依据当前屏幕有效区域（`visibleFrame`）进行平滑约束吸附并持久化坐标，避免浮窗飘出屏幕可视范围；支持多显示器热插拔时自动自愈回归当前主屏。
+
 # v0.7.3
 
 - **适配官方 Google Antigravity 2.23.1 最新主实例 (Official Antigravity 2.23.1 Compatibility)**：

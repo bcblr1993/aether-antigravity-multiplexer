@@ -2141,19 +2141,28 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             panel.backgroundColor = .clear
             panel.isOpaque = false
             panel.hasShadow = false
-            panel.isMovableByWindowBackground = true
+            panel.isMovableByWindowBackground = false
+            panel.acceptsMouseMovedEvents = true
 
             let savedX = UserDefaults.standard.object(forKey: "floatingHUD_x") as? Double
             let savedY = UserDefaults.standard.object(forKey: "floatingHUD_y") as? Double
-            if let x = savedX, let y = savedY, let screen = NSScreen.main?.visibleFrame {
-                let minX = screen.minX - 18
-                let maxX = max(minX, screen.maxX - panelWidth + 18)
-                let minY = screen.minY - 18
-                let maxY = max(minY, screen.maxY - panelHeight + 18)
-                let clampedX = min(max(x, minX), maxX)
-                let clampedY = min(max(y, minY), maxY)
-                panel.setFrameOrigin(NSPoint(x: clampedX, y: clampedY))
-            } else if let screen = NSScreen.main?.visibleFrame {
+            var restored = false
+            if let x = savedX, let y = savedY {
+                let targetPoint = NSPoint(x: x, y: y)
+                let targetRect = NSRect(origin: targetPoint, size: CGSize(width: panelWidth, height: panelHeight))
+                if let targetScreen = NSScreen.screens.first(where: { $0.visibleFrame.intersects(targetRect) }) {
+                    let screen = targetScreen.visibleFrame
+                    let minX = screen.minX - 18
+                    let maxX = max(minX, screen.maxX - panelWidth + 18)
+                    let minY = screen.minY - 18
+                    let maxY = max(minY, screen.maxY - panelHeight + 18)
+                    let clampedX = min(max(x, minX), maxX)
+                    let clampedY = min(max(y, minY), maxY)
+                    panel.setFrameOrigin(NSPoint(x: clampedX, y: clampedY))
+                    restored = true
+                }
+            }
+            if !restored, let screen = NSScreen.main?.visibleFrame {
                 // Default position: Top-Right of screen below menu bar, avoiding bottom chat/prompt box on laptop screens
                 panel.setFrameOrigin(NSPoint(x: max(screen.minX, screen.maxX - panelWidth - 10), y: max(screen.minY, screen.maxY - panelHeight - 10)))
             }
@@ -2727,7 +2736,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
 }
 
 final class DraggableHostingView<Content: View>: NSHostingView<Content> {
-    override var mouseDownCanMoveWindow: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         // Only accept mouse events within the capsule boundary, passing through clicks in the transparent padding
@@ -2735,7 +2744,79 @@ final class DraggableHostingView<Content: View>: NSHostingView<Content> {
         if !capsuleRect.contains(point) {
             return nil
         }
-        return super.hitTest(point) ?? self
+        return super.hitTest(point)
+    }
+}
+
+final class NativeDragAreaView: NSView {
+    var onDragEnded: ((NSPoint) -> Void)?
+
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        addCursorRect(bounds, cursor: .openHand)
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas {
+            removeTrackingArea(area)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.cursorUpdate, .activeAlways],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        NSCursor.openHand.set()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let window = self.window else {
+            super.mouseDown(with: event)
+            return
+        }
+        NSCursor.closedHand.push()
+        window.performDrag(with: event)
+        NSCursor.pop()
+
+        if let screen = window.screen ?? NSScreen.main {
+            let visible = screen.visibleFrame
+            let f = window.frame
+            let minX = visible.minX - 18
+            let maxX = max(minX, visible.maxX - f.width + 18)
+            let minY = visible.minY - 18
+            let maxY = max(minY, visible.maxY - f.height + 18)
+            let clampedOrigin = NSPoint(
+                x: min(max(f.origin.x, minX), maxX),
+                y: min(max(f.origin.y, minY), maxY)
+            )
+            if clampedOrigin != f.origin {
+                window.setFrameOrigin(clampedOrigin)
+            }
+            onDragEnded?(clampedOrigin)
+        } else {
+            onDragEnded?(window.frame.origin)
+        }
+    }
+}
+
+struct NativeWindowDragViewRepresentable: NSViewRepresentable {
+    var onDragEnded: ((NSPoint) -> Void)?
+
+    func makeNSView(context: Context) -> NativeDragAreaView {
+        let v = NativeDragAreaView()
+        v.onDragEnded = onDragEnded
+        return v
+    }
+
+    func updateNSView(_ nsView: NativeDragAreaView, context: Context) {
+        nsView.onDragEnded = onDragEnded
     }
 }
 
@@ -2745,125 +2826,111 @@ private struct FloatingMonitorHUDView: View {
     @ObservedObject var hudState: FloatingHUDState
     let store: InstanceStore
     @State private var hovered = false
-    @State private var dragStartOrigin: NSPoint? = nil
-
-    private var dragGesture: some Gesture {
-        DragGesture(minimumDistance: 1, coordinateSpace: .global)
-            .onChanged { val in
-                guard let panel = store.hudPanel else { return }
-                if dragStartOrigin == nil {
-                    dragStartOrigin = panel.frame.origin
-                }
-                if let start = dragStartOrigin {
-                    store.moveHUD(by: val.translation, startOrigin: start)
-                }
-            }
-            .onEnded { _ in
-                if let panel = store.hudPanel {
-                    store.saveHUDPosition(origin: panel.frame.origin)
-                }
-                dragStartOrigin = nil
-            }
-    }
 
     var body: some View {
-        HStack(alignment: .center, spacing: 8) {
-            // Draggable Area (Grip Icon + Pulsing Dot + Instance Info)
-            HStack(alignment: .center, spacing: 6) {
-                Image(systemName: "line.3.horizontal")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.40))
-                    .frame(width: 12)
-                    .help("按住可随意拖动浮窗到屏幕任意位置")
+        ZStack {
+            // Native Window Drag Area (Hardware-accelerated WindowServer dragging at 120 FPS / display refresh rate)
+            NativeWindowDragViewRepresentable { newOrigin in
+                store.saveHUDPosition(origin: newOrigin)
+            }
+            .clipShape(Capsule())
 
-                let hudDotColor: Color = {
-                    if hudState.stalledTaskCount > 0 {
-                        return Color(red: 0.98, green: 0.65, blue: 0.18)
-                    } else if hudState.activeTaskCount > 0 {
-                        return Color(red: 0.15, green: 0.82, blue: 0.96)
-                    } else {
-                        return .green
+            HStack(alignment: .center, spacing: 8) {
+                // Draggable Area (Grip Icon + Pulsing Dot + Instance Info)
+                HStack(alignment: .center, spacing: 6) {
+                    Image(systemName: "line.3.horizontal")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.40))
+                        .frame(width: 12)
+                        .help("按住可随意拖动浮窗到屏幕任意位置")
+
+                    let hudDotColor: Color = {
+                        if hudState.stalledTaskCount > 0 {
+                            return Color(red: 0.98, green: 0.65, blue: 0.18)
+                        } else if hudState.activeTaskCount > 0 {
+                            return Color(red: 0.15, green: 0.82, blue: 0.96)
+                        } else {
+                            return .green
+                        }
+                    }()
+                    let hudSubtitle: String = {
+                        if hudState.stalledTaskCount > 0 {
+                            return "⚠️ \(hudState.stalledTaskCount) 个任务疑似挂起卡顿"
+                        } else if hudState.activeTaskCount > 0 {
+                            return "\(hudState.activeTaskCount) 个实例正在跑任务"
+                        } else {
+                            return "所有运行实例空闲"
+                        }
+                    }()
+
+                    PulsingStatusDot(
+                        active: true,
+                        activeColor: hudDotColor,
+                        pulse: hudState.activeTaskCount > 0
+                    )
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(hudState.activeInstanceName)
+                            .font(.system(size: 11.5, weight: .bold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                        Text(hudSubtitle)
+                            .font(.system(size: 9.5, weight: .medium))
+                            .foregroundStyle(hudState.stalledTaskCount > 0 ? Color(red: 0.98, green: 0.75, blue: 0.35) : .white.opacity(0.75))
+                            .lineLimit(1)
                     }
-                }()
-                let hudSubtitle: String = {
-                    if hudState.stalledTaskCount > 0 {
-                        return "⚠️ \(hudState.stalledTaskCount) 个任务疑似挂起卡顿"
-                    } else if hudState.activeTaskCount > 0 {
-                        return "\(hudState.activeTaskCount) 个实例正在跑任务"
-                    } else {
-                        return "所有运行实例空闲"
-                    }
-                }()
-
-                PulsingStatusDot(
-                    active: true,
-                    activeColor: hudDotColor,
-                    pulse: hudState.activeTaskCount > 0
-                )
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(hudState.activeInstanceName)
-                        .font(.system(size: 11.5, weight: .bold))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                    Text(hudSubtitle)
-                        .font(.system(size: 9.5, weight: .medium))
-                        .foregroundStyle(hudState.stalledTaskCount > 0 ? Color(red: 0.98, green: 0.75, blue: 0.35) : .white.opacity(0.75))
-                        .lineLimit(1)
                 }
-            }
-            .contentShape(Rectangle())
-            .gesture(dragGesture)
+                .allowsHitTesting(false)
 
-            Spacer(minLength: 4)
-                .contentShape(Rectangle())
-                .gesture(dragGesture)
+                Spacer(minLength: 4)
+                    .allowsHitTesting(false)
 
-            Button {
-                store.toggleQuickSwitcher()
-            } label: {
-                Image(systemName: "arrow.left.arrow.right")
-                    .font(.system(size: 9.5, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.85))
-                    .frame(width: 24, height: 24)
-                    .background(Circle().fill(Color.white.opacity(0.12)))
-            }
-            .buttonStyle(.plain)
-            .help("快速切换到其他 Antigravity 实例 (⌥Space)")
-
-            Button {
-                store.collapseAllToMonitorWall()
-            } label: {
-                HStack(alignment: .center, spacing: 4) {
-                    Image(systemName: "square.grid.2x2.fill")
-                        .font(.system(size: 10.5, weight: .semibold))
-                    Text("收起回监控台")
-                        .font(.system(size: 11, weight: .semibold))
-                }
-                .foregroundStyle(.white)
-                .padding(.horizontal, 10)
-                .frame(height: 26)
-                .background(Capsule().fill(accent))
-            }
-            .buttonStyle(.plain)
-            .help("隐藏当前实例窗口并返回缩略图监控墙（后台任务继续运行）")
-
-            if hovered {
                 Button {
-                    store.floatingHUDEnabled = false
+                    store.toggleQuickSwitcher()
                 } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 8.5, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.65))
-                        .frame(width: 16, height: 16)
+                    Image(systemName: "arrow.left.arrow.right")
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .frame(width: 24, height: 24)
                         .background(Circle().fill(Color.white.opacity(0.12)))
                 }
                 .buttonStyle(.plain)
-                .help("关闭悬浮胶囊（可在设置中重新开启）")
-                .transition(.opacity)
+                .help("快速切换到其他 Antigravity 实例 (⌥Space)")
+
+                Button {
+                    store.collapseAllToMonitorWall()
+                } label: {
+                    HStack(alignment: .center, spacing: 4) {
+                        Image(systemName: "square.grid.2x2.fill")
+                            .font(.system(size: 10.5, weight: .semibold))
+                        Text("收起回监控台")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10)
+                    .frame(height: 26)
+                    .background(Capsule().fill(accent))
+                }
+                .buttonStyle(.plain)
+                .help("隐藏当前实例窗口并返回缩略图监控墙（后台任务继续运行）")
+
+                if hovered {
+                    Button {
+                        store.floatingHUDEnabled = false
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 8.5, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.65))
+                            .frame(width: 16, height: 16)
+                            .background(Circle().fill(Color.white.opacity(0.12)))
+                    }
+                    .buttonStyle(.plain)
+                    .help("关闭悬浮胶囊（可在设置中重新开启）")
+                    .transition(.opacity)
+                }
             }
+            .padding(.leading, 12)
+            .padding(.trailing, hovered ? 8 : 12)
         }
-        .padding(.leading, 12)
-        .padding(.trailing, hovered ? 8 : 12)
         .frame(width: 356, height: 42)
         .background {
             ZStack {
@@ -2896,6 +2963,7 @@ private struct FloatingMonitorHUDView: View {
                     ),
                     lineWidth: 1
                 )
+                .allowsHitTesting(false)
         }
         .shadow(
             color: Color.black.opacity(hovered ? 0.45 : 0.30),
@@ -5207,7 +5275,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.7.3"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.7.4"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {

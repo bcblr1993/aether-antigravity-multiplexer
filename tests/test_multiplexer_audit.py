@@ -115,9 +115,10 @@ class TestMultiplexerAudit(unittest.TestCase):
         self.assertIn('hasThumb && !isFront && !isRunningTask', self.content)
 
     def test_draggable_hud_and_position_persistence(self):
-        # Floating HUD must be draggable, use DraggableHostingView, and persist user coordinates
+        # Floating HUD must be draggable, use hardware-accelerated WindowServer performDrag, and persist user coordinates
         self.assertIn('class DraggableHostingView', self.content)
-        self.assertIn('override var mouseDownCanMoveWindow: Bool { true }', self.content)
+        self.assertIn('class NativeDragAreaView', self.content)
+        self.assertIn('window.performDrag(with: event)', self.content)
         self.assertIn('func saveHUDPosition(origin: NSPoint)', self.content)
         self.assertIn('func moveHUD(by translation: CGSize, startOrigin: NSPoint)', self.content)
         self.assertIn('UserDefaults.standard.object(forKey: "floatingHUD_x")', self.content)
