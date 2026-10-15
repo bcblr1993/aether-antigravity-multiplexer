@@ -41,7 +41,7 @@ Google 当前条款限制复制或修改其软件；此工具只打包自有管�
 
 仓库包含 SwiftUI 界面、Python 创建/升级引擎、可重复生成的图标源码与 `build.sh`。构建时 `scripts/build-icon.sh` 会从 `make_icon.swift` 生成高清 PNG 和 macOS ICNS。在源码目录执行 `./build.sh` 可本地重建；设置 `SIGN_IDENTITY` 环境变量可指定自己的代码签名身份。构建需要 Xcode 命令行工具和 SwiftPM；运行管理器需要 `/usr/bin/python3`、`codesign` 和 `ditto`。在线更新使用 [Sparkle 2](https://sparkle-project.org/)；公开的 Release 包由 Developer ID 与 Sparkle EdDSA 双重签名，私钥仅存于发布者的钥匙串。
 
-## 发布后续版本
+## 发布后续版本与磁盘维护
 
 递增 `Info.plist` 中的 `CFBundleShortVersionString` 和 `CFBundleVersion`，更新 `RELEASE_NOTES.md`，保持 Bundle ID、`SUPublicEDKey` 与钥匙串中的 `AntigravityMultiplexer` 更新签名密钥不变。发布者在本机运行：
 
@@ -51,6 +51,22 @@ export NOTARY_PROFILE='your-notarytool-profile'
 ./scripts/package-release.sh
 ```
 
-脚本会构建 Apple Silicon 应用、签名、公证、附加票据并生成 `dist/` 下的 ZIP、`appcast.xml` 与 `SHA256SUMS.txt`。将版本提交并打 `v版本号` 标签后，把这三个文件上传到同版本 GitHub Release；先用草稿验证下载与校验和，再公开发布，确保该 Release 是最新正式版。应用从 `https://aethernative.com/apps/antigravity-multiplexer/appcast.xml` 读取更新清单：发布 Release 后，`aethernative-sync` 工作流通知官网，官网校验签名后逐字节转发 Release 附件中的 `appcast.xml`，因此仍需把它上传到 Release。不要把私钥或公证凭据提交到仓库；仅公开签名公钥。
+脚本会构建 Apple Silicon 应用、签名、公证、附加票据，自动销毁临时未装订公证包，并在 `dist/` 下生成正式 ZIP、`appcast.xml` 与 `SHA256SUMS.txt`。
+
+版本打 Tag 后，可直接使用发布脚本一键发布、同步官网并**自动执行发布后磁盘清理**：
+
+```sh
+./scripts/publish-release.sh
+```
+
+若手动发布，请在 `gh release create` 完成后立即执行磁盘瘦身：
+
+```sh
+./scripts/clean.sh --post-release
+```
+
+日常开发后可随时执行 `./scripts/clean.sh` 进行标准清理，或通过 `./scripts/clean.sh --deep` 执行深度编译缓存回收。完整规范请参阅 [docs/RELEASE_PROCESS.md](docs/RELEASE_PROCESS.md)。
+
+应用从 `https://aethernative.com/apps/antigravity-multiplexer/appcast.xml` 读取更新清单：发布 Release 后，`aethernative-sync` 工作流通知官网，官网校验签名后逐字节转发 Release 附件中的 `appcast.xml`，因此仍需把它上传到 Release。不要把私钥或公证凭据提交到仓库；仅公开签名公钥。
 
 本仓库不包含 Google Antigravity 程序，也不提供任何账号、凭据或用户数据。仅公开可审阅的管理器源码；第三方软件和标识的权利属于各自所有者。

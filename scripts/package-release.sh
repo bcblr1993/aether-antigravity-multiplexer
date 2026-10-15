@@ -43,6 +43,13 @@ xcrun stapler validate "$APP"
 codesign --verify --deep --strict "$APP"
 spctl --assess --type execute "$APP"
 
+# 立即清理公证阶段产生的未装订临时压缩包与日志，释放磁盘并杜绝误传
+echo "🧹 清理公证阶段未装订临时文件: $NOTARY_ZIP"
+rm -f "$NOTARY_ZIP" dist/notarization.json dist/notarization-log.json 2>/dev/null || true
+
+# 清理 dist 中历史旧版本的压缩包，确保只留存当前版本
+find dist/ -type f -name "*.zip" ! -name "${NAME}.zip" -delete 2>/dev/null || true
+
 ARCHIVE="dist/${NAME}.zip"
 ditto -c -k --keepParent "$APP" "$ARCHIVE"
 unzip -tq "$ARCHIVE"
@@ -78,3 +85,4 @@ PY
 ".build/artifacts/sparkle/Sparkle/bin/sign_update" --account "$ACCOUNT" --verify "$ARCHIVE" "$SIGNATURE"
 (cd dist && shasum -a 256 "${NAME}.zip" appcast.xml > SHA256SUMS.txt)
 echo "Release files ready in dist/: ${NAME}.zip, appcast.xml, SHA256SUMS.txt"
+echo "💡 提示: 版本通过 gh release 发布后，请运行 ./scripts/clean.sh --post-release 及时回收磁盘空间。"
