@@ -1,3 +1,15 @@
+# v0.7.8
+
+- **8 大核心功能自动化测试门禁全量内置与制度化防护 (Permanent 8-Pillar Automated Test Verification Gate)**：
+  - **流水线强制熔断机制**：将本地构建脚本 `build.sh`、发布打包脚本 `scripts/package-release.sh` 与发布上载脚本 `scripts/publish-release.sh` 全部串联自动化测试前置卡点。
+  - **77 项测试全绿覆盖**：测试套件全量覆盖「菜单栏托盘纯净隐藏（方案 A）」、「实例红叉关闭防退出与任务常驻」、「最小化一键解救与调出」、「监控台关闭拦截与收起自愈拉起」、「升级引擎宿主防自杀保护」、「升级可选备份与免备份极速通道」、「全流程发光进度条流式看板」、「构建产物自动清理与防磁盘溢出」等 8 大核心领域。
+  - **从机制上根除功能回退**：任意一项测试未通过均直接中断编译与发布，确保未来每一次版本交付均具备坚实的质量保障。
+- **全生命周期窗口防护与宿主会话稳定强化 (Solidified Window Lifecycle & Session Stability)**：
+  - 巩固分身窗口点击红叉时 `win.on('close')` 优先拦截物理销毁，联动 `win.hide()` 与 `electron_1.app.hide()`，保证任务在后台零中断持续执行；
+  - 巩固通过 macOS Accessibility AX 底层解最小化循环与 AppleScript reopen 事件的双轨唤醒机制，彻底解决最小化至 Dock 后无法调出窗口的缺陷；
+  - 巩固监控台主窗口 `MainWindowDelegate` 拦截销毁改用 `orderOut(nil)`，并建立 `openMainWindowHandler` / `openMainWindowRequested` 事件自愈重建机制，彻底解决点击「收起回监控台」后桌面变空的缺陷；
+  - 升级引擎 `upgrade_all.py` 严格落实父子进程树回溯与宿主豁免，彻底杜绝升级时误杀正在执行工作会话的宿主实例。
+
 # v0.7.7
 
 - **多开副本菜单栏图标纯净隐藏 (Clean Menu Bar Clone Tray Suppression)**：
