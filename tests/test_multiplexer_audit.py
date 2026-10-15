@@ -212,6 +212,36 @@ class TestMultiplexerAudit(unittest.TestCase):
         self.assertIn('http://127.0.0.1:\\(port)/json/close/\\(targetId)', self.content)
         self.assertIn('app.activate(options: [.activateIgnoringOtherApps])', self.content)
 
+    def test_main_window_delegate_intercepts_close_without_destroying(self):
+        # MainWindowDelegate must intercept windowShouldClose, call orderOut(nil), and return false
+        self.assertIn('final class MainWindowDelegate: NSObject, NSWindowDelegate', self.content)
+        self.assertIn('func windowShouldClose(_ sender: NSWindow) -> Bool', self.content)
+        self.assertIn('sender.orderOut(nil)', self.content)
+        self.assertIn('return false', self.content)
+
+    def test_main_window_accessor_sets_delegate_and_preserves_window(self):
+        # MainWindowAccessor must attach MainWindowDelegate.shared and set isReleasedWhenClosed = false
+        self.assertIn('struct MainWindowAccessor: NSViewRepresentable', self.content)
+        self.assertIn('window.delegate = MainWindowDelegate.shared', self.content)
+        self.assertIn('window.isReleasedWhenClosed = false', self.content)
+
+    def test_bring_monitor_wall_fallback_to_open_main_window(self):
+        # bringMonitorWallToFront must fall back to openMainWindowHandler or openMainWindowRequested if no window exists
+        self.assertIn('func bringMonitorWallToFront()', self.content)
+        self.assertIn('openMainWindowHandler', self.content)
+        self.assertIn('.openMainWindowRequested', self.content)
+
+    def test_ax_unminimize_loop_and_reopen_in_open_instance(self):
+        # openInstance must de-miniaturize windows via Accessibility AX and deliver reopen event to Electron
+        self.assertIn('AXMinimized', self.content)
+        self.assertIn('set value of attribute "AXMinimized" of w to false', self.content)
+        self.assertIn('tell application id "\\(item.bundleID)" to reopen', self.content)
+
+    def test_app_delegate_reopen_fallback_to_open_main_window(self):
+        # AppDelegate must post openMainWindowRequested if applicationShouldHandleReopen finds no visible windows
+        self.assertIn('func applicationShouldHandleReopen', self.content)
+        self.assertIn('NotificationCenter.default.post(name: .openMainWindowRequested, object: nil)', self.content)
+
 
 if __name__ == "__main__":
     unittest.main()

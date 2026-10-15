@@ -2,6 +2,16 @@
 set -euo pipefail
 cd "${0:A:h}"
 APP='Aether Antigravity Multiplexer.app'
+
+if [[ "${SKIP_TESTS:-0}" != "1" ]]; then
+  echo "🧪 [Pre-Build Audit] 正在执行构建前全量单元测试与核心功能门禁..."
+  python3 -m unittest discover -s tests || {
+    echo "❌ 核心测试未通过，构建中断！请修复测试后再尝试打包。" >&2
+    exit 1
+  }
+  echo "✅ 核心功能与回归测试门禁全量通过"
+fi
+
 ./scripts/build-icon.sh
 swift build -c release --triple arm64-apple-macosx13.0
 BIN_DIR="$(swift build -c release --triple arm64-apple-macosx13.0 --show-bin-path)"

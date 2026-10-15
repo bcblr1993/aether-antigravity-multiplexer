@@ -57,16 +57,34 @@
 发布新版本时，必须严格按照以下顺序执行。**严禁跳过发布后清理环节**：
 
 ### 步骤 1：确认代码变更与执行发版前强制测试门禁
-发版前必须全量运行并通过测试套件（覆盖升级备份可选性、进度条流式协议、单实例单窗口守恒及磁盘清理测试）：
+发版前必须全量运行并通过测试套件（**8 大核心功能自动化门禁**，共 77+ 项测试）：
 ```bash
 python3 -m unittest discover -s tests
 ```
 > [!IMPORTANT]
-> 打包脚本 `scripts/package-release.sh` 与发布脚本 `scripts/publish-release.sh` 均已配置自动测试门禁；任一测试失败时将立即中断打包与发布，杜绝带病发版。
+> 项目构建脚本 `build.sh`、打包脚本 `scripts/package-release.sh` 与发布脚本 `scripts/publish-release.sh` 均已在流水线入口嵌入强制测试门禁；任一测试失败时将立即中断构建、打包与发布，杜绝带病发版。
+
+#### 🛡️ 每次发版必须验证的 8 大核心功能门禁：
+1. **分身托盘图标纯净隐藏（方案 A）** (`test_patch_asar_suppresses_clone_tray_icon`)：
+   - 验证分身底层补丁彻底阻断 `tray_1.createTray`、`insertTrayMenuItem`、`updateTrayAgentCount` 与 `electron_1.Tray`，防止多开实例泛滥占满系统菜单栏。
+2. **实例红叉关闭防退出与任务后台常驻** (`test_patch_asar_enforces_single_window`)：
+   - 验证 `win.on('close')` 执行 `e.preventDefault()` 拦截物理销毁，联动 `win.hide()` 与 `electron_1.app.hide()`，保证多开实例在用户点击关闭时平滑隐藏入后台，Agent 任务零中断继续跑。
+3. **实例窗口最小化一键解救与还原** (`test_patch_asar_enforces_single_window`, `test_ax_unminimize_loop_and_reopen_in_open_instance`)：
+   - 验证 Electron 入口注入 `w.restore()` + `w.show()` + `w.focus()`，并在管理器 `openInstance` 中通过 Accessibility AX 原生解最小化循环（`AXMinimized = false`）与 AppleScript `reopen` 事件双轨保障点击瞬间恢复最小化窗口。
+4. **监控台主窗口关闭拦截与收起自愈拉起** (`test_main_window_delegate_intercepts_close_without_destroying`, `test_bring_monitor_wall_fallback_to_open_main_window`, `test_app_delegate_reopen_fallback_to_open_main_window`)：
+   - 验证 `MainWindowDelegate` 拦截监控台自身红叉销毁（转为 `orderOut` 隐藏），并在 `bringMonitorWallToFront` 与 `AppDelegate` 中注入 `openMainWindowHandler` / `openMainWindowRequested` 事件自愈重建机制，彻底消除点击「收起回监控台」后桌面变空的缺陷。
+5. **升级引擎宿主防自杀与长稳会话守护** (`test_get_current_host_app_detection`, `test_stop_apps_preserves_current_host_app`)：
+   - 验证 `get_current_host_app()` 沿进程树精准溯源宿主实例，升级 `stop_apps` 自动豁免宿主进程 `SIGTERM`，采用原子热重命名替换文件，彻底解决「升级时自己杀死自己」的严重问题。
+6. **升级自由选择备份与免备份极速通道** (`test_cli_skip_backup_flag_parsing`, `test_skip_backup_bypasses_backup_completely`, `test_backup_enabled_creates_backup_and_stores_in_manifest`)：
+   - 验证用户可选备份开关，`--skip-backup` 跳过耗时归档极速生效，清单安全存储版本元数据。
+7. **全流程发光进度条与流式进度协议** (`test_upgrade_all_progress_monotonicity_and_completeness`, `test_swift_stream_progress_chunk_parsing_simulation`)：
+   - 验证 `[PROGRESS:0~100]` 进度标识严格单调递增，五阶段看板流式解析稳定呈现。
+8. **发版产物与磁盘清理守卫** (`test_clean_script_removes_notary_and_preserves_canonical`)：
+   - 验证临时公证包即时销毁、历史旧版本包清退、以及发布后自动瘦身释放磁盘空间。
 
 1. 递增 [Info.plist](file:///Users/chenxu/IdeaProjects/aether-antigravity-multiplexer/Info.plist) 中的版本号与 Build 号：
-   - `CFBundleShortVersionString` (如 `0.7.6`)
-   - `CFBundleVersion` (如 `44`)
+   - `CFBundleShortVersionString` (如 `0.7.7`)
+   - `CFBundleVersion` (如 `45`)
 2. 更新 [RELEASE_NOTES.md](file:///Users/chenxu/IdeaProjects/aether-antigravity-multiplexer/RELEASE_NOTES.md)，写入新版本的功能摘要与修复项。
 
 ### 步骤 2：提交代码并创建 Git 标签

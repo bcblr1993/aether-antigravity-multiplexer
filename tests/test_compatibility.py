@@ -53,6 +53,11 @@ class CompatibilityTests(unittest.TestCase):
         self.assertIn("utils_1.createWindow = function(url, storageManager)", create_instance_py)
         self.assertIn("const existing = electron_1.BrowserWindow.getAllWindows()", create_instance_py)
         self.assertIn("win.hide()", create_instance_py)
+        self.assertIn("electron_1.app.hide()", create_instance_py)
+        self.assertIn("e.preventDefault()", create_instance_py)
+        self.assertIn("if (w.isMinimized()) w.restore()", create_instance_py)
+        self.assertIn("w.show()", create_instance_py)
+        self.assertIn("w.focus()", create_instance_py)
         self.assertIn("electron_1.app.on('activate'", create_instance_py)
 
     def test_patch_asar_suppresses_clone_tray_icon(self):

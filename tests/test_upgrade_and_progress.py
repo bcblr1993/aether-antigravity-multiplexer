@@ -266,6 +266,59 @@ class UpgradeAndProgressTests(unittest.TestCase):
             upgrade_all.upgrade_all(pathlib.Path("/Applications/Antigravity.app"), force=True, skip_backup=True)
             mock_build.assert_called_once()
 
+    def test_get_current_host_app_detection(self):
+        """Verify get_current_host_app climbs process tree to identify Antigravity host."""
+        def mock_ps(cmd, **kwargs):
+            pid = cmd[2]
+            if pid == "100":
+                return "50 /bin/zsh"
+            elif pid == "50":
+                return "10 /Applications/Antigravity Second.app/Contents/MacOS/Antigravity"
+            elif pid == "10":
+                return "1 /sbin/launchd"
+            return ""
+
+        with patch("os.getpid", return_value=100), \
+             patch("subprocess.check_output", side_effect=mock_ps):
+            host = upgrade_all.get_current_host_app()
+            self.assertEqual(host, pathlib.Path("/Applications/Antigravity Second.app"))
+
+    def test_stop_apps_preserves_current_host_app(self):
+        """Verify stop_apps does not send SIGTERM to the current host application."""
+        host_path = pathlib.Path("/Applications/Antigravity Second.app")
+        other_path = pathlib.Path("/Applications/Antigravity Third.app")
+
+        instances = [
+            {"app": host_path, "name": "Antigravity Second"},
+            {"app": other_path, "name": "Antigravity Third"}
+        ]
+
+        call_count = 0
+        def mock_ps_axo(cmd, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return (
+                    f"101 {host_path}/Contents/MacOS/Antigravity\n"
+                    f"202 {other_path}/Contents/MacOS/Antigravity\n"
+                )
+            return f"101 {host_path}/Contents/MacOS/Antigravity\n"
+
+        with patch("upgrade_all.get_current_host_app", return_value=host_path), \
+             patch("subprocess.check_output", side_effect=mock_ps_axo), \
+             patch("os.kill") as mock_kill, \
+             patch("time.sleep"), \
+             patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
+
+            upgrade_all.stop_apps(instances)
+            out = mock_stdout.getvalue()
+            self.assertIn("跳过进程终止以保持会话连线", out)
+            self.assertIn("Antigravity Second", out)
+            # Only PID 202 (Third) should be killed, not 101 (Second)
+            mock_kill.assert_any_call(202, upgrade_all.signal.SIGTERM)
+            killed_pids = [call_args[0][0] for call_args in mock_kill.call_args_list]
+            self.assertNotIn(101, killed_pids)
+
 
 if __name__ == "__main__":
     unittest.main()
