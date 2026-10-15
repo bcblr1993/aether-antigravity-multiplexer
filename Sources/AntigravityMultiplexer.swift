@@ -490,6 +490,7 @@ struct TaskHistoryItem: Identifiable, Codable, Equatable {
 
 extension Notification.Name {
     static let openTaskHistoryRequested = Notification.Name("openTaskHistoryRequested")
+    static let openMainWindowRequested = Notification.Name("openMainWindowRequested")
 }
 
 struct ManagedInstance: Identifiable, Hashable {
@@ -1254,6 +1255,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     @Published var operationProgress: Double? = nil
     @Published var operationStage: String? = nil
     @Published var activeUpgradeInstances: [ManagedInstance] = []
+    var openMainWindowHandler: (() -> Void)? = nil
 
     private var taskStartTimes: [String: Date] = [:]
     var taskHistoryFileURL: URL {
@@ -1945,21 +1947,39 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         self.updateFloatingHUDVisibility()
 
         if let app = runningApplication(bundleID: item.bundleID, path: item.path) {
-            // 1. Unhide via AppleScript and activate without spawning duplicate windows
+            _ = app.unhide()
+            app.activate(options: [.activateIgnoringOtherApps])
+
+            // 2. AppleScript to bring process frontmost and deliver reopen event to Electron
             let script = """
             tell application "System Events"
                 tell (first process whose bundle identifier is "\(item.bundleID)")
                     set visible to true
                     set frontmost to true
+                    repeat with w in (windows)
+                        try
+                            if value of attribute "AXMinimized" of w is true then
+                                set value of attribute "AXMinimized" of w to false
+                            end if
+                        end try
+                    end repeat
                 end tell
             end tell
+            try
+                tell application id "\(item.bundleID)" to reopen
+            end try
             """
             var err: NSDictionary?
             NSAppleScript(source: script)?.executeAndReturnError(&err)
-            _ = app.unhide()
-            app.activate(options: [.activateIgnoringOtherApps])
-            DispatchQueue.main.async { [weak self] in
-                self?.refreshRunningStates()
+
+            // 3. Open configuration to trigger LaunchServices de-miniaturization and activate
+            let config = NSWorkspace.OpenConfiguration()
+            config.activates = true
+            config.createsNewApplicationInstance = false
+            NSWorkspace.shared.openApplication(at: item.path, configuration: config) { [weak self] _, _ in
+                DispatchQueue.main.async {
+                    self?.refreshRunningStates()
+                }
             }
             return
         }
@@ -2094,11 +2114,20 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         quickSwitcherPanel?.orderOut(nil)
         NSApp.unhide(nil)
         NSApp.activate(ignoringOtherApps: true)
+        var shown = false
         for window in NSApp.windows where !(window is NSPanel) && !window.isSheet && window.canBecomeMain {
             if let sheet = window.attachedSheet {
                 sheet.makeKeyAndOrderFront(nil)
             } else {
                 window.makeKeyAndOrderFront(nil)
+            }
+            shown = true
+        }
+        if !shown {
+            if let handler = openMainWindowHandler {
+                handler()
+            } else {
+                NotificationCenter.default.post(name: .openMainWindowRequested, object: nil)
             }
         }
     }
@@ -5699,8 +5728,31 @@ private enum InstanceFilter: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+final class MainWindowDelegate: NSObject, NSWindowDelegate {
+    static let shared = MainWindowDelegate()
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        sender.orderOut(nil)
+        return false
+    }
+}
+
+private struct MainWindowAccessor: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            if let window = view.window {
+                window.delegate = MainWindowDelegate.shared
+                window.isReleasedWhenClosed = false
+            }
+        }
+        return view
+    }
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
 struct ContentView: View {
     let updaterController: SPUStandardUpdaterController
+    @Environment(\.openWindow) private var openWindow
     @StateObject private var store = InstanceStore()
     @State private var viewMode: ViewMode = .grid
     @State private var showCreate = false
@@ -5720,7 +5772,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.7.5"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.7.7"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
@@ -5801,11 +5853,20 @@ struct ContentView: View {
             }
         }
         .frame(minWidth: 860, minHeight: 640)
+        .background(MainWindowAccessor())
         .onAppear {
+            store.openMainWindowHandler = { [openWindow] in
+                openWindow(id: "main")
+                NSApp.activate(ignoringOtherApps: true)
+            }
             store.refresh()
             withAnimation(.spring(response: 0.45, dampingFraction: 0.82)) {
                 appeared = true
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openMainWindowRequested)) { _ in
+            openWindow(id: "main")
+            NSApp.activate(ignoringOtherApps: true)
         }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didLaunchApplicationNotification)) { _ in
             store.refreshRunningStates()
@@ -7670,6 +7731,7 @@ private struct MainWindowCommands: Commands {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        var shown = false
         for window in sender.windows where !(window is NSPanel) && !window.isSheet && window.canBecomeMain {
             if let sheet = window.attachedSheet {
                 sheet.makeKeyAndOrderFront(nil)
@@ -7677,7 +7739,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 window.makeKeyAndOrderFront(nil)
             }
             sender.activate(ignoringOtherApps: true)
+            shown = true
             return true
+        }
+        if !shown {
+            NotificationCenter.default.post(name: .openMainWindowRequested, object: nil)
         }
         return true
     }

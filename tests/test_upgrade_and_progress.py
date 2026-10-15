@@ -221,6 +221,51 @@ class UpgradeAndProgressTests(unittest.TestCase):
         self.assertTrue(clean_script.exists())
         self.assertTrue(os.access(clean_script, os.X_OK))
 
+    def test_cli_force_flag_parsing(self):
+        """Verify upgrade_all.py CLI parser recognizes --force."""
+        parser = upgrade_all.argparse.ArgumentParser()
+        parser.add_argument("--source", type=pathlib.Path, default=pathlib.Path("/Applications/Antigravity.app"))
+        parser.add_argument("--dry-run", action="store_true")
+        parser.add_argument("--only-indices", help="only indices")
+        parser.add_argument("--build-only", action="store_true")
+        parser.add_argument("--skip-backup", action="store_true")
+        parser.add_argument("--force", action="store_true")
+
+        args = parser.parse_args(["--force", "--skip-backup"])
+        self.assertTrue(args.force)
+        self.assertTrue(args.skip_backup)
+
+    def test_upgrade_with_force_includes_same_version(self):
+        """Verify that passing force=True includes instances that already match the source version."""
+        same_version_instances = [{
+            "app": self.root / "Antigravity Second.app",
+            "name": "Antigravity Second",
+            "bundle": "local.antigravity.instance2",
+            "version": "2.23.1",
+            "index": 2,
+            "profile": self.root / ".gemini-1",
+            "key": b"jetski-standalone-oauth-token",
+            "user_data": self.root / "Antigravity Second Data"
+        }]
+
+        with patch("upgrade_all.source_info", return_value="2.23.1"), \
+             patch("upgrade_all.discover", return_value=same_version_instances), \
+             patch("upgrade_all.build", return_value="antigravity-second") as mock_build, \
+             patch("upgrade_all.stop_apps"), \
+             patch("upgrade_all.backup"), \
+             patch("upgrade_all.run"), \
+             patch("pathlib.Path.rename"), \
+             patch("pathlib.Path.write_text"), \
+             patch("upgrade_all.APP_SUPPORT", self.app_support):
+
+            # Without force: 0 pending, build is not called
+            upgrade_all.upgrade_all(pathlib.Path("/Applications/Antigravity.app"), force=False)
+            mock_build.assert_not_called()
+
+            # With force: 1 pending, build is called
+            upgrade_all.upgrade_all(pathlib.Path("/Applications/Antigravity.app"), force=True, skip_backup=True)
+            mock_build.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

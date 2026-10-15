@@ -52,7 +52,16 @@ class CompatibilityTests(unittest.TestCase):
         create_instance_py = (pathlib.Path(__file__).resolve().parents[1] / "Resources/create_instance.py").read_text(encoding="utf-8")
         self.assertIn("utils_1.createWindow = function(url, storageManager)", create_instance_py)
         self.assertIn("const existing = electron_1.BrowserWindow.getAllWindows()", create_instance_py)
-        self.assertIn("if (electron_1.BrowserWindow.getAllWindows().length > 1) return;", create_instance_py)
+        self.assertIn("win.hide()", create_instance_py)
+        self.assertIn("electron_1.app.on('activate'", create_instance_py)
+
+    def test_patch_asar_suppresses_clone_tray_icon(self):
+        import pathlib
+        create_instance_py = (pathlib.Path(__file__).resolve().parents[1] / "Resources/create_instance.py").read_text(encoding="utf-8")
+        self.assertIn("tray_1.createTray = function()", create_instance_py)
+        self.assertIn("tray_1.insertTrayMenuItem = function()", create_instance_py)
+        self.assertIn("tray_1.updateTrayAgentCount = function()", create_instance_py)
+        self.assertIn("electron_1.Tray = class DummyTray", create_instance_py)
 
     def test_upgrade_all_skip_backup_argument_and_progress(self):
         import io

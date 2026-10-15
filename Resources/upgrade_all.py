@@ -107,9 +107,36 @@ def build(source, target, instance, version, signing_dir):
     return scheme
 
 
+def get_current_host_app():
+    pid = os.getpid()
+    for _ in range(15):
+        try:
+            out = subprocess.check_output(['ps', '-p', str(pid), '-o', 'ppid=,comm='], text=True).strip()
+            parts = out.split(None, 1)
+            if len(parts) == 2:
+                comm = parts[1]
+                if '/Applications/Antigravity' in comm:
+                    idx = comm.find('.app')
+                    if idx != -1:
+                        return pathlib.Path(comm[:idx + 4])
+                pid = int(parts[0])
+            else:
+                break
+        except Exception:
+            break
+    return None
+
+
 def stop_apps(instances):
-    roots = [str(item["app"]) + "/Contents/" for item in instances]
-    main_paths = {str(item["app"] / "Contents/MacOS/Antigravity") for item in instances}
+    host_app = get_current_host_app()
+    target_instances = [item for item in instances if host_app is None or item["app"] != host_app]
+    if host_app:
+        for item in instances:
+            if item["app"] == host_app:
+                print(f"  注意：{item['name']} 为当前会话宿主实例，跳过进程终止以保持会话连线（文件将在磁盘热替换）", flush=True)
+
+    roots = [str(item["app"]) + "/Contents/" for item in target_instances]
+    main_paths = {str(item["app"] / "Contents/MacOS/Antigravity") for item in target_instances}
     active = []
     for line in subprocess.check_output(["ps", "-axo", "pid=,comm="], text=True).splitlines():
         parts = line.strip().split(None, 1)
@@ -152,14 +179,31 @@ def version_tuple(version):
     return tuple(int(part) for part in parts)
 
 
-def upgrade_all(source, dry_run=False, only_indices=None, build_only=False, skip_backup=False):
+def get_running_instances(instances):
+    main_paths = {str(item["app"] / "Contents/MacOS/Antigravity") for item in instances}
+    running = []
+    try:
+        out = subprocess.check_output(["ps", "-axo", "pid=,comm="], text=True)
+        for line in out.splitlines():
+            parts = line.strip().split(None, 1)
+            if len(parts) == 2 and parts[1] in main_paths:
+                for item in instances:
+                    if str(item["app"] / "Contents/MacOS/Antigravity") == parts[1] and item not in running:
+                        running.append(item)
+    except Exception:
+        pass
+    return running
+
+
+def upgrade_all(source, dry_run=False, only_indices=None, build_only=False, skip_backup=False, force=False):
     print("[PROGRESS:5] 正在验证主程序版本与签名完整性...", flush=True)
     version = source_info(source)
     instances = discover()
-    pending = [item for item in instances if version_tuple(item["version"]) < version_tuple(version) and (only_indices is None or item["index"] in only_indices)]
-    print(f"[PROGRESS:12] 本机主实例：{version}；发现 {len(instances)} 个副本；待升级 {len(pending)} 个", flush=True)
+    pending = [item for item in instances if (force or version_tuple(item["version"]) < version_tuple(version)) and (only_indices is None or item["index"] in only_indices)]
+    print(f"[PROGRESS:12] 本机主实例：{version}；发现 {len(instances)} 个副本；待升级/重适配 {len(pending)} 个", flush=True)
     for item in pending:
-        print(f"  {item['name']}: {item['version']} → {version}", flush=True)
+        tag = f"{item['version']} → {version}" if item['version'] != version else f"{item['version']} (刷新适配补丁)"
+        print(f"  {item['name']}: {tag}", flush=True)
     if dry_run or not pending:
         print("[PROGRESS:100] 无需升级或已完成预检", flush=True)
         return
@@ -183,6 +227,7 @@ def upgrade_all(source, dry_run=False, only_indices=None, build_only=False, skip
             print("[PROGRESS:100] 所有待升级副本已完成构建和深度签名验证；未替换现有实例", flush=True)
             return
         print("[PROGRESS:62] 所有新副本已通过签名检查；正在安全关闭运行中实例...", flush=True)
+        running_apps = get_running_instances(pending)
         stop_apps(pending)
         if not skip_backup:
             print("[PROGRESS:68] 正在创建旧程序、账号数据与窗口缓存安全备份...", flush=True)
@@ -225,6 +270,15 @@ def upgrade_all(source, dry_run=False, only_indices=None, build_only=False, skip
             if backup_dir is not None:
                 record["upgrade_backup"] = str(backup_dir)
             manifest.write_text(json.dumps(record, ensure_ascii=False, indent=2))
+        if running_apps:
+            print("[PROGRESS:98] 正在重新拉起升级前处于运行状态的实例...", flush=True)
+            host_app = get_current_host_app()
+            for item in running_apps:
+                if host_app is None or item["app"] != host_app:
+                    try:
+                        run("open", "-a", str(item["app"]))
+                    except Exception:
+                        pass
     print("[PROGRESS:100] 升级完成！全部实例已无损升级至最新版本", flush=True)
     if backup_dir:
         print(f"升级完成。数据目录保持原路径；完整备份：{backup_dir}", flush=True)
@@ -240,13 +294,15 @@ def main():
     parser.add_argument("--only-indices", help=argparse.SUPPRESS)
     parser.add_argument("--build-only", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--skip-backup", action="store_true", help="跳过升级前备份旧程序和数据的步骤")
+    parser.add_argument("--force", action="store_true", help="强制重新适配与构建所有实例（即使版本号一致）")
     args = parser.parse_args()
     try:
         with operation_lock():
             upgrade_all(args.source.resolve(), args.dry_run,
                         {int(value) for value in args.only_indices.split(",")} if args.only_indices else None,
                         args.build_only,
-                        args.skip_backup)
+                        args.skip_backup,
+                        args.force)
     except Exception as error:
         print(f"批量升级失败：{error}", file=sys.stderr, flush=True)
         sys.exit(1)
