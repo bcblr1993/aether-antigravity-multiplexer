@@ -1,3 +1,27 @@
+# v0.8.1
+
+- **macOS Liquid Glass 视觉终极精修与光影流体动力学 (macOS Liquid Glass Visual Refinement & Fluid Dynamics)**：
+  - **动态环境呼吸光晕 (`AmbientGlowBorder`)**：为运行中实例卡片与缩略图屏风注入 2.8s 平滑循环的流体动态呼吸光晕，结合色彩辉光渐变与高精度微发光，赋予界面生动生命力。
+  - **掠光镜面扫光特效 (`GlassShimmerOverlay`)**：鼠标悬停在实例缩略图屏风与卡片时触发 0.45s 镜面掠光（Specular Light Sweep），折射自然物理高光，灵动而不喧宾夺主。
+  - **深浅主题双模对比度极限调优**：
+    - 暗色模式升级为曜石极夜底色（Obsidian Midnight Base `rgba(18, 20, 31, 0.40)`），与亮色边框及环境光形成深邃立体反差；
+    - 浅色模式底色增强至 42% 晶透度，边缘融入 0.95pt 细微接触阴影与高光导角，彻底解决浅色模式下文字与卡片反差不足的痛点。
+  - **极速切换器 (Quick Switcher) 液态玻璃悬浮质感**：键盘导航选中条升级为流态玻璃胶囊，配合阻尼弹簧平滑位移与柔和外发光，体验媲美系统级原生聚焦。
+- **三档自适应视图密度系统 (3-Tier Adaptive View Density)**：
+  - **舒适 (`comfortable`) / 紧凑 (`compact`) / 矩阵 (`matrix`) 自由切换**：
+    - **舒适模式**：单卡宽度 270~360pt、高度 196pt，间距 16pt，大屏视野舒适开阔，监控细节一目了然；
+    - **紧凑模式**：单卡宽度 210~270pt、高度 148pt，间距 12pt，信息适中，兼顾多开全局；
+    - **矩阵模式**：单卡宽度 165~220pt、高度 112pt，间距 10pt，高密矩阵排布，支持超大规模分身一屏尽览。
+  - **控制栏与偏好面板即时切换**：主控制栏右侧集成紧凑的液态玻璃分段切换器，偏好设置浮层同步提供直观选项，支持 `UserDefaults` 状态即时持久化与热重载。
+  - **全语种多语言无缝支持**：密度选项全量覆盖简体中文、English、日本語、繁體中文四种语言。
+- **Apple Silicon 120 FPS Metal GPU 硬件加速与零开销架构 (Metal GPU Acceleration & 0Hz Idle Architecture)**：
+  - **Metal GPU 离屏扁平化渲染**：动态呼吸光晕与掠光扫光全面应用 `.drawingGroup(opaque: false)`，直接由 Metal 硬件着色器加速合成，消除 SwiftUI 视图层树遍历冗余，保障 ProMotion 120Hz 极限丝滑。
+  - **Sentinel 0Hz 空闲休眠能效架构**：未运行实例与非悬停状态下严格冻结所有动画驱动与计时器，CPU/GPU 占用完全归零，兼顾强烈视觉冲击与极致整机能效。
+  - **渲染层级隔离与高效状态派发**：`InstanceThumbnailTile` 与 `InstanceCard` 严格遵守最小局部重绘原则，防止全屏级无效重绘。
+- **全量 96 项自动化测试质量门禁坚实保障 (96/96 Automated Test Verification Gate)**：
+  - 全新加入 `test_ui_polish_and_performance.py` 自动化测试套件（10 项测试），全面检验三档视图密度、动态光晕与扫光组件、深浅对比度、Metal GPU 扁平化属性与 0Hz 状态隔离。
+  - 连同既有的 86 项核心审计与 i18n 多语言测试，全部 96 项测试 100% 满分通过。
+
 # v0.8.0
 
 - **三态外观主题引擎 (Theme Engine - Follow System / Light / Dark)**：

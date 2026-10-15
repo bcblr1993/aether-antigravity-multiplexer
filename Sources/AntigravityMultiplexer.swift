@@ -119,6 +119,10 @@ enum L10nKey {
     case filterWithTags
     case viewGrid
     case viewList
+    case densityTitle
+    case densityComfortable
+    case densityCompact
+    case densityMatrix
     case quickSwitcher
     case optionsAndPrefs
 
@@ -211,6 +215,7 @@ enum L10nKey {
     static var qsClose: L10nKey { .legendClose }
     static var hudStalledTasks: L10nKey { .hudStalled }
     static var hudRunningTasks: L10nKey { .hudActive }
+    static var viewDensityTitle: L10nKey { .densityTitle }
 }
 
 struct L10n {
@@ -258,6 +263,10 @@ struct L10n {
         case .filterWithTags: return "有备注标签"
         case .viewGrid: return "网格"
         case .viewList: return "列表"
+        case .densityTitle: return "视图密度"
+        case .densityComfortable: return "宽适视界"
+        case .densityCompact: return "精致紧凑"
+        case .densityMatrix: return "超密矩阵"
         case .quickSwitcher: return "极速切换"
         case .optionsAndPrefs: return "选项与偏好"
 
@@ -351,6 +360,10 @@ struct L10n {
         case .filterWithTags: return "Tagged"
         case .viewGrid: return "Grid"
         case .viewList: return "List"
+        case .densityTitle: return "View Density"
+        case .densityComfortable: return "Comfortable"
+        case .densityCompact: return "Compact"
+        case .densityMatrix: return "Matrix"
         case .quickSwitcher: return "Quick Switch"
         case .optionsAndPrefs: return "Preferences"
 
@@ -444,6 +457,10 @@ struct L10n {
         case .filterWithTags: return "タグ付き"
         case .viewGrid: return "グリッド"
         case .viewList: return "リスト"
+        case .densityTitle: return "表示密度"
+        case .densityComfortable: return "ゆったり"
+        case .densityCompact: return "コンパクト"
+        case .densityMatrix: return "マトリクス"
         case .quickSwitcher: return "高速切替"
         case .optionsAndPrefs: return "設定・機能"
 
@@ -537,6 +554,10 @@ struct L10n {
         case .filterWithTags: return "有備註標籤"
         case .viewGrid: return "網格"
         case .viewList: return "清單"
+        case .densityTitle: return "視圖密度"
+        case .densityComfortable: return "寬適視界"
+        case .densityCompact: return "精緻緊湊"
+        case .densityMatrix: return "超密矩陣"
         case .quickSwitcher: return "極速切換"
         case .optionsAndPrefs: return "選項與偏好"
 
@@ -597,6 +618,64 @@ struct L10n {
         case .legendDirect: return "直達/收起"
         case .legendClose: return "關閉"
         case .quickSwitcherSummary: return "運行中 · 共"
+        }
+    }
+}
+
+// MARK: - View Density (Adaptive Layout)
+
+enum ViewDensity: String, CaseIterable, Identifiable, Hashable, Equatable {
+    case comfortable = "comfortable"
+    case compact = "compact"
+    case matrix = "matrix"
+
+    var id: String { rawValue }
+
+    var symbol: String {
+        switch self {
+        case .comfortable: return "rectangle.grid.2x2"
+        case .compact: return "square.grid.3x2"
+        case .matrix: return "square.grid.3x3"
+        }
+    }
+
+    var minWidth: CGFloat {
+        switch self {
+        case .comfortable: return 270
+        case .compact: return 210
+        case .matrix: return 165
+        }
+    }
+
+    var maxWidth: CGFloat {
+        switch self {
+        case .comfortable: return 360
+        case .compact: return 270
+        case .matrix: return 220
+        }
+    }
+
+    var screenHeight: CGFloat {
+        switch self {
+        case .comfortable: return 158
+        case .compact: return 118
+        case .matrix: return 92
+        }
+    }
+
+    var gridSpacing: CGFloat {
+        switch self {
+        case .comfortable: return 20
+        case .compact: return 14
+        case .matrix: return 10
+        }
+    }
+
+    func localized(lang: AppLanguage) -> String {
+        switch self {
+        case .comfortable: return L10n.tr(.densityComfortable, lang: lang)
+        case .compact: return L10n.tr(.densityCompact, lang: lang)
+        case .matrix: return L10n.tr(.densityMatrix, lang: lang)
         }
     }
 }
@@ -726,9 +805,9 @@ private struct GlassCardModifier: ViewModifier {
                                 .fill(
                                     LinearGradient(
                                         colors: [
-                                            Color.white.opacity(0.035),
-                                            Color.clear,
-                                            Color.black.opacity(0.14)
+                                            Color.white.opacity(0.04),
+                                            Color(red: 0.07, green: 0.08, blue: 0.12).opacity(0.40),
+                                            Color.black.opacity(0.18)
                                         ],
                                         startPoint: .top,
                                         endPoint: .bottom
@@ -736,7 +815,7 @@ private struct GlassCardModifier: ViewModifier {
                                 )
                         } else {
                             RoundedRectangle(cornerRadius: radius, style: .continuous)
-                                .fill(Color.white.opacity(0.38))
+                                .fill(Color.white.opacity(0.42))
                         }
                     }
                     if let tint {
@@ -744,7 +823,7 @@ private struct GlassCardModifier: ViewModifier {
                             .fill(
                                 LinearGradient(
                                     colors: [
-                                        tint.opacity(colorScheme == .dark ? 0.12 : 0.08),
+                                        tint.opacity(colorScheme == .dark ? 0.14 : 0.09),
                                         tint.opacity(colorScheme == .dark ? 0.04 : 0.02)
                                     ],
                                     startPoint: .topLeading,
@@ -762,16 +841,16 @@ private struct GlassCardModifier: ViewModifier {
                             stops: [
                                 .init(
                                     color: (isHighlighted ? (tint ?? accent) : Color.white)
-                                        .opacity(colorScheme == .dark ? (isHighlighted ? 0.48 : 0.28) : (isHighlighted ? 0.65 : 0.45)),
+                                        .opacity(colorScheme == .dark ? (isHighlighted ? 0.52 : 0.32) : (isHighlighted ? 0.70 : 0.50)),
                                     location: 0.0
                                 ),
                                 .init(
                                     color: (isHighlighted ? (tint ?? accent) : Color.white)
-                                        .opacity(colorScheme == .dark ? (isHighlighted ? 0.22 : 0.10) : (isHighlighted ? 0.35 : 0.18)),
+                                        .opacity(colorScheme == .dark ? (isHighlighted ? 0.24 : 0.12) : (isHighlighted ? 0.38 : 0.20)),
                                     location: 0.35
                                 ),
                                 .init(
-                                    color: Color.primary.opacity(colorScheme == .dark ? 0.05 : 0.06),
+                                    color: Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.07),
                                     location: 1.0
                                 )
                             ],
@@ -783,14 +862,14 @@ private struct GlassCardModifier: ViewModifier {
             }
             // Dual-Layer Ambient Occlusion & Contact Shadows
             .shadow(
-                color: Color.black.opacity(colorScheme == .dark ? 0.20 : 0.035),
+                color: Color.black.opacity(colorScheme == .dark ? 0.22 : 0.06),
                 radius: 2.5,
                 x: 0,
                 y: 1.2
             )
             .shadow(
                 color: (isHighlighted ? (tint ?? accent) : Color.black)
-                    .opacity(colorScheme == .dark ? (isHighlighted ? 0.26 : 0.15) : (isHighlighted ? 0.09 : 0.035)),
+                    .opacity(colorScheme == .dark ? (isHighlighted ? 0.28 : 0.16) : (isHighlighted ? 0.10 : 0.04)),
                 radius: isHighlighted ? 16 : 8,
                 x: 0,
                 y: isHighlighted ? 6 : 3
@@ -801,6 +880,96 @@ private struct GlassCardModifier: ViewModifier {
 private extension View {
     func systemSurface(radius: CGFloat, isHighlighted: Bool = false, tint: Color? = nil) -> some View {
         modifier(GlassCardModifier(radius: radius, isHighlighted: isHighlighted, tint: tint))
+    }
+}
+
+// MARK: - Liquid Glass Dynamic FX (Metal GPU Flattened & 0Hz Standby)
+
+struct AmbientGlowBorder: View {
+    let isActive: Bool
+    let color: Color
+    var cornerRadius: CGFloat = 13
+    var lineWidth: CGFloat = 1.5
+
+    @State private var breathing: Bool = false
+
+    var body: some View {
+        ZStack {
+            if isActive {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(color.opacity(breathing ? 0.65 : 0.20), lineWidth: lineWidth)
+                    .blur(radius: breathing ? 4.5 : 1.5)
+
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(color.opacity(breathing ? 0.35 : 0.08), lineWidth: lineWidth * 1.8)
+                    .blur(radius: breathing ? 8.0 : 3.0)
+            }
+        }
+        .drawingGroup(opaque: false)
+        .allowsHitTesting(false)
+        .onAppear {
+            updateBreathing(isActive)
+        }
+        .onChange(of: isActive) { active in
+            updateBreathing(active)
+        }
+    }
+
+    private func updateBreathing(_ active: Bool) {
+        if active {
+            breathing = false
+            withAnimation(.easeInOut(duration: 2.8).repeatForever(autoreverses: true)) {
+                breathing = true
+            }
+        } else {
+            withAnimation(.linear(duration: 0.15)) {
+                breathing = false
+            }
+        }
+    }
+}
+
+struct GlassShimmerOverlay: View {
+    let isHovered: Bool
+    var cornerRadius: CGFloat = 13
+    @State private var shimmerOffset: CGFloat = -1.2
+
+    var body: some View {
+        GeometryReader { proxy in
+            let width = proxy.size.width
+
+            ZStack {
+                if isHovered {
+                    LinearGradient(
+                        stops: [
+                            .init(color: .clear, location: 0.0),
+                            .init(color: Color.white.opacity(0.12), location: 0.45),
+                            .init(color: Color.white.opacity(0.22), location: 0.50),
+                            .init(color: Color.white.opacity(0.12), location: 0.55),
+                            .init(color: .clear, location: 1.0)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    .rotationEffect(.degrees(25))
+                    .offset(x: shimmerOffset * width)
+                    .mask(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                }
+            }
+            .drawingGroup(opaque: false)
+            .allowsHitTesting(false)
+        }
+        .allowsHitTesting(false)
+        .onChange(of: isHovered) { hovered in
+            if hovered {
+                shimmerOffset = -1.2
+                withAnimation(.easeOut(duration: 0.45)) {
+                    shimmerOffset = 1.4
+                }
+            } else {
+                shimmerOffset = -1.2
+            }
+        }
     }
 }
 
@@ -2080,6 +2249,14 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     }() {
         didSet {
             UserDefaults.standard.set(appLanguage.rawValue, forKey: "appLanguage")
+        }
+    }
+    @Published var viewDensity: ViewDensity = {
+        let raw = UserDefaults.standard.string(forKey: "viewDensity") ?? ViewDensity.comfortable.rawValue
+        return ViewDensity(rawValue: raw) ?? .comfortable
+    }() {
+        didSet {
+            UserDefaults.standard.set(viewDensity.rawValue, forKey: "viewDensity")
         }
     }
     @Published var hapticsEnabled: Bool = UserDefaults.standard.object(forKey: "hapticsEnabled") as? Bool ?? true {
@@ -4520,7 +4697,11 @@ private struct QuickSwitcherRow: View {
             .background {
                 if isSelected {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(isMain ? Color(red: 0.52, green: 0.32, blue: 0.98).opacity(colorScheme == .dark ? 0.24 : 0.14) : Color.accentColor.opacity(colorScheme == .dark ? 0.22 : 0.12))
+                        .fill(
+                            isMain
+                                ? Color(red: 0.52, green: 0.32, blue: 0.98).opacity(colorScheme == .dark ? 0.28 : 0.16)
+                                : Color.accentColor.opacity(colorScheme == .dark ? 0.24 : 0.14)
+                        )
                 } else if hovered {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.045))
@@ -4532,24 +4713,27 @@ private struct QuickSwitcherRow: View {
                         .strokeBorder(
                             LinearGradient(
                                 stops: [
-                                    .init(color: Color.white.opacity(colorScheme == .dark ? 0.40 : 0.60), location: 0.0),
-                                    .init(color: (isMain ? Color(red: 0.52, green: 0.32, blue: 0.98) : Color.accentColor).opacity(0.50), location: 1.0)
+                                    .init(color: Color.white.opacity(colorScheme == .dark ? 0.55 : 0.75), location: 0.0),
+                                    .init(color: (isMain ? Color(red: 0.52, green: 0.32, blue: 0.98) : Color.accentColor).opacity(0.65), location: 1.0)
                                 ],
                                 startPoint: .top,
                                 endPoint: .bottom
                             ),
-                            lineWidth: 1.15
+                            lineWidth: 1.25
                         )
                 }
             }
             .shadow(
                 color: isSelected
-                    ? (isMain ? Color(red: 0.52, green: 0.32, blue: 0.98) : Color.accentColor).opacity(colorScheme == .dark ? 0.20 : 0.08)
+                    ? (isMain ? Color(red: 0.52, green: 0.32, blue: 0.98) : Color.accentColor).opacity(colorScheme == .dark ? 0.25 : 0.10)
                     : .clear,
-                radius: 4,
+                radius: 5,
                 y: 1.5
             )
             .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .scaleEffect(isSelected ? 1.008 : (hovered ? 1.004 : 1.0))
+            .animation(.spring(response: 0.20, dampingFraction: 0.82), value: isSelected)
+            .animation(.spring(response: 0.18, dampingFraction: 0.80), value: hovered)
         }
         .buttonStyle(.plain)
         .onHover { hovered = $0 }
@@ -4662,6 +4846,7 @@ struct InstanceThumbnailTile: View {
     let thumbnail: NSImage?
     let sourceVersion: String
     var duration: String? = nil
+    var density: ViewDensity = .comfortable
     let busy: Bool
     let canUpgrade: Bool
     let open: () -> Void
@@ -4719,7 +4904,7 @@ struct InstanceThumbnailTile: View {
                     Image(nsImage: thumbnail)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
-                        .frame(height: 158)
+                        .frame(height: density.screenHeight)
                         .clipped()
                         .opacity(item.running ? 0.96 : 0.72)
                 } else if item.running {
@@ -4895,8 +5080,19 @@ struct InstanceThumbnailTile: View {
                 // Center Play / Switch Action Overlay
                 centerPlayOverlay
             }
-            .frame(height: 158)
+            .frame(height: density.screenHeight)
             .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .overlay {
+                AmbientGlowBorder(
+                    isActive: item.running && (activity.state == .runningTask || activity.state == .stalled || activity.state == .needsAttention),
+                    color: activity.state == .stalled ? Color(red: 0.98, green: 0.69, blue: 0.20) : Color(red: 0.15, green: 0.82, blue: 0.96),
+                    cornerRadius: 13,
+                    lineWidth: 1.8
+                )
+            }
+            .overlay {
+                GlassShimmerOverlay(isHovered: hovered, cornerRadius: 13)
+            }
             .overlay {
                 RoundedRectangle(cornerRadius: 13, style: .continuous)
                     .strokeBorder(
@@ -5331,6 +5527,7 @@ extension InstanceThumbnailTile: Equatable {
         lhs.thumbnail === rhs.thumbnail &&
         lhs.sourceVersion == rhs.sourceVersion &&
         lhs.duration == rhs.duration &&
+        lhs.density == rhs.density &&
         lhs.busy == rhs.busy &&
         lhs.canUpgrade == rhs.canUpgrade
     }
@@ -5722,6 +5919,17 @@ struct InstanceCard: View {
             isHighlighted: hovered || item.isOriginal,
             tint: item.isOriginal ? Color(red: 0.52, green: 0.32, blue: 0.98) : (item.running ? activity.state.color : nil)
         )
+        .overlay {
+            AmbientGlowBorder(
+                isActive: item.running && (activity.state == .runningTask || activity.state == .stalled || activity.state == .needsAttention),
+                color: activity.state == .stalled ? Color(red: 0.98, green: 0.69, blue: 0.20) : Color(red: 0.15, green: 0.82, blue: 0.96),
+                cornerRadius: 16,
+                lineWidth: 1.8
+            )
+        }
+        .overlay {
+            GlassShimmerOverlay(isHovered: hovered, cornerRadius: 16)
+        }
         .scaleEffect(hovered ? 1.003 : 1.0)
         .animation(.spring(response: 0.24, dampingFraction: 0.80), value: hovered)
         .onHover { hovered = $0 }
@@ -6829,7 +7037,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.0"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.1"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
@@ -7436,6 +7644,11 @@ struct ContentView: View {
                     )
             }
 
+            // Density Switcher (Active in Grid Mode)
+            if viewMode == .grid {
+                toolbarDensitySwitcher
+            }
+
             // Quick Switcher Button
             Button {
                 store.toggleQuickSwitcher()
@@ -7511,6 +7724,50 @@ struct ContentView: View {
         }
     }
 
+    private var toolbarDensitySwitcher: some View {
+        HStack(alignment: .center, spacing: 3) {
+            ForEach(ViewDensity.allCases, id: \.self) { density in
+                let active = store.viewDensity == density
+                Button {
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                        store.viewDensity = density
+                    }
+                    HapticManager.shared.play(.alignment)
+                } label: {
+                    HStack(alignment: .center, spacing: 4) {
+                        Image(systemName: density.symbol)
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .frame(width: 12, height: 12, alignment: .center)
+                        Text(density.localized(lang: store.appLanguage))
+                            .font(.system(size: 11, weight: active ? .semibold : .medium))
+                    }
+                    .foregroundStyle(active ? Color.primary : Color.secondary)
+                    .padding(.horizontal, 8)
+                    .frame(height: 26)
+                    .background(
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(Color.primary.opacity(active ? (colorScheme == .dark ? 0.16 : 0.10) : 0.0))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .strokeBorder(Color.white.opacity(active ? (colorScheme == .dark ? 0.25 : 0.40) : 0.0), lineWidth: 0.95)
+                    )
+                }
+                .buttonStyle(.plain)
+                .help(density.localized(lang: store.appLanguage))
+            }
+        }
+        .padding(3)
+        .background(
+            RoundedRectangle(cornerRadius: 9.5, style: .continuous)
+                .fill(Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.035))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 9.5, style: .continuous)
+                .strokeBorder(Color.white.opacity(colorScheme == .dark ? 0.18 : 0.28), lineWidth: 0.95)
+        )
+    }
+
     private var toolbarOptionsPopover: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .center, spacing: 8) {
@@ -7524,100 +7781,10 @@ struct ContentView: View {
 
             Divider()
 
-            // 1. Appearance / Theme Segmented Control
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Image(systemName: "circle.lefthalf.filled")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(accent)
-                    Text(store.tr(.themeTitle))
-                        .font(.system(size: 11.5, weight: .semibold))
-                }
-                HStack(spacing: 4) {
-                    ForEach(AppTheme.allCases) { theme in
-                        let active = store.appTheme == theme
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.18)) {
-                                store.appTheme = theme
-                            }
-                            HapticManager.shared.play(.levelChange)
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: theme.symbol)
-                                    .font(.system(size: 10, weight: .semibold))
-                                Text(theme.localized(lang: store.appLanguage))
-                                    .font(.system(size: 11, weight: active ? .semibold : .medium))
-                            }
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 24)
-                            .foregroundStyle(active ? Color.primary : Color.secondary)
-                            .background {
-                                if active {
-                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                        .fill(Color.primary.opacity(colorScheme == .dark ? 0.16 : 0.10))
-                                }
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(3)
-                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(colorScheme == .dark ? 0.05 : 0.03)))
-            }
-
-            // 2. Language Picker
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Image(systemName: "globe")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(accent)
-                    Text(store.tr(.langTitle))
-                        .font(.system(size: 11.5, weight: .semibold))
-                    Spacer()
-                    Picker("", selection: $store.appLanguage) {
-                        ForEach(AppLanguage.allCases) { lang in
-                            Text(lang.displayName).tag(lang)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.menu)
-                    .frame(width: 140)
-                    .onChange(of: store.appLanguage) { _ in
-                        HapticManager.shared.play(.levelChange)
-                    }
-                }
-            }
-
-            // 3. Window Tiling Presets
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Image(systemName: "macwindow.on.rectangle")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(accent)
-                    Text(store.tr(.tilePresetsTitle))
-                        .font(.system(size: 11.5, weight: .semibold))
-                }
-                HStack(spacing: 6) {
-                    ForEach(WindowTileLayout.allCases) { layout in
-                        Button {
-                            HapticManager.shared.play(.alignment)
-                            WindowTileManager.applyLayout(layout, instances: store.instances)
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: layout.symbol)
-                                    .font(.system(size: 10))
-                                Text(layout.localized(lang: store.appLanguage))
-                                    .font(.system(size: 10.5, weight: .medium))
-                            }
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 24)
-                            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.04)))
-                        }
-                        .buttonStyle(.plain)
-                        .help(layout.localized(lang: store.appLanguage))
-                    }
-                }
-            }
+            popoverThemeSection
+            popoverLanguageSection
+            popoverTilingSection
+            popoverDensitySection
 
             Divider()
 
@@ -7789,6 +7956,142 @@ struct ContentView: View {
         .frame(width: 356)
     }
 
+    private var popoverThemeSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "circle.lefthalf.filled")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(accent)
+                Text(store.tr(.themeTitle))
+                    .font(.system(size: 11.5, weight: .semibold))
+            }
+            HStack(spacing: 4) {
+                ForEach(AppTheme.allCases, id: \.self) { theme in
+                    let active = store.appTheme == theme
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            store.appTheme = theme
+                        }
+                        HapticManager.shared.play(.levelChange)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: theme.symbol)
+                                .font(.system(size: 10, weight: .semibold))
+                            Text(theme.localized(lang: store.appLanguage))
+                                .font(.system(size: 11, weight: active ? .semibold : .medium))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 24)
+                        .foregroundStyle(active ? Color.primary : Color.secondary)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Color.primary.opacity(active ? (colorScheme == .dark ? 0.16 : 0.10) : 0.0))
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(3)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(colorScheme == .dark ? 0.05 : 0.03)))
+        }
+    }
+
+    private var popoverLanguageSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "globe")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(accent)
+                Text(store.tr(.langTitle))
+                    .font(.system(size: 11.5, weight: .semibold))
+                Spacer()
+                Picker("", selection: $store.appLanguage) {
+                    ForEach(AppLanguage.allCases) { lang in
+                        Text(lang.displayName).tag(lang)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(width: 140)
+                .onChange(of: store.appLanguage) { _ in
+                    HapticManager.shared.play(.levelChange)
+                }
+            }
+        }
+    }
+
+    private var popoverTilingSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "macwindow.on.rectangle")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(accent)
+                Text(store.tr(.tilePresetsTitle))
+                    .font(.system(size: 11.5, weight: .semibold))
+            }
+            HStack(spacing: 6) {
+                ForEach(WindowTileLayout.allCases) { layout in
+                    Button {
+                        HapticManager.shared.play(.alignment)
+                        WindowTileManager.applyLayout(layout, instances: store.instances)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: layout.symbol)
+                                .font(.system(size: 10))
+                            Text(layout.localized(lang: store.appLanguage))
+                                .font(.system(size: 10.5, weight: .medium))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 24)
+                        .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.04)))
+                    }
+                    .buttonStyle(.plain)
+                    .help(layout.localized(lang: store.appLanguage))
+                }
+            }
+        }
+    }
+
+    private var popoverDensitySection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "square.grid.2x2")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(accent)
+                Text(store.tr(.viewDensityTitle))
+                    .font(.system(size: 11.5, weight: .semibold))
+            }
+            HStack(spacing: 4) {
+                ForEach(ViewDensity.allCases, id: \.self) { density in
+                    let active = store.viewDensity == density
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            store.viewDensity = density
+                        }
+                        HapticManager.shared.play(.alignment)
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: density.symbol)
+                                .font(.system(size: 10, weight: .semibold))
+                            Text(density.localized(lang: store.appLanguage))
+                                .font(.system(size: 11, weight: active ? .semibold : .medium))
+                        }
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 24)
+                        .foregroundStyle(active ? Color.primary : Color.secondary)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Color.primary.opacity(active ? (colorScheme == .dark ? 0.16 : 0.10) : 0.0))
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(3)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.primary.opacity(colorScheme == .dark ? 0.05 : 0.03)))
+        }
+    }
+
     // MARK: - Thumbnail Monitor Wall View (Grid Mode)
 
     private var thumbnailWallSection: some View {
@@ -7797,8 +8100,8 @@ struct ContentView: View {
                 filteredEmptyView
             } else {
                 LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 270, maximum: 360), spacing: 20)],
-                    spacing: 22
+                    columns: [GridItem(.adaptive(minimum: store.viewDensity.minWidth, maximum: store.viewDensity.maxWidth), spacing: store.viewDensity.gridSpacing)],
+                    spacing: store.viewDensity.gridSpacing + 2
                 ) {
                     ForEach(Array(filteredInstances.enumerated()), id: \.element.id) { idx, item in
                         InstanceThumbnailTile(
@@ -7810,6 +8113,7 @@ struct ContentView: View {
                             thumbnail: store.thumbnails[item.id],
                             sourceVersion: store.sourceVersion,
                             duration: store.runningDuration(for: item),
+                            density: store.viewDensity,
                             busy: store.busy,
                             canUpgrade: store.compatibility == "已支持本机版本",
                             open: { store.open(item) },
