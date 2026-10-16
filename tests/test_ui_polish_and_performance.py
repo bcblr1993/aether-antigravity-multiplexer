@@ -121,9 +121,9 @@ class TestUIPolishAndPerformance(unittest.TestCase):
         self.assertIn("func liquidGlassSheet(radius: CGFloat = 16) -> some View", self.content)
         self.assertIn(".liquidGlassSheet(radius: 16)", self.content)
 
-    def test_version_bump_0_8_12(self):
-        # Fallback version string in AntigravityMultiplexer.swift must be 0.8.12
-        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.12"', self.content)
+    def test_version_bump_0_8_13(self):
+        # Fallback version string in AntigravityMultiplexer.swift must be 0.8.13
+        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.13"', self.content)
 
     def test_popover_menu_row_item_reuse(self):
         # PopoverMenuRowItem must be defined and reused across tile and list item popovers
@@ -226,8 +226,34 @@ class TestUIPolishAndPerformance(unittest.TestCase):
         self.assertNotIn("sender.performClick(nil)", self.content)
         self.assertIn("menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)", self.content)
 
+    def test_auto_pilot_task_completion_gate_and_state_tracking(self):
+        # InstanceStore must track autoPilotAwaitingTaskCompletion and autoPilotObservedRunning
+        self.assertIn("@Published var autoPilotAwaitingTaskCompletion: [String: Bool] = [:]", self.content)
+        self.assertIn("@Published var autoPilotObservedRunning: [String: Bool] = [:]", self.content)
+        self.assertIn("private var autoPilotInjectedStepIndex: [String: Int] = [:]", self.content)
+        self.assertIn("private var autoPilotInjectedTime: [String: Date] = [:]", self.content)
+
+        # handleAutoPilotStateChange must check autoPilotAwaitingTaskCompletion on .idle
+        self.assertIn("if autoPilotAwaitingTaskCompletion[item.id] == true {", self.content)
+        self.assertIn("let hasSeenRunning = autoPilotObservedRunning[item.id] == true", self.content)
+        self.assertIn("let stepProgressed = curStep > prevStep", self.content)
+        self.assertIn("if !hasSeenRunning && !stepProgressed && elapsed < 20.0 {", self.content)
+        self.assertIn("autoPilotStates[item.id] = .waitingRunning", self.content)
+
+    def test_cdp_preflight_dom_gatekeeper(self):
+        # CDP injection must define CDPInjectionResult and execute DOM preflight check
+        self.assertIn("enum CDPInjectionResult: Equatable", self.content)
+        self.assertIn("case busyRunningOrQueued(hasStop: Bool, hasQueued: Bool)", self.content)
+        self.assertIn("func injectPromptViaCDP(item: ManagedInstance, prompt: String) async -> CDPInjectionResult", self.content)
+        self.assertIn('button[aria-label="Stop execution"]', self.content)
+        self.assertIn("Queued Messages", self.content)
+        self.assertIn("Sends after agent finishes", self.content)
+        self.assertIn("canInject: !hasStop && !hasQueued", self.content)
+        self.assertIn("case .busyRunningOrQueued(let hasStop, let hasQueued):", self.content)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

@@ -1990,6 +1990,15 @@ enum AutoPilotRunState: String, Codable, Equatable {
     }
 }
 
+// MARK: - CDP Injection Result (静默注入结果与忙碌状态守卫)
+
+enum CDPInjectionResult: Equatable {
+    case success
+    case busyRunningOrQueued(hasStop: Bool, hasQueued: Bool)
+    case editorNotFound
+    case failed
+}
+
 struct InstanceUserMeta: Codable, Equatable, Hashable {
     var nickname: String = ""
     var tag: String = ""
@@ -3082,6 +3091,10 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     @Published var autoPilotStates: [String: AutoPilotRunState] = [:]
     @Published var autoPilotDebounceRemaining: [String: Int] = [:]
     var autoPilotDebounceTasks: [String: Task<Void, Never>] = [:]
+    @Published var autoPilotAwaitingTaskCompletion: [String: Bool] = [:]
+    @Published var autoPilotObservedRunning: [String: Bool] = [:]
+    private var autoPilotInjectedStepIndex: [String: Int] = [:]
+    private var autoPilotInjectedTime: [String: Date] = [:]
     @Published var backups: [BackupBatch] = []
     @Published var busy = false
     @Published var output = ""
@@ -3507,6 +3520,10 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     func toggleAutoPilot(for item: ManagedInstance) {
         var m = meta(for: item)
         m.autoPilotEnabled.toggle()
+        autoPilotAwaitingTaskCompletion[item.id] = false
+        autoPilotObservedRunning[item.id] = false
+        autoPilotInjectedStepIndex.removeValue(forKey: item.id)
+        autoPilotInjectedTime.removeValue(forKey: item.id)
         if m.autoPilotEnabled {
             if m.autoPilotPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 m.autoPilotPrompt = "继续下一步"
@@ -3530,6 +3547,10 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         m.autoPilotDebounceSeconds = max(1.0, debounceSeconds)
         if enabled && (!wasEnabled || (m.autoPilotMaxRounds > 0 && m.autoPilotCurrentRounds >= m.autoPilotMaxRounds)) {
             m.autoPilotCurrentRounds = 0
+            autoPilotAwaitingTaskCompletion[item.id] = false
+            autoPilotObservedRunning[item.id] = false
+            autoPilotInjectedStepIndex.removeValue(forKey: item.id)
+            autoPilotInjectedTime.removeValue(forKey: item.id)
         }
         saveInstanceMeta(for: item.id, meta: m)
         if enabled {
@@ -3537,6 +3558,10 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         } else {
             cancelAutoPilotDebounce(for: item.id)
             autoPilotStates[item.id] = .disabled
+            autoPilotAwaitingTaskCompletion.removeValue(forKey: item.id)
+            autoPilotObservedRunning.removeValue(forKey: item.id)
+            autoPilotInjectedStepIndex.removeValue(forKey: item.id)
+            autoPilotInjectedTime.removeValue(forKey: item.id)
         }
     }
 
@@ -3548,6 +3573,10 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 m.autoPilotPrompt = "继续下一步"
             }
             m.autoPilotCurrentRounds = 0
+            autoPilotAwaitingTaskCompletion[item.id] = false
+            autoPilotObservedRunning[item.id] = false
+            autoPilotInjectedStepIndex.removeValue(forKey: item.id)
+            autoPilotInjectedTime.removeValue(forKey: item.id)
             saveInstanceMeta(for: item.id, meta: m)
             evaluateAutoPilotInitialState(for: item)
         }
@@ -3557,6 +3586,10 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         for item in instances {
             cancelAutoPilotDebounce(for: item.id)
             autoPilotStates[item.id] = .disabled
+            autoPilotAwaitingTaskCompletion.removeValue(forKey: item.id)
+            autoPilotObservedRunning.removeValue(forKey: item.id)
+            autoPilotInjectedStepIndex.removeValue(forKey: item.id)
+            autoPilotInjectedTime.removeValue(forKey: item.id)
             var m = meta(for: item)
             if m.autoPilotEnabled {
                 m.autoPilotEnabled = false
@@ -3569,6 +3602,10 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         let meta = meta(for: item)
         guard meta.autoPilotEnabled else {
             autoPilotStates[item.id] = .disabled
+            autoPilotAwaitingTaskCompletion.removeValue(forKey: item.id)
+            autoPilotObservedRunning.removeValue(forKey: item.id)
+            autoPilotInjectedStepIndex.removeValue(forKey: item.id)
+            autoPilotInjectedTime.removeValue(forKey: item.id)
             return
         }
         guard item.running else {
@@ -3604,6 +3641,8 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             if autoPilotStates[item.id] != .disabled && autoPilotStates[item.id] != .completed {
                 autoPilotStates[item.id] = .disabled
                 cancelAutoPilotDebounce(for: item.id)
+                autoPilotAwaitingTaskCompletion.removeValue(forKey: item.id)
+                autoPilotObservedRunning.removeValue(forKey: item.id)
             }
             return
         }
@@ -3612,24 +3651,54 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         case .runningTask:
             cancelAutoPilotDebounce(for: item.id)
             autoPilotStates[item.id] = .waitingRunning
+            autoPilotObservedRunning[item.id] = true
 
         case .stalled:
             // Long-running build, test execution, or deep reasoning:
             // MUST passively wait and NEVER interrupt!
             cancelAutoPilotDebounce(for: item.id)
             autoPilotStates[item.id] = .waitingStalled
+            autoPilotObservedRunning[item.id] = true
 
         case .needsAttention:
             // Waiting for user confirmation or choices:
             // MUST safely pause and wait for user, never inject blindly!
             cancelAutoPilotDebounce(for: item.id)
             autoPilotStates[item.id] = .pausedNeedsAttention
+            autoPilotObservedRunning[item.id] = true
 
         case .stopped, .error:
             cancelAutoPilotDebounce(for: item.id)
             autoPilotStates[item.id] = (newState == .error) ? .error : .standby
+            autoPilotAwaitingTaskCompletion[item.id] = false
+            autoPilotObservedRunning[item.id] = false
 
         case .idle:
+            // Task Execution Synchronization Gate:
+            // If we are currently awaiting the execution & completion of an injected prompt,
+            // verify whether the task has genuinely started and finished.
+            if autoPilotAwaitingTaskCompletion[item.id] == true {
+                let curStep = activities[item.id]?.stepIndex ?? 0
+                let prevStep = autoPilotInjectedStepIndex[item.id] ?? 0
+                let elapsed = Date().timeIntervalSince(autoPilotInjectedTime[item.id] ?? Date())
+                let hasSeenRunning = autoPilotObservedRunning[item.id] == true
+                let stepProgressed = curStep > prevStep
+
+                // If neither running was observed nor step index progressed, and it's been less than 20s,
+                // Antigravity is still preparing context or model is thinking before first output.
+                // We MUST keep waiting and NEVER dispatch the next round!
+                if !hasSeenRunning && !stepProgressed && elapsed < 20.0 {
+                    if autoPilotStates[item.id] != .waitingRunning {
+                        autoPilotStates[item.id] = .waitingRunning
+                    }
+                    return
+                }
+
+                // Task has completed! Clear the completion gate for this round.
+                autoPilotAwaitingTaskCompletion[item.id] = false
+                autoPilotObservedRunning[item.id] = false
+            }
+
             // Circuit Breaker: check max rounds limit
             if meta.autoPilotMaxRounds > 0 && meta.autoPilotCurrentRounds >= meta.autoPilotMaxRounds {
                 cancelAutoPilotDebounce(for: item.id)
@@ -3730,12 +3799,19 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                     self.autoPilotDebounceRemaining.removeValue(forKey: item.id)
 
                     Task {
-                        let success = await self.injectPromptViaCDP(item: item, prompt: latestMeta.autoPilotPrompt)
+                        let injectionResult = await self.injectPromptViaCDP(item: item, prompt: latestMeta.autoPilotPrompt)
                         await MainActor.run {
-                            if success {
+                            switch injectionResult {
+                            case .success:
                                 var updated = latestMeta
                                 updated.autoPilotCurrentRounds += 1
                                 self.saveInstanceMeta(for: item.id, meta: updated)
+
+                                // Arm the task completion gate
+                                self.autoPilotAwaitingTaskCompletion[item.id] = true
+                                self.autoPilotObservedRunning[item.id] = false
+                                self.autoPilotInjectedStepIndex[item.id] = self.activities[item.id]?.stepIndex ?? 0
+                                self.autoPilotInjectedTime[item.id] = Date()
 
                                 self.autoPilotStates[item.id] = .waitingRunning
 
@@ -3747,8 +3823,43 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                                     stepIndex: self.activities[item.id]?.stepIndex ?? 0,
                                     duration: nil
                                 )
-                            } else {
+
+                            case .busyRunningOrQueued(let hasStop, let hasQueued):
+                                // Instance is currently busy executing or has queued messages.
+                                // Keep waiting in .waitingRunning, do not advance rounds or error out!
+                                self.autoPilotStates[item.id] = .waitingRunning
+                                self.autoPilotObservedRunning[item.id] = true
+                                let reason = (hasStop && hasQueued) ? "任务执行中且存在排队消息" : (hasStop ? "任务正在执行中" : "存在排队消息尚未消化")
+                                self.recordTaskEvent(
+                                    item: item,
+                                    category: .autoPilot,
+                                    action: "⏳ 自托管检测到实例正忙（\(reason)），保持静默守候，待其完全就绪后再行调度",
+                                    workspace: self.activities[item.id]?.workspace ?? "",
+                                    stepIndex: self.activities[item.id]?.stepIndex ?? 0,
+                                    duration: nil
+                                )
+
+                            case .editorNotFound:
                                 self.autoPilotStates[item.id] = .error
+                                self.recordTaskEvent(
+                                    item: item,
+                                    category: .autoPilot,
+                                    action: "❌ 自托管静默发送失败：未找到对话输入框 (DOM未就绪)",
+                                    workspace: self.activities[item.id]?.workspace ?? "",
+                                    stepIndex: self.activities[item.id]?.stepIndex ?? 0,
+                                    duration: nil
+                                )
+
+                            case .failed:
+                                self.autoPilotStates[item.id] = .error
+                                self.recordTaskEvent(
+                                    item: item,
+                                    category: .autoPilot,
+                                    action: "❌ 自托管静默发送失败：未能连接至 DevTools 或窗口响应超时",
+                                    workspace: self.activities[item.id]?.workspace ?? "",
+                                    stepIndex: self.activities[item.id]?.stepIndex ?? 0,
+                                    duration: nil
+                                )
                             }
                         }
                     }
@@ -3760,8 +3871,9 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
 
     /// Silent background prompt injection via Chromium DevTools Protocol (CDP).
     /// Dispatches preset prompt to background window without bringing it to front or stealing focus.
-    func injectPromptViaCDP(item: ManagedInstance, prompt: String) async -> Bool {
-        guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+    /// Strictly guards against injecting while agent is running or messages are queued.
+    func injectPromptViaCDP(item: ManagedInstance, prompt: String) async -> CDPInjectionResult {
+        guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .failed }
         let appSupportRoot = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support")
         let portFile = appSupportRoot.appendingPathComponent(item.name).appendingPathComponent("DevToolsActivePort")
@@ -3770,7 +3882,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
               let firstLine = content.components(separatedBy: .newlines).first,
               let port = Int(firstLine.trimmingCharacters(in: .whitespacesAndNewlines)),
               let listURL = URL(string: "http://127.0.0.1:\(port)/json/list") else {
-            return false
+            return .failed
         }
 
         var req = URLRequest(url: listURL)
@@ -3778,7 +3890,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         req.setValue("close", forHTTPHeaderField: "Connection")
         guard let (data, _) = try? await Self.cdpSession.data(for: req),
               let targets = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-            return false
+            return .failed
         }
 
         let pageTargets = targets.filter { t in
@@ -3790,49 +3902,112 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         guard let mainTarget = pageTargets.first,
               let wsString = mainTarget["webSocketDebuggerUrl"] as? String,
               let wsURL = URL(string: wsString) else {
-            return false
+            return .failed
         }
 
         guard let promptJSONData = try? JSONSerialization.data(withJSONObject: [prompt]),
               let promptJSONStr = String(data: promptJSONData, encoding: .utf8) else {
-            return false
+            return .failed
         }
 
         let task = Self.cdpSession.webSocketTask(with: wsURL)
         task.resume()
         defer { task.cancel(with: .goingAway, reason: nil) }
 
-        // Step 1: Focus editor and select all text to prepare for clean injection
-        let focusPayload = """
+        // Step 0: Pre-Flight Gatekeeper - Check if task is running (hasStop) or has queued messages (hasQueued)
+        let preflightPayload = """
         (() => {
-            const editor = document.querySelector('[data-lexical-editor="true"]')
-                        || document.querySelector('[aria-label="Message input"]')
-                        || document.querySelector('div[contenteditable="true"]')
-                        || document.querySelector('textarea');
-            if (!editor) return { found: false };
-            editor.focus();
-            if (editor.tagName === 'TEXTAREA') {
-                editor.value = '';
-                editor.dispatchEvent(new Event('input', { bubbles: true }));
-            } else {
-                const sel = window.getSelection();
-                sel.selectAllChildren(editor);
-            }
-            return { found: true, isTextarea: editor.tagName === 'TEXTAREA' };
+            const stopBtn = document.querySelector('button[aria-label="Stop execution"], button[aria-label*="Stop"], button[aria-label*="Cancel"], button[aria-label*="终止"], button[aria-label*="停止"], button.stop-button');
+            const hasStop = Boolean(stopBtn);
+            const hasQueued = Boolean(
+                document.querySelector('[data-testid="queued-messages"]') ||
+                document.querySelector('.queued-messages') ||
+                Array.from(document.querySelectorAll('*')).some(el => {
+                    const t = (el.innerText || '').trim();
+                    return el.children.length === 0 && (
+                        t.includes('Queued Messages') ||
+                        t.includes('Sends after agent finishes') ||
+                        t.includes('排队消息') ||
+                        t.includes('任务完成后发送')
+                    );
+                })
+            );
+            return {
+                canInject: !hasStop && !hasQueued,
+                hasStop: hasStop,
+                hasQueued: hasQueued
+            };
         })()
         """
 
-        guard let focusReqData = try? JSONSerialization.data(withJSONObject: [
-            "id": 1001,
+        guard let preflightReqData = try? JSONSerialization.data(withJSONObject: [
+            "id": 1000,
             "method": "Runtime.evaluate",
-            "params": ["expression": focusPayload, "returnByValue": true]
-        ]), let focusReqStr = String(data: focusReqData, encoding: .utf8) else {
-            return false
+            "params": ["expression": preflightPayload, "returnByValue": true]
+        ]), let preflightReqStr = String(data: preflightReqData, encoding: .utf8) else {
+            return .failed
         }
 
         do {
+            try await task.send(.string(preflightReqStr))
+            if let preflightResp = try? await task.receive(),
+               case .string(let text) = preflightResp,
+               let respData = text.data(using: .utf8),
+               let obj = try? JSONSerialization.jsonObject(with: respData) as? [String: Any],
+               let res = obj["result"] as? [String: Any],
+               let resultVal = res["result"] as? [String: Any],
+               let valDict = resultVal["value"] as? [String: Any] {
+                let canInject = valDict["canInject"] as? Bool ?? false
+                let hasStop = valDict["hasStop"] as? Bool ?? false
+                let hasQueued = valDict["hasQueued"] as? Bool ?? false
+                if !canInject {
+                    return .busyRunningOrQueued(hasStop: hasStop, hasQueued: hasQueued)
+                }
+            }
+
+            // Step 1: Focus editor and select all text to prepare for clean injection
+            let focusPayload = """
+            (() => {
+                const editor = document.querySelector('[data-lexical-editor="true"]')
+                            || document.querySelector('[aria-label="Message input"]')
+                            || document.querySelector('div[contenteditable="true"]')
+                            || document.querySelector('textarea');
+                if (!editor) return { found: false };
+                editor.focus();
+                if (editor.tagName === 'TEXTAREA') {
+                    editor.value = '';
+                    editor.dispatchEvent(new Event('input', { bubbles: true }));
+                } else {
+                    const sel = window.getSelection();
+                    sel.selectAllChildren(editor);
+                }
+                return { found: true, isTextarea: editor.tagName === 'TEXTAREA' };
+            })()
+            """
+
+            guard let focusReqData = try? JSONSerialization.data(withJSONObject: [
+                "id": 1001,
+                "method": "Runtime.evaluate",
+                "params": ["expression": focusPayload, "returnByValue": true]
+            ]), let focusReqStr = String(data: focusReqData, encoding: .utf8) else {
+                return .failed
+            }
+
             try await task.send(.string(focusReqStr))
-            _ = try? await task.receive()
+            var editorFound = false
+            if let focusResp = try? await task.receive(),
+               case .string(let text) = focusResp,
+               let respData = text.data(using: .utf8),
+               let obj = try? JSONSerialization.jsonObject(with: respData) as? [String: Any],
+               let res = obj["result"] as? [String: Any],
+               let resultVal = res["result"] as? [String: Any],
+               let valDict = resultVal["value"] as? [String: Any] {
+                editorFound = valDict["found"] as? Bool ?? false
+            }
+
+            if !editorFound {
+                return .editorNotFound
+            }
 
             // Step 2: Native CDP Text Insertion (Chromium level trusted input pipeline)
             let insertTextPayload: [String: Any] = [
@@ -3991,12 +4166,12 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                    let resultVal = res["result"] as? [String: Any],
                    let valDict = resultVal["value"] as? [String: Any],
                    let verifiedSuccess = valDict["success"] as? Bool {
-                    return verifiedSuccess
+                    return verifiedSuccess ? .success : .failed
                 }
             }
-            return true
+            return .success
         } catch {
-            return false
+            return .failed
         }
     }
 
@@ -8986,13 +9161,24 @@ struct AutoPilotConfigSheet: View {
                     isTestingInjection = true
                     testResultMsg = "正在通过 CDP 静默注入..."
                     Task {
-                        let ok = await store.injectPromptViaCDP(item: item, prompt: promptText)
+                        let res = await store.injectPromptViaCDP(item: item, prompt: promptText)
                         await MainActor.run {
                             isTestingInjection = false
-                            if ok {
+                            switch res {
+                            case .success:
                                 testResultMsg = "✅ 测试注入成功！预设指令已静默递送并触发提交"
-                            } else {
-                                testResultMsg = "❌ 注入失败：未检测到 DevToolsActivePort 或对话窗口未加载"
+                            case .busyRunningOrQueued(let hasStop, let hasQueued):
+                                if hasStop && hasQueued {
+                                    testResultMsg = "⚠️ 发送被拦截：当前实例正忙，任务执行中且存在排队消息"
+                                } else if hasStop {
+                                    testResultMsg = "⚠️ 发送被拦截：当前实例任务正在执行中 (避免重复堆叠)"
+                                } else {
+                                    testResultMsg = "⚠️ 发送被拦截：当前实例存在排队消息尚未消化完毕"
+                                }
+                            case .editorNotFound:
+                                testResultMsg = "❌ 注入失败：未找到对话输入框 (DOM未加载就绪)"
+                            case .failed:
+                                testResultMsg = "❌ 注入失败：未检测到 DevToolsActivePort 或连接断开"
                             }
                         }
                     }
@@ -9647,7 +9833,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.12"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.13"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {

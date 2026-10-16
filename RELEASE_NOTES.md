@@ -1,3 +1,22 @@
+# v0.8.13
+
+- **彻底解决自托管自循环多轮并发连发与排队消息堆积缺陷 (Fix Auto-Pilot Premature Multi-Round Dispatch & Queue Accumulation Bug)**：
+  - **核心问题根因排查与深度修复 (Root Cause Analysis & Architecture Fix)**：
+    - **故障机理**：在旧版本中，当用户配置自托管（自循环）多轮（如 3 轮）时，第 1 轮静默注入成功后，应用将状态置为 `.waitingRunning`。但由于 Antigravity 底层智能体引擎在接收到新用户指令后，需要 2~5 秒的时间准备上下文和开始生成，在此期间磁盘上的 `transcript.jsonl` 仍维持上一任务的结束步态（`.idle`）。状态机在收到瞬时 `.idle` 时，由于仅判断了 `.debouncing` 与 `.injecting`，未对任务真实启动和完成进行闭环门禁保护，导致防抖计时器被立即再次触发并在数秒内连续将第 2 轮、第 3 轮静默递送，使 Antigravity 对话界面堆积了多条 `Queued Messages X Sends after agent finishes working`（排队消息）。
+    - **任务完成闭环门禁引擎 (Two-Phase Task Execution Synchronization Gate)**：
+      - 引入 `autoPilotAwaitingTaskCompletion` 与 `autoPilotObservedRunning` 双向门禁。当预设 Prompt 成功注入后，强行闭锁自托管调度；
+      - 在注入后 20 秒内，若遥测尚未观测到实际任务运行态（`runningTask`/`stalled`）且 transcript 步骤索引未递增，严格判定为“智能体准备与推理中”，强行保持 `.waitingRunning` 状态，绝对禁止开启下一轮防抖或发送；
+      - 仅当遥测完整捕获了任务的实际运行（`runningTask`/`stalled`），并且其后自然回落至 `.idle`，或步骤索引确凿发生向前推进时，才正式标记本轮任务真实完成；
+      - 完成本轮后，方才释放任务门禁，检查最大轮数熔断器，并在确认依旧处于 `.idle` 后启动下一轮次防抖确认。
+  - **CDP DOM 执行态与排队消息铁壁预检门禁 (Ironclad CDP Pre-Flight Guard)**：
+    - 在 CDP 实际聚焦输入框、写入文本或敲击回车前，执行底层 DOM 级前置权威探测：
+      - 检测是否存在“终止/停止执行”按钮（`button[aria-label="Stop execution"]`、`button[aria-label*="Stop"]`、`button[aria-label*="Cancel"]`、`button.stop-button`）；
+      - 检测是否存在正在等待执行的“排队消息”标签（`[data-testid="queued-messages"]`、`.queued-messages` 或包含 `Queued Messages` / `Sends after agent finishes` / `排队消息` / `任务完成后发送` 节点）；
+    - 若探测到实例当前正忙（正在执行任务）或已有未消化的排队消息，CDP 注入引擎立即优雅熔断并返回 `.busyRunningOrQueued`，**绝不在输入框中敲入任何字符或触发回车，彻底杜绝排队堆叠**，并在任务日志中清晰记录守候状态。
+    - 在设置弹窗“立即后台测试发送”中同样接入该防护，明确提示拦截原因（“当前实例任务正在执行中”或“存在排队消息尚未消化完毕”）。
+  - **全量 149 项自动化回归测试质量门禁保障 (149/149 Automated Tests Passed)**：
+    - 增补 `test_auto_pilot_task_completion_gate_and_state_tracking` 与 `test_cdp_preflight_dom_gatekeeper` 严格断言，149 项测试 100% 满分通过。
+
 # v0.8.12
 
 - **修复菜单栏图标右键点击无限递归引发崩溃问题 (Fix Status Bar Item Right-Click Infinite Recursion Crash)**：
