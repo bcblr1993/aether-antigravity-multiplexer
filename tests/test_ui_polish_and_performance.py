@@ -84,6 +84,29 @@ class TestUIPolishAndPerformance(unittest.TestCase):
             self.assertIn(".densityCompact", body)
             self.assertIn(".densityMatrix", body)
 
+    def test_streamlined_header_dashboard_and_utility_menu(self):
+        # Header dashboard must feature unified glass utility cluster with consolidated maintenance Menu
+        self.assertIn(r"v\(appVersion)", self.content)
+        self.assertIn("Kernel Direct", self.content)
+        self.assertIn("Label(\"管理升级备份 (\\(store.backups.count) 个批次)\", systemImage: \"externaldrive\")", self.content)
+        self.assertIn("Label(\"检查软件更新...\", systemImage: \"arrow.down.circle\")", self.content)
+        self.assertIn("Label(\"自动更新设置...\", systemImage: \"gearshape\")", self.content)
+
+    def test_compact_and_expanded_metrics_hud(self):
+        # MetricsHUD must support both compact HUD mode and expandable grid
+        self.assertIn("@AppStorage(\"metricsHudExpanded\") private var metricsExpanded", self.content)
+        self.assertIn("private var compactMetricsHUD: some View", self.content)
+        self.assertIn("private var expandedMetricsGrid: some View", self.content)
+        self.assertIn("metricsExpanded.toggle()", self.content)
+
+    def test_instance_thumbnail_tile_and_card_visual_hierarchy(self):
+        # Thumbnail tile and card must maintain clean spacing and right-anchored popover actions
+        self.assertIn("AutoPilotPillView(store: store, item: item, onConfigure: editAutoPilot)", self.content)
+        self.assertIn("popoverMenuButton(", self.content)
+        self.assertIn("title: \"在访达中显示应用\"", self.content)
+        self.assertIn("title: \"查看运行日志\"", self.content)
+
 
 if __name__ == "__main__":
     unittest.main()
+

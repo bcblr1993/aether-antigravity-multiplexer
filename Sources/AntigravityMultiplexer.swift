@@ -6653,12 +6653,7 @@ struct InstanceThumbnailTile: View {
                         .lineLimit(1)
                 }
 
-                if !activity.workspace.isEmpty {
-                    Text("· \(activity.workspace)")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+                Spacer(minLength: 4)
 
                 if let store = InstanceStore.current {
                     AutoPilotPillView(store: store, item: item, onConfigure: editAutoPilot)
@@ -7189,11 +7184,17 @@ struct InstanceCard: View {
                         .overlay(Capsule().strokeBorder(Color.green.opacity(0.25), lineWidth: 1))
                     }
 
-                    if item.running {
+                    Spacer(minLength: 6)
+
+                    if item.running && !activity.currentAction.isEmpty {
                         Text(activity.currentAction)
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
+                    }
+
+                    if let store = InstanceStore.current {
+                        AutoPilotPillView(store: store, item: item, onConfigure: editAutoPilot)
                     }
 
                     if !meta.notes.isEmpty {
@@ -7308,14 +7309,37 @@ struct InstanceCard: View {
                     IconActionButton(symbol: "eye.slash", tooltip: "收起隐藏窗口（后台继续跑任务）", size: 30, action: hideWindow)
                 }
 
-                IconActionButton(symbol: "folder", tooltip: "在访达中显示应用", size: 30, action: reveal)
-                IconActionButton(symbol: "doc.text.magnifyingglass", tooltip: "查看运行日志", size: 30, action: logs)
-
                 IconActionButton(symbol: "ellipsis", tooltip: "更多实例操作", size: 30) {
                     showMorePopover.toggle()
                 }
                 .popover(isPresented: $showMorePopover, arrowEdge: .bottom) {
                     VStack(alignment: .leading, spacing: 2) {
+                        popoverMenuButton(
+                            title: "在访达中显示应用",
+                            symbol: "folder",
+                            destructive: false
+                        ) {
+                            showMorePopover = false
+                            reveal()
+                        }
+                        popoverMenuButton(
+                            title: "查看运行日志",
+                            symbol: "doc.text.magnifyingglass",
+                            destructive: false
+                        ) {
+                            showMorePopover = false
+                            logs()
+                        }
+                        popoverMenuButton(
+                            title: "在访达中显示独立工作空间",
+                            symbol: "internaldrive",
+                            destructive: false
+                        ) {
+                            showMorePopover = false
+                            revealProfile()
+                        }
+                        Divider().padding(.vertical, 3)
+
                         popoverMenuButton(
                             title: "编辑项目备注与标签…",
                             symbol: "tag",
@@ -7331,14 +7355,6 @@ struct InstanceCard: View {
                         ) {
                             showMorePopover = false
                             editAutoPilot?()
-                        }
-                        popoverMenuButton(
-                            title: "在访达中显示独立工作空间",
-                            symbol: "internaldrive",
-                            destructive: false
-                        ) {
-                            showMorePopover = false
-                            revealProfile()
                         }
                         Divider().padding(.vertical, 3)
 
@@ -8830,10 +8846,11 @@ struct ContentView: View {
     @State private var refreshSpin: Double = 0
     @State private var logExpanded = true
     @State private var appeared = false
+    @AppStorage("metricsHudExpanded") private var metricsExpanded = false
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.3"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.4"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
@@ -9045,7 +9062,7 @@ struct ContentView: View {
                                 endPoint: .bottomTrailing
                             )
                         )
-                        .frame(width: 46, height: 46)
+                        .frame(width: 44, height: 44)
                         .overlay {
                             RoundedRectangle(cornerRadius: 13, style: .continuous)
                                 .strokeBorder(
@@ -9066,49 +9083,32 @@ struct ContentView: View {
                         .foregroundStyle(.white)
                 }
 
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 3) {
                     HStack(alignment: .center, spacing: 8) {
                         Text("Aether Antigravity Multiplexer")
-                            .font(.system(size: 19.5, weight: .bold))
+                            .font(.system(size: 19, weight: .bold))
                             .lineLimit(1)
-                        Text("v\(appVersion)")
-                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                            .foregroundStyle(accent)
-                            .padding(.horizontal, 7.5)
-                            .frame(height: 19)
-                            .background(Capsule().fill(accent.opacity(0.12)))
-                            .overlay {
-                                Capsule()
-                                    .strokeBorder(
-                                        LinearGradient(
-                                            stops: [
-                                                .init(color: Color.white.opacity(0.40), location: 0.0),
-                                                .init(color: accent.opacity(0.30), location: 1.0)
-                                            ],
-                                            startPoint: .top,
-                                            endPoint: .bottom
-                                        ),
-                                        lineWidth: 0.95
-                                    )
-                            }
 
-                        HStack(alignment: .center, spacing: 4) {
+                        HStack(alignment: .center, spacing: 6) {
+                            Text("v\(appVersion)")
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(accent)
                             Circle()
                                 .fill(Color.green)
-                                .frame(width: 5.5, height: 5.5)
+                                .frame(width: 5, height: 5)
                             Text("Kernel Direct")
                                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
                                 .foregroundStyle(.green)
                         }
-                        .padding(.horizontal, 6.5)
-                        .frame(height: 19)
-                        .background(Capsule().fill(Color.green.opacity(0.10)))
+                        .padding(.horizontal, 7)
+                        .frame(height: 20)
+                        .background(Capsule().fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.045)))
                         .overlay {
                             Capsule()
                                 .strokeBorder(
                                     LinearGradient(
                                         stops: [
-                                            .init(color: Color.white.opacity(0.45), location: 0.0),
+                                            .init(color: Color.white.opacity(colorScheme == .dark ? 0.25 : 0.40), location: 0.0),
                                             .init(color: Color.green.opacity(0.30), location: 1.0)
                                         ],
                                         startPoint: .top,
@@ -9144,51 +9144,86 @@ struct ContentView: View {
                     .help("隐藏所有正在显示的 Antigravity 窗口并回到缩略图监控墙（后台任务继续运行）")
                 }
 
-                IconActionButton(
-                    symbol: "arrow.clockwise",
-                    tooltip: "刷新实例与任务状态",
-                    size: 34,
-                    rotation: refreshSpin
-                ) {
-                    withAnimation(.spring(response: 0.45, dampingFraction: 0.72)) {
-                        refreshSpin += 360
+                // Consolidated Glass Utility Cluster: Refresh, Task History, and Maintenance Menu
+                HStack(spacing: 2) {
+                    IconActionButton(
+                        symbol: "arrow.clockwise",
+                        tooltip: "刷新实例与任务状态",
+                        size: 34,
+                        rotation: refreshSpin
+                    ) {
+                        withAnimation(.spring(response: 0.45, dampingFraction: 0.72)) {
+                            refreshSpin += 360
+                        }
+                        store.refresh()
                     }
-                    store.refresh()
-                }
 
-                IconActionButton(
-                    symbol: "list.bullet.rectangle.portrait",
-                    tooltip: "任务事件与执行动态中心（\(store.taskHistory.count) 条记录）",
-                    size: 34,
-                    badge: store.unreadAttentionCount
-                ) {
-                    showTaskHistory = true
-                }
+                    IconActionButton(
+                        symbol: "list.bullet.rectangle.portrait",
+                        tooltip: "任务事件与执行动态中心（\(store.taskHistory.count) 条记录）",
+                        size: 34,
+                        badge: store.unreadAttentionCount
+                    ) {
+                        showTaskHistory = true
+                    }
 
-                IconActionButton(
-                    symbol: "externaldrive",
-                    tooltip: "管理升级备份（\(store.backups.count) 个批次）",
-                    size: 34,
-                    badge: store.backups.count
-                ) {
-                    store.refreshBackups()
-                    showBackupManager = true
-                }
+                    Menu {
+                        Button {
+                            store.refreshBackups()
+                            showBackupManager = true
+                        } label: {
+                            Label("管理升级备份 (\(store.backups.count) 个批次)", systemImage: "externaldrive")
+                        }
 
-                IconActionButton(
-                    symbol: "arrow.down.circle",
-                    tooltip: "检查管理器更新",
-                    size: 34
-                ) {
-                    updaterController.checkForUpdates(nil)
-                }
+                        Divider()
 
-                IconActionButton(
-                    symbol: "gearshape",
-                    tooltip: "管理器自动更新设置",
-                    size: 34
-                ) {
-                    showUpdateSettings = true
+                        Button {
+                            updaterController.checkForUpdates(nil)
+                        } label: {
+                            Label("检查软件更新...", systemImage: "arrow.down.circle")
+                        }
+
+                        Button {
+                            showUpdateSettings = true
+                        } label: {
+                            Label("自动更新设置...", systemImage: "gearshape")
+                        }
+                    } label: {
+                        ZStack(alignment: .topTrailing) {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.035))
+                                .frame(width: 34, height: 34)
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .strokeBorder(
+                                            LinearGradient(
+                                                stops: [
+                                                    .init(color: Color.white.opacity(colorScheme == .dark ? 0.18 : 0.28), location: 0.0),
+                                                    .init(color: Color.primary.opacity(0.04), location: 1.0)
+                                                ],
+                                                startPoint: .top,
+                                                endPoint: .bottom
+                                            ),
+                                            lineWidth: 0.95
+                                        )
+                                }
+                            Image(systemName: "ellipsis.circle")
+                                .font(.system(size: 15, weight: .medium))
+                                .foregroundStyle(Color.primary.opacity(0.85))
+                                .frame(width: 34, height: 34)
+
+                            if store.backups.count > 0 {
+                                Circle()
+                                    .fill(accent)
+                                    .frame(width: 6, height: 6)
+                                    .offset(x: -4, y: 4)
+                            }
+                        }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .frame(width: 34, height: 34)
+                    .help("维护工具与更新设置（管理升级备份、检查更新、偏好）")
                 }
 
                 if !store.pendingUpgrades.isEmpty {
@@ -9223,52 +9258,214 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - 4-Column Metrics Strip
+    // MARK: - Metrics Strip (Compact HUD with Optional Expansion)
 
+    @ViewBuilder
     private var metricsStrip: some View {
-        HStack(alignment: .center, spacing: 12) {
-            metricTile(
-                title: store.tr(.metricRunningMonitor),
-                value: "\(store.runningCount) / \(store.instances.count) 运行中",
-                subtitle: store.activeTaskCount > 0 ? "⚡ 当前有 \(store.activeTaskCount) 个实例正在执行 Agent 任务" : "所有已启动实例均处于空闲就绪状态",
-                symbol: "waveform.path.ecg.rectangle.fill",
-                tint: store.activeTaskCount > 0 ? Color(red: 0.15, green: 0.82, blue: 0.96) : accent,
-                sparklineSamples: store.globalCpuHistory.map(\.value),
-                leadingIndicator: {
-                    AnyView(PulsingStatusDot(
-                        active: store.runningCount > 0,
-                        activeColor: store.activeTaskCount > 0 ? Color(red: 0.15, green: 0.82, blue: 0.96) : .green,
-                        pulse: store.activeTaskCount > 0
-                    ))
+        if metricsExpanded {
+            expandedMetricsGrid
+        } else {
+            compactMetricsHUD
+        }
+    }
+
+    private var compactMetricsHUD: some View {
+        HStack(alignment: .center, spacing: 0) {
+            // Segment 1: 运行监控
+            HStack(spacing: 8) {
+                PulsingStatusDot(
+                    active: store.runningCount > 0,
+                    activeColor: store.activeTaskCount > 0 ? Color(red: 0.15, green: 0.82, blue: 0.96) : .green,
+                    pulse: store.activeTaskCount > 0
+                )
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 4.5) {
+                        Text("\(store.runningCount)/\(store.instances.count)")
+                            .font(.system(size: 13, weight: .bold, design: .rounded))
+                        Text("运行中")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    Text(store.activeTaskCount > 0 ? "⚡ \(store.activeTaskCount) 个任务执行中" : "所有实例空闲")
+                        .font(.system(size: 10))
+                        .foregroundStyle(store.activeTaskCount > 0 ? Color(red: 0.15, green: 0.82, blue: 0.96) : .secondary)
+                        .lineLimit(1)
                 }
-            )
+                Spacer(minLength: 4)
+                if store.globalCpuHistory.count >= 2 {
+                    SparklineView(samples: store.globalCpuHistory.map(\.value), minVal: 0, color: store.activeTaskCount > 0 ? Color(red: 0.15, green: 0.82, blue: 0.96) : accent)
+                        .frame(width: 40, height: 20)
+                        .opacity(0.85)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
 
-            metricTile(
-                title: store.tr(.metricPrimaryVersion),
-                value: store.sourceVersion == "—" ? "—" : "v\(store.sourceVersion)",
-                subtitle: "/Applications/Antigravity.app",
-                symbol: "checkmark.shield.fill",
-                tint: .indigo
-            )
+            Divider().frame(height: 22).opacity(0.5)
 
-            metricTile(
-                title: store.tr(.metricDiskUsage),
-                value: store.totalDiskUsageBytes > 0 ? store.formattedTotalDiskUsage : "统计中…",
-                subtitle: "\(store.instances.count) 个实例独立数据与存储",
-                symbol: "internaldrive.fill",
-                tint: .cyan,
-                sparklineSamples: store.globalRamHistory.map(\.value)
-            )
+            // Segment 2: 存储与数据
+            HStack(spacing: 8) {
+                Image(systemName: "internaldrive.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.cyan)
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 4.5) {
+                        Text(store.totalDiskUsageBytes > 0 ? store.formattedTotalDiskUsage : "统计中…")
+                            .font(.system(size: 13, weight: .bold, design: .rounded))
+                        Text("存储占用")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("\(store.instances.count) 个独立实例")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                if store.globalRamHistory.count >= 2 {
+                    SparklineView(samples: store.globalRamHistory.map(\.value), minVal: 0, color: .cyan)
+                        .frame(width: 40, height: 20)
+                        .opacity(0.85)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
 
-            metricTile(
-                title: store.tr(.metricCompatibility),
-                value: store.compatibility,
-                subtitle: store.pendingUpgrades.isEmpty
-                    ? "全部独立副本均为最新版本"
-                    : "发现 \(store.pendingUpgrades.count) 个副本可升级至 v\(store.sourceVersion)",
-                symbol: store.compatibility == "已支持本机版本" ? "wrench.and.screwdriver.fill" : "exclamationmark.triangle.fill",
-                tint: compatibilityColor
-            )
+            Divider().frame(height: 22).opacity(0.5)
+
+            // Segment 3: 官方主版本
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.shield.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.indigo)
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 4.5) {
+                        Text(store.sourceVersion == "—" ? "—" : "v\(store.sourceVersion)")
+                            .font(.system(size: 13, weight: .bold, design: .rounded))
+                        Text("主程序")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("/Applications/Antigravity.app")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+
+            Divider().frame(height: 22).opacity(0.5)
+
+            // Segment 4: 兼容状态
+            HStack(spacing: 8) {
+                Image(systemName: store.compatibility == "已支持本机版本" ? "wrench.and.screwdriver.fill" : "exclamationmark.triangle.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(compatibilityColor)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(store.compatibility)
+                        .font(.system(size: 12.5, weight: .bold))
+                        .foregroundStyle(compatibilityColor)
+                        .lineLimit(1)
+                    Text(store.pendingUpgrades.isEmpty ? "全部副本最新" : "\(store.pendingUpgrades.count) 个可升级")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+
+            // Far right: Expand toggle button
+            Button {
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+                    metricsExpanded.toggle()
+                }
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 26, height: 26)
+                    .background(Color.primary.opacity(0.04))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 10)
+            .help("展开大图监控卡片与详细指标")
+        }
+        .padding(.vertical, 8)
+        .frame(height: 48)
+        .systemSurface(radius: 12)
+    }
+
+    private var expandedMetricsGrid: some View {
+        VStack(spacing: 8) {
+            HStack(alignment: .center, spacing: 12) {
+                metricTile(
+                    title: store.tr(.metricRunningMonitor),
+                    value: "\(store.runningCount) / \(store.instances.count) 运行中",
+                    subtitle: store.activeTaskCount > 0 ? "⚡ 当前有 \(store.activeTaskCount) 个实例正在执行 Agent 任务" : "所有已启动实例均处于空闲就绪状态",
+                    symbol: "waveform.path.ecg.rectangle.fill",
+                    tint: store.activeTaskCount > 0 ? Color(red: 0.15, green: 0.82, blue: 0.96) : accent,
+                    sparklineSamples: store.globalCpuHistory.map(\.value),
+                    leadingIndicator: {
+                        AnyView(PulsingStatusDot(
+                            active: store.runningCount > 0,
+                            activeColor: store.activeTaskCount > 0 ? Color(red: 0.15, green: 0.82, blue: 0.96) : .green,
+                            pulse: store.activeTaskCount > 0
+                        ))
+                    }
+                )
+
+                metricTile(
+                    title: store.tr(.metricPrimaryVersion),
+                    value: store.sourceVersion == "—" ? "—" : "v\(store.sourceVersion)",
+                    subtitle: "/Applications/Antigravity.app",
+                    symbol: "checkmark.shield.fill",
+                    tint: .indigo
+                )
+
+                metricTile(
+                    title: store.tr(.metricDiskUsage),
+                    value: store.totalDiskUsageBytes > 0 ? store.formattedTotalDiskUsage : "统计中…",
+                    subtitle: "\(store.instances.count) 个实例独立数据与存储",
+                    symbol: "internaldrive.fill",
+                    tint: .cyan,
+                    sparklineSamples: store.globalRamHistory.map(\.value)
+                )
+
+                metricTile(
+                    title: store.tr(.metricCompatibility),
+                    value: store.compatibility,
+                    subtitle: store.pendingUpgrades.isEmpty
+                        ? "全部独立副本均为最新版本"
+                        : "发现 \(store.pendingUpgrades.count) 个副本可升级至 v\(store.sourceVersion)",
+                    symbol: store.compatibility == "已支持本机版本" ? "wrench.and.screwdriver.fill" : "exclamationmark.triangle.fill",
+                    tint: compatibilityColor
+                )
+            }
+            .overlay(alignment: .topTrailing) {
+                Button {
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+                        metricsExpanded = false
+                    }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "chevron.up")
+                            .font(.system(size: 9.5, weight: .bold))
+                        Text("收起指标")
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3.5)
+                    .background(Color.primary.opacity(0.06))
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .padding(8)
+                .help("折叠为紧凑状态指标条")
+            }
         }
     }
 
