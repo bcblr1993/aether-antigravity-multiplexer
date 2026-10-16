@@ -5657,11 +5657,13 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
 
     @objc func handleStatusBarButtonClick(_ sender: NSStatusBarButton) {
         let event = NSApp.currentEvent
-        if event?.type == .rightMouseUp || (event?.modifierFlags.contains(.control) ?? false) {
+        let isRightClick = event?.type == .rightMouseUp || (event?.modifierFlags.contains(.control) ?? false)
+        if isRightClick {
+            if let popover = statusPopover, popover.isShown {
+                popover.performClose(nil)
+            }
             if let menu = cachedMenu {
-                sender.menu = menu
-                sender.performClick(nil)
-                sender.menu = nil
+                menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
             }
         } else {
             toggleStatusPopover(sender)
@@ -9645,7 +9647,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.11"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.12"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {

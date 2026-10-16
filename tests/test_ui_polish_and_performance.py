@@ -121,9 +121,9 @@ class TestUIPolishAndPerformance(unittest.TestCase):
         self.assertIn("func liquidGlassSheet(radius: CGFloat = 16) -> some View", self.content)
         self.assertIn(".liquidGlassSheet(radius: 16)", self.content)
 
-    def test_version_bump_0_8_11(self):
-        # Fallback version string in AntigravityMultiplexer.swift must be 0.8.11
-        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.11"', self.content)
+    def test_version_bump_0_8_12(self):
+        # Fallback version string in AntigravityMultiplexer.swift must be 0.8.12
+        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.12"', self.content)
 
     def test_popover_menu_row_item_reuse(self):
         # PopoverMenuRowItem must be defined and reused across tile and list item popovers
@@ -220,6 +220,11 @@ class TestUIPolishAndPerformance(unittest.TestCase):
         self.assertIn('let collapseItem = NSMenuItem(title: "一键收起所有窗口 (⌥0)"', self.content)
         self.assertIn("collapseItem.keyEquivalentModifierMask = [.option]", self.content)
         self.assertIn('Image(systemName: "rectangle.compress.vertical")', self.content)
+
+    def test_status_bar_right_click_no_recursion(self):
+        # handleStatusBarButtonClick must use menu.popUp directly and never call performClick(nil)
+        self.assertNotIn("sender.performClick(nil)", self.content)
+        self.assertIn("menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)", self.content)
 
 
 if __name__ == "__main__":

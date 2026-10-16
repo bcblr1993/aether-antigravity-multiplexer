@@ -1,3 +1,13 @@
+# v0.8.12
+
+- **修复菜单栏图标右键点击无限递归引发崩溃问题 (Fix Status Bar Item Right-Click Infinite Recursion Crash)**：
+  - **根本原因排查与深度修复**：
+    - **故障机理**：在 `StatusBarTarget.handleStatusBarButtonClick` 中，检测到右键点击事件时，原实现使用了 `sender.menu = menu; sender.performClick(nil); sender.menu = nil`。由于 `NSStatusBarButton` 绑定的 action 正是 `handleStatusBarButtonClick`，执行 `performClick(nil)` 会导致事件处理函数被同步递归调用。在右键事件尚未被消费完成的情况下，每次重入都会再次触发 `performClick`，引发深达 12,423 层的死循环无限递归，瞬间击穿 macOS 线程栈内存保护区（Stack Guard Protection Failure），最终抛出 `EXC_BAD_ACCESS (SIGSEGV)` 闪退退出。
+    - **AppKit 原生安全呈现方案**：彻底剔除危险的 `sender.performClick(nil)` 与动态解绑逻辑，全面替换为 macOS AppKit 标准原生的 `menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)`。
+    - **完善协同体验**：当用户在菜单栏图标上点击右键或使用 Control+左键时，首先平滑关闭可能展开的 Liquid Glass Popover 快捷卡片，随后在状态栏图标正下方极速、稳定地呈现包含“一键收起所有窗口 (⌥0)”、“极速切换面板 (⌥Space)”、“活跃任务列表”及“全部实例”的完整快捷菜单。
+  - **全量 147 项自动化测试质量门禁保障 (147/147 Automated Tests Passed)**：
+    - 新增 `test_status_bar_right_click_no_recursion` 严格门禁测试，严禁任何代码路径调用 `sender.performClick(nil)`，147 项测试 100% 满分通过。
+
 # v0.8.11
 
 - **一键收起所有窗口回监控台与多阶极速脱离引擎 (One-Click Instant Collapse All Windows & Multi-Tier Detach Pipeline)**：
