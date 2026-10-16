@@ -121,9 +121,9 @@ class TestUIPolishAndPerformance(unittest.TestCase):
         self.assertIn("func liquidGlassSheet(radius: CGFloat = 16) -> some View", self.content)
         self.assertIn(".liquidGlassSheet(radius: 16)", self.content)
 
-    def test_version_bump_0_8_8(self):
-        # Fallback version string in AntigravityMultiplexer.swift must be 0.8.8
-        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.8"', self.content)
+    def test_version_bump_0_8_9(self):
+        # Fallback version string in AntigravityMultiplexer.swift must be 0.8.9
+        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.9"', self.content)
 
     def test_popover_menu_row_item_reuse(self):
         # PopoverMenuRowItem must be defined and reused across tile and list item popovers
@@ -147,6 +147,16 @@ class TestUIPolishAndPerformance(unittest.TestCase):
         self.assertIn("matchesFilter(_ item: ManagedInstance)", self.content)
         self.assertIn("searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()", self.content)
         self.assertIn("Instant Liquid Glass Search Field", self.content)
+
+    def test_clone_dock_policy_enum_and_settings(self):
+        # CloneDockPolicy enum and settings integration must be present
+        self.assertIn("enum CloneDockPolicy: String, CaseIterable, Identifiable", self.content)
+        self.assertIn("case hidden = \"hidden\"", self.content)
+        self.assertIn("case auto = \"auto\"", self.content)
+        self.assertIn("case always = \"always\"", self.content)
+        self.assertIn("@Published var cloneDockPolicy: CloneDockPolicy", self.content)
+        self.assertIn('(json["dockPolicy"] as? String) != cloneDockPolicy.rawValue', self.content)
+        self.assertIn("Picker(\"\", selection: $store.cloneDockPolicy)", self.content)
 
 
 if __name__ == "__main__":

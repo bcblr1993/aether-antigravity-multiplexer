@@ -1,3 +1,20 @@
+# v0.8.9
+
+- **多开副本 Dock 栏净化与动态隐形策略 (Clone Instance Dock Clutter Prevention & Stealth Policy)**：
+  - **彻底解决多开实例 Dock 栏堆积与重复问题**：继 v0.7.7 解决菜单栏托盘图标泛滥后，针对用户反馈的“实例多开后 Dock 图标依然很多”痛点，实现从 Electron 主进程生命周期到底层 AppKit 的 Dock 图标隐形与智能动态控制体系。
+  - **三大灵活 Dock 显示策略 (`CloneDockPolicy`)**：
+    - **极简无痕 (默认/推荐 · Pure Stealth)**：所有副本实例完全不显示在 macOS Dock 栏中，仅保留主实例与多路复用器。Dock 栏回归极简，全部副本通过多路复用器主窗口、监控墙、Quick Switcher (`⌥ Tab`) 与全局热键 (`⌥ 1 ~ ⌥ 9`) 统一秒切与调度。
+    - **智能自动 (后台/收拢时隐藏 · Smart Auto-Hide)**：窗口在前台活跃时保留 Dock 图标；一旦用户点击左上角红色 ✕ 关闭按钮、收拢到监控墙或处于后台待机执行任务时，立即从 Dock 自动移除，后台任务平滑无感执行。
+    - **传统常驻 (始终在 Dock 显示 · Always Visible)**：保持 macOS 传统多应用常驻 Dock 模式。
+  - **Electron 底层生命周期拦截与防复发强化**：
+    - 在 Electron 主进程中重写并受控代理 `app.dock.show()`，彻底阻断第三方模块或上游逻辑意外强行唤醒 Dock 图标。
+    - 接入 `fs.watchFile` 对 `app_storage.json` 的微秒级监听，用户在多路复用器设置面板切换策略时，无需重启实例，即刻生效。
+    - 深度挂接 `win.on('close')`、`win.on('hide')`、`win.on('minimize')` 与 `app.on('hide')` 事件，关闭窗口时转入静默后台并同步移除 Dock 图标。
+  - **设置中心新增可视化策略面板 (`SettingsSheetView`)**：
+    - 采用 macOS Liquid Glass 分段控件，提供清晰的策略说明与即时中英双语支持。
+- **全量 138 项自动化测试质量门禁保障 (138/138 Automated Tests Passed)**：
+  - 增补 `CloneDockPolicy` 核心枚举与设置同步验证、`patch_asar` Dock 隐藏与监听逻辑断言。
+
 # v0.8.8
 
 - **macOS Liquid Glass 全界面深度规范与触觉物理动效体系 (Full macOS Liquid Glass & Universal Tactile Spring Physics)**：

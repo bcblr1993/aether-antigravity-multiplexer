@@ -68,6 +68,19 @@ class CompatibilityTests(unittest.TestCase):
         self.assertIn("tray_1.updateTrayAgentCount = function()", create_instance_py)
         self.assertIn("electron_1.Tray = class DummyTray", create_instance_py)
 
+    def test_patch_asar_dock_policy_and_auto_hiding(self):
+        import pathlib
+        create_instance_py = (pathlib.Path(__file__).resolve().parents[1] / "Resources/create_instance.py").read_text(encoding="utf-8")
+        self.assertIn("function _readDockPolicy()", create_instance_py)
+        self.assertIn("function _syncDockState(forceShow)", create_instance_py)
+        self.assertIn("electron_1.app.dock.hide()", create_instance_py)
+        self.assertIn("_origDockShow = electron_1.app.dock.show.bind(electron_1.app.dock)", create_instance_py)
+        self.assertIn("if (_readDockPolicy() === 'hidden') return", create_instance_py)
+        self.assertIn("require('fs').watchFile(_cfgFile", create_instance_py)
+        self.assertIn("electron_1.app.on('hide', () => {", create_instance_py)
+        self.assertIn("_syncDockState(false)", create_instance_py)
+        self.assertIn("_syncDockState(true)", create_instance_py)
+
     def test_upgrade_all_skip_backup_argument_and_progress(self):
         import io
         import upgrade_all

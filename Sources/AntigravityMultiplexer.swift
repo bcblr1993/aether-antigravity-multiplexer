@@ -54,6 +54,63 @@ enum AppTheme: String, CaseIterable, Identifiable {
     }
 }
 
+// MARK: - Clone Instance Dock Policy
+
+enum CloneDockPolicy: String, CaseIterable, Identifiable {
+    case hidden = "hidden"
+    case auto = "auto"
+    case always = "always"
+
+    var id: String { rawValue }
+
+    var icon: String {
+        switch self {
+        case .hidden: return "dock.rectangle"
+        case .auto: return "sparkles.rectangle.stack"
+        case .always: return "rectangle.dock"
+        }
+    }
+
+    func localizedTitle(lang: AppLanguage) -> String {
+        switch self {
+        case .hidden:
+            return lang == .en ? "Pure Stealth (No Dock Icons)" : "极简无痕 (推荐，完全不占 Dock)"
+        case .auto:
+            return lang == .en ? "Smart Auto-Hide (Background)" : "智能模式 (仅后台/收拢时隐藏)"
+        case .always:
+            return lang == .en ? "Always Visible (Traditional)" : "传统常驻 (始终在 Dock 显示)"
+        }
+    }
+
+    func localizedShortTitle(lang: AppLanguage) -> String {
+        switch self {
+        case .hidden:
+            return lang == .en ? "Stealth" : "极简隐藏"
+        case .auto:
+            return lang == .en ? "Auto-Hide" : "后台隐藏"
+        case .always:
+            return lang == .en ? "Always" : "始终显示"
+        }
+    }
+
+    func localizedDetail(lang: AppLanguage) -> String {
+        switch self {
+        case .hidden:
+            return lang == .en
+                ? "Cloned instances will not occupy the macOS Dock, completely eliminating multi-instance clutter. Manage and switch instances directly via the Multiplexer."
+                : "副本实例完全不占用系统 Dock 栏，彻底消除多开时 Dock 栏重复图标泛滥；全部副本由多路复用器统一管理、监控与秒切。"
+        case .auto:
+            return lang == .en
+                ? "Dock icon appears while the window is active in the foreground, and automatically disappears when closed, minimized, or collapsed to background."
+                : "实例窗口在前台展示时在 Dock 栏显示；一旦点击红叉 ✕ 关闭、收拢到监控墙或处于后台待机，立即从 Dock 自动移除。"
+        case .always:
+            return lang == .en
+                ? "Each running instance always retains a persistent icon in the macOS Dock."
+                : "每个运行中的副本实例始终在系统 Dock 栏保留独立图标。"
+        }
+    }
+}
+
 // MARK: - Internationalization & Localization (i18n)
 
 enum AppLanguage: String, CaseIterable, Identifiable {
@@ -3012,6 +3069,15 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             updateDockBadge()
         }
     }
+    @Published var cloneDockPolicy: CloneDockPolicy = {
+        let raw = UserDefaults.standard.string(forKey: "cloneDockPolicy") ?? CloneDockPolicy.hidden.rawValue
+        return CloneDockPolicy(rawValue: raw) ?? .hidden
+    }() {
+        didSet {
+            UserDefaults.standard.set(cloneDockPolicy.rawValue, forKey: "cloneDockPolicy")
+            enforceRunInBackgroundSetting(for: instances)
+        }
+    }
     @Published var appTheme: AppTheme = {
         let raw = UserDefaults.standard.string(forKey: "appTheme") ?? AppTheme.system.rawValue
         return AppTheme(rawValue: raw) ?? .system
@@ -3989,9 +4055,9 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         return app.isHidden || app.activationPolicy != .regular
     }
 
-    /// Ensures `"runInBackground": "true"` in `~/Library/Application Support/<InstanceName>/app_storage.json`
+    /// Ensures `"runInBackground": "true"` and `"dockPolicy"` in `~/Library/Application Support/<InstanceName>/app_storage.json`
     /// so clicking the macOS red close button (✕) never quits the instance or interrupts running Agent tasks,
-    /// and instead detaches the window and hides its Dock icon (`app.dock.hide()`).
+    /// and instead detaches the window and controls its Dock icon (`app.dock.hide()`).
     private func enforceRunInBackgroundSetting(for items: [ManagedInstance]) {
         let appSupportRoot = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support")
@@ -4004,11 +4070,17 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 json = parsed
             }
+            var changed = false
             if (json["runInBackground"] as? String) != "true" {
                 json["runInBackground"] = "true"
-                if let encoded = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]) {
-                    try? encoded.write(to: storageFile, options: .atomic)
-                }
+                changed = true
+            }
+            if (json["dockPolicy"] as? String) != cloneDockPolicy.rawValue {
+                json["dockPolicy"] = cloneDockPolicy.rawValue
+                changed = true
+            }
+            if changed, let encoded = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]) {
+                try? encoded.write(to: storageFile, options: .atomic)
             }
         }
     }
@@ -9311,7 +9383,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.8"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.9"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
@@ -10460,6 +10532,32 @@ struct ContentView: View {
                     }
                 }
                 .toggleStyle(.switch)
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "dock.rectangle")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color.accentColor)
+                        Text(store.effectiveLanguage == .en ? "Clone Instances Dock Policy" : "多开副本 Dock 栏显示策略")
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(.primary)
+                    }
+
+                    Picker("", selection: $store.cloneDockPolicy) {
+                        ForEach(CloneDockPolicy.allCases) { policy in
+                            Text(policy.localizedShortTitle(lang: store.effectiveLanguage)).tag(policy)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
+                    Text(store.cloneDockPolicy.localizedDetail(lang: store.effectiveLanguage))
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 1)
+                }
             }
 
             Divider()
