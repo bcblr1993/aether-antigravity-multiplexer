@@ -121,9 +121,32 @@ class TestUIPolishAndPerformance(unittest.TestCase):
         self.assertIn("func liquidGlassSheet(radius: CGFloat = 16) -> some View", self.content)
         self.assertIn(".liquidGlassSheet(radius: 16)", self.content)
 
-    def test_version_bump_0_8_7(self):
-        # Fallback version string in AntigravityMultiplexer.swift must be 0.8.7
-        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.7"', self.content)
+    def test_version_bump_0_8_8(self):
+        # Fallback version string in AntigravityMultiplexer.swift must be 0.8.8
+        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.8"', self.content)
+
+    def test_popover_menu_row_item_reuse(self):
+        # PopoverMenuRowItem must be defined and reused across tile and list item popovers
+        self.assertIn("struct PopoverMenuRowItem: View", self.content)
+        self.assertIn("PopoverMenuRowItem(", self.content)
+        self.assertIn(".buttonStyle(TactileSpringButtonStyle(pressedScale: 0.96, hoverScale: 1.01))", self.content)
+
+    def test_modern_button_style_specular_sheen(self):
+        # ModernButtonStyle must provide specular highlight for secondary and ghost variants
+        self.assertIn("(variant == .secondary || variant == .ghost) && !configuration.isPressed", self.content)
+        self.assertIn("LinearGradient(", self.content)
+
+    def test_status_popover_liquid_glass(self):
+        # StatusPopoverView must apply liquidGlassSheet(radius: 14)
+        self.assertIn("StatusPopoverView: View", self.content)
+        self.assertIn(".liquidGlassSheet(radius: 14)", self.content)
+
+    def test_content_view_instant_search(self):
+        # ContentView must include instant search field in controlToolbar and full-text filter in matchesFilter
+        self.assertIn("@State private var searchText: String = \"\"", self.content)
+        self.assertIn("matchesFilter(_ item: ManagedInstance)", self.content)
+        self.assertIn("searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()", self.content)
+        self.assertIn("Instant Liquid Glass Search Field", self.content)
 
 
 if __name__ == "__main__":

@@ -1,3 +1,18 @@
+# v0.8.8
+
+- **macOS Liquid Glass 全界面深度规范与触觉物理动效体系 (Full macOS Liquid Glass & Universal Tactile Spring Physics)**：
+  - **按钮通用液态玻璃高光与触觉弹性回弹 (`ModernButtonStyle`)**：重构并强化核心按钮规范，在次级按钮 (`.secondary`) 与幽灵按钮 (`.ghost`) 引入微反光连续渐变（Specular Sheen Reflection），按压行程优化至 0.945 并配合微秒级物理弹性阻尼 (`response: 0.18, dampingFraction: 0.74`) 与触觉力反馈，全应用按钮操作手感极为细腻丝滑。
+  - **弹出菜单项高复用规范 (`PopoverMenuRowItem`)**：将缩略图壁纸 (`InstanceThumbnailTile`) 与列表视图 (`InstanceListItemView`) 的实例操作弹出菜单抽象统一为可复用的 `PopoverMenuRowItem` 组件，悬停时自动呈现半透明材质圆角填充、弹性微动效与触觉回馈。
+  - **菜单栏快捷状态浮窗液态玻璃升级 (`StatusPopoverView`)**：接入 `.liquidGlassSheet(radius: 14)` 深度毛玻璃背景与镜面边缘描边，与主界面模态视窗体系保持绝对一致。
+  - **任务历史中心时间轴卡片光感质感 (`TaskHistoryCard`)**：增加镜面高光反射描边、悬停立体微投影与 1.004x 弹性悬浮微动效，呈现专业级 macOS 系统控制台质感。
+  - **命令模式快捷项触觉交互 (`CommandPaletteRow`)**：集成平滑弹性悬浮与触觉轻震反馈，键盘方向键与鼠标点击无缝顺滑。
+  - **顶部维护菜单动效协同 (`HeaderMenuTriggerButton`)**：将顶部维护工具与更新设置菜单按钮升级为具有触觉弹性缩放与悬停镜面描边的统一风格，与相邻图标按钮体验整齐划一。
+- **主工作台实时智能液态搜索与动态过滤 (`Instant Liquid Glass Search & Filter Engine`)**：
+  - **控制栏内嵌即时搜索框**：在主界面顶部控制栏紧凑内嵌液态玻璃搜索胶囊，实时对实例名称、自定义别名、分类标签、备忘说明、关联工作空间以及正在执行的动作进行全字段模糊过滤。
+  - **零延迟动态过渡与空状态引导**：列表与缩略图网格实时响应输入，支持一键清空关键词并提供精准的无匹配引导。
+- **全量 136 项自动化测试质量门禁保障 (136/136 Automated Tests Passed)**：
+  - 增补 `PopoverMenuRowItem` 复用规范验证、`HeaderMenuTriggerButton` 动效集成验证、主界面实时搜索过滤与状态重置门禁验证。
+
 # v0.8.7
 
 - **自托管达到预设最大轮数自动关闭与安全下电 (Autonomous Auto-Pilot Safe Auto-Shutdown on Max Rounds)**：

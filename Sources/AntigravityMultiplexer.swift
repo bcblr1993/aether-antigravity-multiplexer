@@ -1390,6 +1390,15 @@ private struct ModernButtonStyle: ButtonStyle {
                                     endPoint: .center
                                 )
                             )
+                    } else if (variant == .secondary || variant == .ghost) && !configuration.isPressed {
+                        RoundedRectangle(cornerRadius: radius, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [Color.white.opacity(hovered ? (colorScheme == .dark ? 0.14 : 0.24) : (colorScheme == .dark ? 0.06 : 0.12)), Color.clear],
+                                    startPoint: .top,
+                                    endPoint: .center
+                                )
+                            )
                     }
                 }
             }
@@ -1404,10 +1413,10 @@ private struct ModernButtonStyle: ButtonStyle {
                 y: configuration.isPressed ? 1 : (hovered ? 3 : 1.5)
             )
             .contentShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
-            .scaleEffect(configuration.isPressed ? 0.955 : (hovered && isEnabled ? 1.025 : 1.0))
+            .scaleEffect(configuration.isPressed ? 0.945 : (hovered && isEnabled ? 1.025 : 1.0))
             .opacity(isEnabled ? 1.0 : 0.45)
-            .animation(.spring(response: 0.20, dampingFraction: 0.76), value: hovered)
-            .animation(.spring(response: 0.15, dampingFraction: 0.72), value: configuration.isPressed)
+            .animation(.spring(response: 0.18, dampingFraction: 0.74), value: hovered)
+            .animation(.spring(response: 0.13, dampingFraction: 0.70), value: configuration.isPressed)
             .onHover { hovered = $0 }
             .onChange(of: configuration.isPressed) { pressed in
                 if pressed {
@@ -1639,6 +1648,89 @@ private struct IconActionButton: View {
         .buttonStyle(LiquidGlassIconButtonStyle(size: size, badge: badge))
         .disabled(disabled)
         .help(tooltip)
+    }
+}
+
+private struct PopoverMenuRowItem: View {
+    let title: String
+    let symbol: String
+    var destructive: Bool = false
+    var disabled: Bool = false
+    let action: () -> Void
+    @State private var hovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(alignment: .center, spacing: 8) {
+                Image(systemName: symbol)
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(width: 15, height: 15, alignment: .center)
+                Text(title)
+                    .font(.system(size: 12.5, weight: .medium))
+                Spacer()
+            }
+            .foregroundStyle(destructive ? Color.red : Color.primary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background {
+                if hovered && !disabled {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(destructive ? Color.red.opacity(0.12) : Color.primary.opacity(0.08))
+                }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        }
+        .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.96, hoverScale: 1.01))
+        .disabled(disabled)
+        .opacity(disabled ? 0.4 : 1.0)
+        .onHover { hovered = $0 }
+    }
+}
+
+private struct HeaderMenuTriggerButton: View {
+    let backupCount: Int
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var hovered = false
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(Color.primary.opacity(hovered ? (colorScheme == .dark ? 0.14 : 0.08) : (colorScheme == .dark ? 0.06 : 0.035)))
+                .frame(width: 34, height: 34)
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(
+                            LinearGradient(
+                                stops: [
+                                    .init(color: Color.white.opacity(hovered ? (colorScheme == .dark ? 0.38 : 0.50) : (colorScheme == .dark ? 0.18 : 0.28)), location: 0.0),
+                                    .init(color: Color.primary.opacity(hovered ? 0.16 : 0.04), location: 1.0)
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ),
+                            lineWidth: 0.95
+                        )
+                }
+                .shadow(
+                    color: Color.black.opacity(hovered ? (colorScheme == .dark ? 0.22 : 0.08) : 0),
+                    radius: hovered ? 4 : 0,
+                    y: hovered ? 1.5 : 0
+                )
+            Image(systemName: "ellipsis.circle")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(hovered ? Color.primary : Color.primary.opacity(0.85))
+                .frame(width: 34, height: 34)
+
+            if backupCount > 0 {
+                Circle()
+                    .fill(accent)
+                    .frame(width: 6, height: 6)
+                    .offset(x: -4, y: 4)
+            }
+        }
+        .scaleEffect(hovered ? 1.045 : 1.0)
+        .animation(.spring(response: 0.20, dampingFraction: 0.74), value: hovered)
+        .onHover { hovered = $0 }
     }
 }
 
@@ -6328,10 +6420,16 @@ private struct CommandPaletteRow: View {
                         .fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.045))
                 }
             }
-            .contentShape(Rectangle())
+            .scaleEffect(isSelected ? 1.010 : (hovered ? 1.005 : 1.0))
+            .animation(.spring(response: 0.20, dampingFraction: 0.80), value: isSelected)
+            .animation(.spring(response: 0.18, dampingFraction: 0.78), value: hovered)
+            .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
         }
         .buttonStyle(.plain)
         .onHover { hovered = $0 }
+        .simultaneousGesture(TapGesture().onEnded {
+            HapticManager.shared.play(.alignment)
+        })
     }
 }
 
@@ -6585,6 +6683,7 @@ struct StatusPopoverView: View {
         }
         .padding(14)
         .frame(width: 320)
+        .liquidGlassSheet(radius: 14)
         .preferredColorScheme(store.appTheme.colorScheme)
     }
 }
@@ -7342,23 +7441,13 @@ struct InstanceThumbnailTile: View {
         disabled: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
-            HStack(alignment: .center, spacing: 8) {
-                Image(systemName: symbol)
-                    .font(.system(size: 12, weight: .medium))
-                    .frame(width: 15, height: 15, alignment: .center)
-                Text(title)
-                    .font(.system(size: 12.5, weight: .medium))
-                Spacer()
-            }
-            .foregroundStyle(destructive ? Color.red : Color.primary)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-        }
-        .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.96, hoverScale: 1.01))
-        .disabled(disabled)
-        .opacity(disabled ? 0.4 : 1.0)
+        PopoverMenuRowItem(
+            title: title,
+            symbol: symbol,
+            destructive: destructive,
+            disabled: disabled,
+            action: action
+        )
     }
 }
 
@@ -7860,23 +7949,13 @@ struct InstanceCard: View {
         disabled: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
-            HStack(alignment: .center, spacing: 8) {
-                Image(systemName: symbol)
-                    .font(.system(size: 12, weight: .medium))
-                    .frame(width: 15, height: 15, alignment: .center)
-                Text(title)
-                    .font(.system(size: 12.5, weight: .medium))
-                Spacer()
-            }
-            .foregroundStyle(destructive ? Color.red : Color.primary)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
-            .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-        }
-        .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.96, hoverScale: 1.01))
-        .disabled(disabled)
-        .opacity(disabled ? 0.4 : 1.0)
+        PopoverMenuRowItem(
+            title: title,
+            symbol: symbol,
+            destructive: destructive,
+            disabled: disabled,
+            action: action
+        )
     }
 }
 
@@ -9224,6 +9303,7 @@ struct ContentView: View {
     @State private var showOptionsPopover = false
     @State private var destination = URL(fileURLWithPath: "/Applications")
     @State private var selectedFilter: InstanceFilter = .all
+    @State private var searchText: String = ""
     @State private var refreshSpin: Double = 0
     @State private var logExpanded = true
     @State private var appeared = false
@@ -9231,23 +9311,36 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.7"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.8"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
+        let filterPass: Bool
         switch selectedFilter {
         case .all:
-            return true
+            filterPass = true
         case .running:
-            return item.running
+            filterPass = item.running
         case .busyTask:
             let state = store.activity(for: item).state
-            return item.running && (state == .runningTask || state == .stalled || state == .needsAttention)
+            filterPass = item.running && (state == .runningTask || state == .stalled || state == .needsAttention)
         case .withTags:
-            return store.meta(for: item).hasCustomContent
+            filterPass = store.meta(for: item).hasCustomContent
         case .upgradable:
-            return !item.isOriginal && item.version.compare(store.sourceVersion, options: .numeric) == .orderedAscending
+            filterPass = !item.isOriginal && item.version.compare(store.sourceVersion, options: .numeric) == .orderedAscending
         }
+        guard filterPass else { return false }
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if q.isEmpty { return true }
+        let meta = store.meta(for: item)
+        let act = store.activity(for: item)
+        return item.name.lowercased().contains(q) ||
+               meta.nickname.lowercased().contains(q) ||
+               meta.tag.lowercased().contains(q) ||
+               meta.notes.lowercased().contains(q) ||
+               act.workspace.lowercased().contains(q) ||
+               act.currentAction.lowercased().contains(q) ||
+               String(item.index) == q
     }
 
     private var filteredInstances: [ManagedInstance] {
@@ -9570,36 +9663,7 @@ struct ContentView: View {
                             Label("自动更新设置...", systemImage: "gearshape")
                         }
                     } label: {
-                        ZStack(alignment: .topTrailing) {
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.035))
-                                .frame(width: 34, height: 34)
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        .strokeBorder(
-                                            LinearGradient(
-                                                stops: [
-                                                    .init(color: Color.white.opacity(colorScheme == .dark ? 0.18 : 0.28), location: 0.0),
-                                                    .init(color: Color.primary.opacity(0.04), location: 1.0)
-                                                ],
-                                                startPoint: .top,
-                                                endPoint: .bottom
-                                            ),
-                                            lineWidth: 0.95
-                                        )
-                                }
-                            Image(systemName: "ellipsis.circle")
-                                .font(.system(size: 15, weight: .medium))
-                                .foregroundStyle(Color.primary.opacity(0.85))
-                                .frame(width: 34, height: 34)
-
-                            if store.backups.count > 0 {
-                                Circle()
-                                    .fill(accent)
-                                    .frame(width: 6, height: 6)
-                                    .offset(x: -4, y: 4)
-                            }
-                        }
+                        HeaderMenuTriggerButton(backupCount: store.backups.count)
                     }
                     .menuStyle(.borderlessButton)
                     .menuIndicator(.hidden)
@@ -10008,6 +10072,48 @@ struct ContentView: View {
                 }
             }
             .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.94, hoverScale: 1.02))
+
+            // Instant Liquid Glass Search Field
+            HStack(spacing: 5) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                TextField(store.effectiveLanguage == .en ? "Search..." : "搜索实例/别名/标签...", text: $searchText)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 11.5))
+                if !searchText.isEmpty {
+                    Button {
+                        withAnimation(.spring(response: 0.22, dampingFraction: 0.78)) {
+                            searchText = ""
+                        }
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.88, hoverScale: 1.10))
+                }
+            }
+            .padding(.horizontal, 8)
+            .frame(width: 175, height: 32)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.035))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            stops: [
+                                .init(color: Color.white.opacity(colorScheme == .dark ? (!searchText.isEmpty ? 0.35 : 0.18) : (!searchText.isEmpty ? 0.50 : 0.28)), location: 0.0),
+                                .init(color: !searchText.isEmpty ? Color.accentColor.opacity(0.35) : Color.primary.opacity(0.05), location: 1.0)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 0.95
+                    )
+            }
 
             Spacer()
 
@@ -10702,17 +10808,36 @@ struct ContentView: View {
     private var filteredEmptyView: some View {
         HStack {
             Spacer()
-            VStack(spacing: 6) {
-                Image(systemName: selectedFilter == .busyTask ? "bolt.slash" : (selectedFilter == .running ? "moon.zzz" : "checkmark.circle"))
-                    .font(.system(size: 20))
+            VStack(spacing: 8) {
+                if !searchText.isEmpty {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 22))
+                        .foregroundStyle(.secondary)
+                    Text("未找到与「\(searchText)」匹配的实例")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                    Text("请尝试修改搜索词或切换上方筛选分类")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                    Button("清除搜索条件") {
+                        withAnimation(.spring(response: 0.22, dampingFraction: 0.78)) {
+                            searchText = ""
+                        }
+                    }
+                    .buttonStyle(ModernButtonStyle(variant: .secondary, compact: true))
+                    .padding(.top, 4)
+                } else {
+                    Image(systemName: selectedFilter == .busyTask ? "bolt.slash" : (selectedFilter == .running ? "moon.zzz" : "checkmark.circle"))
+                        .font(.system(size: 20))
+                        .foregroundStyle(.secondary)
+                    Text(
+                        selectedFilter == .busyTask
+                            ? "当前没有正在执行任务的实例"
+                            : (selectedFilter == .running ? "当前没有正在运行的实例" : "所有副本均已是最新版本")
+                    )
+                    .font(.system(size: 12.5, weight: .medium))
                     .foregroundStyle(.secondary)
-                Text(
-                    selectedFilter == .busyTask
-                        ? "当前没有正在执行任务的实例"
-                        : (selectedFilter == .running ? "当前没有正在运行的实例" : "所有副本均已是最新版本")
-                )
-                .font(.system(size: 12.5, weight: .medium))
-                .foregroundStyle(.secondary)
+                }
             }
             .padding(.vertical, 32)
             Spacer()
@@ -11724,17 +11849,39 @@ private struct TaskHistoryCard: View {
         .padding(14)
         .background {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.primary.opacity(colorScheme == .dark ? 0.05 : 0.03))
+                .fill(Color.primary.opacity(hovered ? (colorScheme == .dark ? 0.08 : 0.05) : (colorScheme == .dark ? 0.05 : 0.03)))
         }
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(
-                    item.category == .needsAttention ? Color.orange.opacity(0.35) :
-                    (item.category == .error ? Color.red.opacity(0.35) : Color.primary.opacity(hovered ? 0.18 : 0.08)),
-                    lineWidth: 1
-                )
+                .strokeBorder(borderStroke, lineWidth: 1)
         }
+        .shadow(
+            color: Color.black.opacity(hovered ? (colorScheme == .dark ? 0.20 : 0.06) : 0),
+            radius: hovered ? 6 : 0,
+            y: hovered ? 2 : 0
+        )
+        .scaleEffect(hovered ? 1.004 : 1.0)
+        .animation(.spring(response: 0.22, dampingFraction: 0.78), value: hovered)
         .onHover { hovered = $0 }
+    }
+
+    private var borderStroke: AnyShapeStyle {
+        if item.category == .needsAttention {
+            return AnyShapeStyle(Color.orange.opacity(hovered ? 0.60 : 0.35))
+        } else if item.category == .error {
+            return AnyShapeStyle(Color.red.opacity(hovered ? 0.60 : 0.35))
+        } else {
+            return AnyShapeStyle(
+                LinearGradient(
+                    stops: [
+                        .init(color: Color.white.opacity(colorScheme == .dark ? (hovered ? 0.30 : 0.14) : (hovered ? 0.48 : 0.22)), location: 0.0),
+                        .init(color: Color.primary.opacity(hovered ? 0.16 : 0.06), location: 1.0)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+        }
     }
 }
 
