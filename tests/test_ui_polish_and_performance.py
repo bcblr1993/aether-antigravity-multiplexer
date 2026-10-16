@@ -121,9 +121,9 @@ class TestUIPolishAndPerformance(unittest.TestCase):
         self.assertIn("func liquidGlassSheet(radius: CGFloat = 16) -> some View", self.content)
         self.assertIn(".liquidGlassSheet(radius: 16)", self.content)
 
-    def test_version_bump_0_8_9(self):
-        # Fallback version string in AntigravityMultiplexer.swift must be 0.8.9
-        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.9"', self.content)
+    def test_version_bump_0_8_10(self):
+        # Fallback version string in AntigravityMultiplexer.swift must be 0.8.10
+        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.10"', self.content)
 
     def test_popover_menu_row_item_reuse(self):
         # PopoverMenuRowItem must be defined and reused across tile and list item popovers
@@ -157,6 +157,35 @@ class TestUIPolishAndPerformance(unittest.TestCase):
         self.assertIn("@Published var cloneDockPolicy: CloneDockPolicy", self.content)
         self.assertIn('(json["dockPolicy"] as? String) != cloneDockPolicy.rawValue', self.content)
         self.assertIn("Picker(\"\", selection: $store.cloneDockPolicy)", self.content)
+
+    def test_transcript_idle_state_detection_and_system_message(self):
+        # parseTranscriptTail must detect idle state for SYSTEM_MESSAGE and completed GENERIC steps
+        self.assertIn('(lastType == "SYSTEM_MESSAGE" || lastType == "ERROR_MESSAGE") && isRunning', self.content)
+        self.assertIn('后台任务完成 · 等待新指令', self.content)
+        self.assertIn('lastType == "GENERIC" && isRunning', self.content)
+        self.assertIn('lastStatus == "RUNNING"', self.content)
+        self.assertIn('state: .idle', self.content)
+        self.assertIn('任务已完成 · 等待新指令', self.content)
+
+    def test_cdp_concurrent_task_group_and_timeout_guard(self):
+        # captureCDPScreenshots must use withTaskGroup for concurrency and withTimeout in fetchCDPData
+        self.assertIn('await withTaskGroup(of: ItemCDPData?.self)', self.content)
+        self.assertIn('withTimeout<T: Sendable>(seconds: Double', self.content)
+        self.assertIn('withTimeout(seconds: 0.5', self.content)
+        self.assertIn('withTimeout(seconds: 0.6', self.content)
+
+    def test_cdp_execution_state_clears_running_action_strings(self):
+        # CDP DOM execution state must clear stale running action strings when instance is confirmed idle
+        self.assertIn('if !isExecuting {', self.content)
+        self.assertIn('act.currentAction.hasPrefix("正在")', self.content)
+        self.assertIn('act.currentAction.hasPrefix("分析结果")', self.content)
+        self.assertIn('act.currentAction = "任务已完成 · 等待新指令"', self.content)
+
+    def test_telemetry_scan_watchdog_auto_recovery(self):
+        # refreshTelemetryAndThumbnails must auto-reset isScanningTelemetry watchdog if scan exceeds 6 seconds
+        self.assertIn('lastTelemetryScanStartTime', self.content)
+        self.assertIn('Date().timeIntervalSince(start) > 6.0', self.content)
+        self.assertIn('guard !isScanningTelemetry else { return }', self.content)
 
 
 if __name__ == "__main__":

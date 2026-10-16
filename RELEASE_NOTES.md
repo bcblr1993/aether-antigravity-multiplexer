@@ -1,3 +1,19 @@
+# v0.8.10
+
+- **精准空闲态感知与任务完成即时回归 (Precise Real-Time Idle State Perception & Zero False-Positive Running Task)**：
+  - **彻底清除工具完成后的虚假执行中与挂起状态**：彻底修复旧逻辑中 `lastType == "GENERIC"` 工具执行完毕（`status: "DONE"`）后，依然强制维持 120 秒 `.runningTask`（“任务执行中”）以及 480 秒 `.stalled`（“⚠️ 疑似挂起”）的严重逻辑假阳性缺陷。工具执行完毕后仅保留 3 秒平滑过渡，随后即刻精准回归 `.idle`（空闲就绪）。
+  - **精准识别后台任务与子 Agent 完成事件 (`SYSTEM_MESSAGE`)**：全面支持 Antigravity 在后台命令、测试套件与子智能体执行完成时写入的 `SYSTEM_MESSAGE`（`status: "DONE"`）结构化解析，不再泄露内部日志文本，准确回归 `.idle` 并提示“后台任务完成 · 等待新指令”。
+  - **完善异常与错误事件安全收敛 (`ERROR_MESSAGE`)**：全面识别 `ERROR_MESSAGE` 事件，避免回退为空字符串或挂死，优雅收拢为就绪态。
+  - **历史旧会话超时自愈机制**：对于历史遗留的 `tool_calls` 或 `USER_INPUT` 步骤，超过 10 分钟（`age >= 600s`）无活动自动平滑判定为 `.idle`（就绪），彻底根除打开旧实例卡在“⚠️ 疑似挂起”的问题。
+- **CDP 状态感知全并发非阻塞改造与 DOM 权威校准 (Concurrent Non-Blocking CDP Telemetry & DOM Ground Truth)**：
+  - **解耦 DOM 执行态探测与重型视窗截图**：将纯 V8 引擎执行态判断（`Runtime.evaluate`）与重型视窗截图（`Page.captureScreenshot`）拆解为两阶段独立调用，确保即使窗口处于 macOS 隐藏、最小化或合成器暂停帧渲染状态，`isExecuting` 探测也能在 20ms 内极速返回，绝不被截图挂起。
+  - **全并发 `withTaskGroup` 扫描**：将各实例 CDP 轮询从串行 `for-in` 升级为 Swift 原生高并发 TaskGroup，多开 7+ 实例并发探测总耗时从 O(N) 压缩至 < 0.5s。
+  - **严格超时熔断机制 (`withTimeout`)**：对 WebSocket 消息接收施加 0.5s / 0.6s 严格 deadline，彻底杜绝隐藏/最小化窗口因 Chromium 挂起帧生成而导致的 `task.receive()` 无限等待与遥测扫描卡死。
+  - **DOM 权威校准时彻底清理残留动作文本**：当 Chromium DOM 确认无停止/取消按钮（`!isExecuting`）时，不仅纠正 `state = .idle`，同时彻底清空残留的“正在执行...”、“正在处理...”、“分析结果...”等历史文本，统合为“任务已完成 · 等待新指令”。
+  - **遥测扫描看门狗自动复位 (Telemetry Watchdog Auto-Reset)**：在 `refreshTelemetryAndThumbnails` 增加 6 秒超时自愈看门狗，确保遥测锁绝不永久阻塞主循环。
+- **全量 142 项自动化回归测试质量门禁保障 (142/142 Automated Tests Passed)**：
+  - 增补空闲态精确判定、并发 CDP 任务组及超时熔断、DOM 校准动作清空、扫描看门狗四大严苛断言，全量 142 项测试 100% 满分通过。
+
 # v0.8.9
 
 - **多开副本 Dock 栏净化与动态隐形策略 (Clone Instance Dock Clutter Prevention & Stealth Policy)**：

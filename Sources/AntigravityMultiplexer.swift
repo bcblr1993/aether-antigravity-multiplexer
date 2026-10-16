@@ -2509,7 +2509,12 @@ actor TelemetryActor {
                 if act.state == .stalled || act.state == .runningTask {
                     act.state = .idle
                     act.isStalled = false
-                    if act.currentAction.hasPrefix("⚠️ 疑似挂起") {
+                    if act.currentAction.hasPrefix("⚠️ 疑似挂起") ||
+                       act.currentAction.hasPrefix("正在") ||
+                       act.currentAction.hasPrefix("操作") ||
+                       act.currentAction.hasPrefix("分析结果") ||
+                       act.currentAction.hasPrefix("调用工具") ||
+                       act.currentAction.hasPrefix("处理") {
                         act.currentAction = "任务已完成 · 等待新指令"
                     }
                     finalActivities[id] = act
@@ -2519,7 +2524,8 @@ actor TelemetryActor {
                 // The instance is actively running a task!
                 if act.state == .idle || act.state == .stopped {
                     act.state = .runningTask
-                    if act.currentAction.isEmpty || act.currentAction.hasPrefix("任务已完成") || act.currentAction.hasPrefix("就绪") {
+                    act.isStalled = false
+                    if act.currentAction.isEmpty || act.currentAction.hasPrefix("任务已完成") || act.currentAction.hasPrefix("就绪") || act.currentAction.hasPrefix("等待") {
                         act.currentAction = "正在执行任务…"
                     }
                     finalActivities[id] = act
@@ -2816,6 +2822,15 @@ private enum TelemetryScanner {
                 ))
             }
             if isRunning {
+                if age >= 600 {
+                    return withConv(InstanceActivity(
+                        state: .idle,
+                        currentAction: "就绪 · 上次：\(actionText)",
+                        workspace: workspace,
+                        lastUpdatedLabel: ageLabel,
+                        stepIndex: stepIndex
+                    ))
+                }
                 let isStalled = age >= 180
                 return withConv(InstanceActivity(
                     state: isStalled ? .stalled : .runningTask,
@@ -2859,7 +2874,7 @@ private enum TelemetryScanner {
         }
 
         // 3. Execution Error
-        if lastStatus == "ERROR" && isRunning && age < 600 {
+        if (lastStatus == "ERROR" || lastType == "ERROR_MESSAGE") && isRunning && age < 600 {
             return withConv(InstanceActivity(
                 state: .error,
                 currentAction: "步骤执行报错，请检查实例",
@@ -2872,6 +2887,15 @@ private enum TelemetryScanner {
         // 4. User Input just submitted: Agent is planning or thinking
         if lastType == "USER_INPUT" && isRunning {
             let prompt = cleanSnippet(last["content"] as? String ?? "")
+            if age >= 600 {
+                return withConv(InstanceActivity(
+                    state: .idle,
+                    currentAction: prompt.isEmpty ? "等待新对话指令" : "就绪 · 上次：\(prompt)",
+                    workspace: workspace,
+                    lastUpdatedLabel: ageLabel,
+                    stepIndex: stepIndex
+                ))
+            }
             let isStalled = age >= 120
             return withConv(InstanceActivity(
                 state: isStalled ? .stalled : .runningTask,
@@ -2883,52 +2907,66 @@ private enum TelemetryScanner {
             ))
         }
 
-        // 5. Tool Output received (GENERIC): Agent is analyzing results or running background tasks
+        // 5. System notification: Background task or subagent finished/reported
+        if (lastType == "SYSTEM_MESSAGE" || lastType == "ERROR_MESSAGE") && isRunning {
+            let desc = !recentToolAction.isEmpty ? "已完成：\(recentToolAction)" : "后台任务完成 · 等待新指令"
+            return withConv(InstanceActivity(
+                state: .idle,
+                currentAction: desc,
+                workspace: workspace,
+                lastUpdatedLabel: ageLabel,
+                stepIndex: stepIndex
+            ))
+        }
+
+        // 6. Tool Output received (GENERIC): Agent tool execution result
         if lastType == "GENERIC" && isRunning {
             let genericAction: String
             if !recentToolAction.isEmpty {
-                genericAction = "分析结果：\(recentToolAction)"
+                genericAction = "已完成：\(recentToolAction)"
             } else if !recentTargetName.isEmpty {
-                genericAction = "分析结果：\(recentTargetName)"
+                genericAction = "已完成：\(recentTargetName)"
             } else if !recentToolName.isEmpty {
-                genericAction = "处理 \(recentToolName) 输出"
-            } else if !recentUserPrompt.isEmpty {
-                genericAction = "正在处理：\(recentUserPrompt)"
+                genericAction = "完成 \(recentToolName)"
             } else {
-                genericAction = "正在规划下一步操作…"
+                genericAction = "任务已完成 · 等待新指令"
             }
 
             if lastStatus == "RUNNING" {
                 let isStalled = age >= 180
+                let runningDesc = !recentToolAction.isEmpty ? "正在执行：\(recentToolAction)" : "正在后台执行任务…"
                 return withConv(InstanceActivity(
                     state: isStalled ? .stalled : .runningTask,
-                    currentAction: isStalled ? "⚠️ 疑似挂起（\(ageLabel)无响应）：\(genericAction)" : genericAction,
+                    currentAction: isStalled ? "⚠️ 疑似挂起（\(ageLabel)无响应）：\(runningDesc)" : runningDesc,
                     workspace: workspace,
                     lastUpdatedLabel: ageLabel,
                     stepIndex: stepIndex,
                     isStalled: isStalled
                 ))
-            } else if age < 120 {
-                return withConv(InstanceActivity(
-                    state: .runningTask,
-                    currentAction: genericAction,
-                    workspace: workspace,
-                    lastUpdatedLabel: ageLabel,
-                    stepIndex: stepIndex
-                ))
-            } else if age < 600 {
-                return withConv(InstanceActivity(
-                    state: .stalled,
-                    currentAction: "⚠️ 疑似挂起（\(ageLabel)无响应）：\(genericAction)",
-                    workspace: workspace,
-                    lastUpdatedLabel: ageLabel,
-                    stepIndex: stepIndex,
-                    isStalled: true
-                ))
+            } else {
+                // Tool output status is DONE: Tool has finished!
+                if age < 3 {
+                    let transDesc = !recentToolAction.isEmpty ? "完成操作：\(recentToolAction)" : "操作已完成"
+                    return withConv(InstanceActivity(
+                        state: .runningTask,
+                        currentAction: transDesc,
+                        workspace: workspace,
+                        lastUpdatedLabel: ageLabel,
+                        stepIndex: stepIndex
+                    ))
+                } else {
+                    return withConv(InstanceActivity(
+                        state: .idle,
+                        currentAction: genericAction,
+                        workspace: workspace,
+                        lastUpdatedLabel: ageLabel,
+                        stepIndex: stepIndex
+                    ))
+                }
             }
         }
 
-        // 6. Active running step
+        // 7. Active running step
         if isRunning && lastStatus == "RUNNING" && age < 600 {
             let isStalled = age >= 180
             let desc = !recentToolAction.isEmpty ? "正在执行：\(recentToolAction)" : "正在后台执行任务…"
@@ -2942,11 +2980,17 @@ private enum TelemetryScanner {
             ))
         }
 
-        // 7. Fallback: Idle state
-        let summary = cleanSnippet(last["content"] as? String ?? "")
+        // 8. Fallback: Idle state
+        let rawContent = last["content"] as? String ?? ""
+        let isSystemOrLog = rawContent.hasPrefix("Created At:") ||
+                            rawContent.hasPrefix("The following is a <SYSTEM_MESSAGE>") ||
+                            rawContent.hasPrefix("[Message]") ||
+                            lastType == "GENERIC" ||
+                            lastType == "SYSTEM_MESSAGE" ||
+                            lastType == "ERROR_MESSAGE"
         let displayAction: String
-        if !summary.isEmpty {
-            displayAction = summary
+        if !isSystemOrLog && !rawContent.isEmpty {
+            displayAction = cleanSnippet(rawContent)
         } else if !recentToolAction.isEmpty {
             displayAction = "已完成：\(recentToolAction)"
         } else if !recentUserPrompt.isEmpty {
@@ -3327,6 +3371,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     private var lastNotifiedStates: [String: (state: TaskRunState, stepIndex: Int)] = [:]
     private var lastOpenTime: [String: Date] = [:]
     private var isScanningTelemetry = false
+    private var lastTelemetryScanStartTime: Date? = nil
     private var telemetryTickCount: Int = 0
 
     func syncHUDState() {
@@ -4203,8 +4248,12 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     }
 
     func refreshTelemetryAndThumbnails() {
+        if let start = lastTelemetryScanStartTime, Date().timeIntervalSince(start) > 6.0 {
+            isScanningTelemetry = false
+        }
         guard !isScanningTelemetry else { return }
         isScanningTelemetry = true
+        lastTelemetryScanStartTime = Date()
         let snapshot = instances
         let shouldCapture = shouldCaptureScreenshots
         var knownConvIDs: [String: String] = [:]
@@ -4316,76 +4365,129 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         let appSupportRoot = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support")
 
-        for item in items where item.running {
-            let isFrontmost = (frontmostBundleID == item.bundleID)
-            let isRunningTask = activeTaskIDs.contains(item.id)
-            let hasThumbnail = existingThumbnailIDs.contains(item.id)
+        struct ItemCDPData: @unchecked Sendable {
+            let id: String
+            let image: NSImage?
+            let url: String?
+            let workspace: String?
+            let sessionTitle: String?
+            let isExecuting: Bool?
+        }
 
-            // For background idle instances with existing metadata, only query CDP endpoint every 5 ticks (~11s)
-            let shouldQueryCDP = isFrontmost || isRunningTask || !hasThumbnail || (telemetryTick % 5 == 0)
-            guard shouldQueryCDP else { continue }
+        let runningItems = items.filter { $0.running }
+        let cdpItems = await withTaskGroup(of: ItemCDPData?.self) { group in
+            for item in runningItems {
+                let isFrontmost = (frontmostBundleID == item.bundleID)
+                let isRunningTask = activeTaskIDs.contains(item.id)
+                let hasThumbnail = existingThumbnailIDs.contains(item.id)
 
-            let portFile = appSupportRoot.appendingPathComponent(item.name).appendingPathComponent("DevToolsActivePort")
-            guard let content = try? String(contentsOf: portFile, encoding: .utf8),
-                  let firstLine = content.components(separatedBy: .newlines).first,
-                  let port = Int(firstLine.trimmingCharacters(in: .whitespacesAndNewlines)),
-                  let listURL = URL(string: "http://127.0.0.1:\(port)/json/list") else { continue }
+                // For background idle instances with existing metadata, only query CDP endpoint every 5 ticks (~11s)
+                let shouldQueryCDP = isFrontmost || isRunningTask || !hasThumbnail || (telemetryTick % 5 == 0)
+                guard shouldQueryCDP else { continue }
 
-            var req = URLRequest(url: listURL)
-            req.timeoutInterval = 0.8
-            req.setValue("close", forHTTPHeaderField: "Connection")
-            guard let (data, _) = try? await cdpSession.data(for: req),
-                  let targets = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { continue }
+                let portFile = appSupportRoot.appendingPathComponent(item.name).appendingPathComponent("DevToolsActivePort")
+                guard let content = try? String(contentsOf: portFile, encoding: .utf8),
+                      let firstLine = content.components(separatedBy: .newlines).first,
+                      let port = Int(firstLine.trimmingCharacters(in: .whitespacesAndNewlines)),
+                      let listURL = URL(string: "http://127.0.0.1:\(port)/json/list") else { continue }
 
-            let pageTargets = targets.filter { t in
-                guard (t["type"] as? String) == "page",
-                      let u = t["url"] as? String else { return false }
-                return u.hasPrefix("https://127.0.0.1:") || u.hasPrefix("http://127.0.0.1:")
-            }
+                group.addTask {
+                    var req = URLRequest(url: listURL)
+                    req.timeoutInterval = 0.8
+                    req.setValue("close", forHTTPHeaderField: "Connection")
+                    guard let (data, _) = try? await cdpSession.data(for: req),
+                          let targets = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return nil }
 
-            if pageTargets.count > 1 {
-                for duplicate in pageTargets.dropFirst() {
-                    if let targetId = duplicate["id"] as? String,
-                       let closeURL = URL(string: "http://127.0.0.1:\(port)/json/close/\(targetId)") {
-                        var closeReq = URLRequest(url: closeURL)
-                        closeReq.timeoutInterval = 0.5
-                        closeReq.setValue("close", forHTTPHeaderField: "Connection")
-                        _ = try? await cdpSession.data(for: closeReq)
+                    let pageTargets = targets.filter { t in
+                        guard (t["type"] as? String) == "page",
+                              let u = t["url"] as? String else { return false }
+                        return u.hasPrefix("https://127.0.0.1:") || u.hasPrefix("http://127.0.0.1:")
                     }
+
+                    if pageTargets.count > 1 {
+                        for duplicate in pageTargets.dropFirst() {
+                            if let targetId = duplicate["id"] as? String,
+                               let closeURL = URL(string: "http://127.0.0.1:\(port)/json/close/\(targetId)") {
+                                var closeReq = URLRequest(url: closeURL)
+                                closeReq.timeoutInterval = 0.5
+                                closeReq.setValue("close", forHTTPHeaderField: "Connection")
+                                _ = try? await cdpSession.data(for: closeReq)
+                            }
+                        }
+                    }
+
+                    guard let mainTarget = pageTargets.first,
+                          let currentURL = mainTarget["url"] as? String else { return nil }
+
+                    var itemURL: String? = nil
+                    if currentURL.contains("/c/") {
+                        itemURL = currentURL
+                    }
+
+                    var itemSessionTitle: String? = nil
+                    var itemWorkspace: String? = nil
+                    if let windowTitle = mainTarget["title"] as? String {
+                        let parts = windowTitle.components(separatedBy: " - ").map { $0.trimmingCharacters(in: .whitespaces) }
+                        if parts.count >= 3 {
+                            itemSessionTitle = parts[0]
+                            itemWorkspace = parts[1]
+                        } else if parts.count == 2 {
+                            itemWorkspace = parts[0]
+                        }
+                    }
+
+                    let shouldFetchImage = captureThumbnails && (!hasThumbnail || isFrontmost || isRunningTask)
+                    var itemImage: NSImage? = nil
+                    var itemExecuting: Bool? = nil
+
+                    if let wsString = mainTarget["webSocketDebuggerUrl"] as? String,
+                       let wsURL = URL(string: wsString) {
+                        let cdpData = await fetchCDPData(wsURL: wsURL, captureThumbnail: shouldFetchImage)
+                        itemImage = cdpData.image
+                        itemExecuting = cdpData.isExecuting
+                    }
+
+                    return ItemCDPData(
+                        id: item.id,
+                        image: itemImage,
+                        url: itemURL,
+                        workspace: itemWorkspace,
+                        sessionTitle: itemSessionTitle,
+                        isExecuting: itemExecuting
+                    )
                 }
             }
 
-            guard let mainTarget = pageTargets.first,
-                  let currentURL = mainTarget["url"] as? String else { continue }
-
-            if currentURL.contains("/c/") {
-                urls[item.id] = currentURL
+            var collected: [ItemCDPData] = []
+            for await res in group {
+                if let r = res { collected.append(r) }
             }
+            return collected
+        }
 
-            if let windowTitle = mainTarget["title"] as? String {
-                let parts = windowTitle.components(separatedBy: " - ").map { $0.trimmingCharacters(in: .whitespaces) }
-                if parts.count >= 3 {
-                    sessionTitles[item.id] = parts[0]
-                    workspaces[item.id] = parts[1]
-                } else if parts.count == 2 {
-                    workspaces[item.id] = parts[0]
-                }
-            }
-
-            let shouldFetchImage = captureThumbnails && (!hasThumbnail || isFrontmost || isRunningTask)
-
-            if let wsString = mainTarget["webSocketDebuggerUrl"] as? String,
-               let wsURL = URL(string: wsString) {
-                let cdpData = await fetchCDPData(wsURL: wsURL, captureThumbnail: shouldFetchImage)
-                if let img = cdpData.image {
-                    results[item.id] = img
-                }
-                if let isExecuting = cdpData.isExecuting {
-                    executionStates[item.id] = isExecuting
-                }
-            }
+        for r in cdpItems {
+            if let img = r.image { results[r.id] = img }
+            if let u = r.url { urls[r.id] = u }
+            if let ws = r.workspace { workspaces[r.id] = ws }
+            if let st = r.sessionTitle { sessionTitles[r.id] = st }
+            if let exec = r.isExecuting { executionStates[r.id] = exec }
         }
         return (results, urls, workspaces, sessionTitles, executionStates)
+    }
+
+    private nonisolated static func withTimeout<T: Sendable>(seconds: Double, operation: @escaping @Sendable () async throws -> T) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask {
+                try await operation()
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw CancellationError()
+            }
+            let result = try await group.next()!
+            group.cancelAll()
+            return result
+        }
     }
 
     private nonisolated static func fetchCDPData(wsURL: URL, captureThumbnail: Bool) async -> (image: NSImage?, isExecuting: Bool?) {
@@ -4401,27 +4503,28 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         """
         do {
             try await task.send(.string(evalPayload))
-            if captureThumbnail {
-                let screenshotPayload = "{\"id\":201,\"method\":\"Page.captureScreenshot\",\"params\":{\"format\":\"jpeg\",\"quality\":62}}"
-                try await task.send(.string(screenshotPayload))
+            // Step 1: Evaluate execution state with strict 0.5s timeout.
+            // This is purely JS evaluation in V8 and completes in milliseconds regardless of window visibility.
+            if let msg = try? await withTimeout(seconds: 0.5, operation: { try await task.receive() }),
+               case .string(let text) = msg,
+               let data = text.data(using: .utf8),
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let res = obj["result"] as? [String: Any],
+               let resultVal = res["result"] as? [String: Any],
+               let val = resultVal["value"] as? Bool {
+                isExecuting = val
             }
 
-            let responseCount = captureThumbnail ? 2 : 1
-            for _ in 0..<responseCount {
-                let message = try await task.receive()
-                guard case .string(let text) = message,
-                      let data = text.data(using: .utf8),
-                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                      let id = obj["id"] as? Int else { continue }
-
-                if id == 200 {
-                    if let res = obj["result"] as? [String: Any],
-                       let resultVal = res["result"] as? [String: Any],
-                       let val = resultVal["value"] as? Bool {
-                        isExecuting = val
-                    }
-                } else if id == 201 {
-                    if let res = obj["result"] as? [String: Any],
+            // Step 2: Attempt screenshot capture only if thumbnail is requested.
+            // Separated into independent try so screenshot timeouts on occluded windows never discard isExecuting!
+            if captureThumbnail {
+                let screenshotPayload = "{\"id\":201,\"method\":\"Page.captureScreenshot\",\"params\":{\"format\":\"jpeg\",\"quality\":62}}"
+                if (try? await task.send(.string(screenshotPayload))) != nil {
+                    if let msg = try? await withTimeout(seconds: 0.6, operation: { try await task.receive() }),
+                       case .string(let text) = msg,
+                       let data = text.data(using: .utf8),
+                       let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let res = obj["result"] as? [String: Any],
                        let b64 = res["data"] as? String,
                        let imgData = Data(base64Encoded: b64) {
                         image = NSImage(data: imgData)
@@ -9383,7 +9486,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.9"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.10"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
