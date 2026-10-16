@@ -121,9 +121,9 @@ class TestUIPolishAndPerformance(unittest.TestCase):
         self.assertIn("func liquidGlassSheet(radius: CGFloat = 16) -> some View", self.content)
         self.assertIn(".liquidGlassSheet(radius: 16)", self.content)
 
-    def test_version_bump_0_8_10(self):
-        # Fallback version string in AntigravityMultiplexer.swift must be 0.8.10
-        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.10"', self.content)
+    def test_version_bump_0_8_11(self):
+        # Fallback version string in AntigravityMultiplexer.swift must be 0.8.11
+        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.11"', self.content)
 
     def test_popover_menu_row_item_reuse(self):
         # PopoverMenuRowItem must be defined and reused across tile and list item popovers
@@ -186,6 +186,40 @@ class TestUIPolishAndPerformance(unittest.TestCase):
         self.assertIn('lastTelemetryScanStartTime', self.content)
         self.assertIn('Date().timeIntervalSince(start) > 6.0', self.content)
         self.assertIn('guard !isScanningTelemetry else { return }', self.content)
+
+    def test_multi_tier_window_collapse_protocol(self):
+        # Multi-tier instantaneous window collapse protocol checks
+        self.assertIn("static func getOnScreenWindowPIDs() -> Set<pid_t>", self.content)
+        self.assertIn("static func isProcessCollapsed(pid: pid_t, isHidden: Bool, onScreenPIDs: Set<pid_t>) -> Bool", self.content)
+        self.assertIn("static func collapseInstanceWindowCDP(item: ManagedInstance) async -> Bool", self.content)
+        self.assertIn("static func collapseWindowViaAccessibility(pid: pid_t)", self.content)
+        self.assertIn("func collapseInstanceWindow(_ item: ManagedInstance, app: NSRunningApplication?)", self.content)
+        self.assertIn('"expression": "window.close()"', self.content)
+        self.assertIn("collapseInstanceWindow(item, app: app)", self.content)
+        self.assertIn("collapseAllToMonitorWall()", self.content)
+
+    def test_global_hotkey_option_zero_collapse(self):
+        # GlobalHotKeyManager must register Option+0 (kVK_ANSI_0) with id = 10
+        self.assertIn("var onCollapseAll: (() -> Void)?", self.content)
+        self.assertIn("registerHotKey(keyCode: UInt32(kVK_ANSI_0), modifiers: UInt32(optionKey), id: 10)", self.content)
+        self.assertIn("else if id == 10 {", self.content)
+        self.assertIn("GlobalHotKeyManager.shared.onCollapseAll?()", self.content)
+        self.assertIn("onCollapseAll: { [weak self] in", self.content)
+        self.assertIn("self?.collapseAllToMonitorWall()", self.content)
+
+    def test_toolbar_collapse_badge_and_state(self):
+        # Toolbar collapse button must show dynamic visible window count and Option+0 help
+        self.assertIn("var visibleWindowCount: Int {", self.content)
+        self.assertIn("Image(systemName: \"rectangle.compress.vertical\")", self.content)
+        self.assertIn('Text("\\(store.tr(.toolbarCollapseAll)) (\\(store.visibleWindowCount))")', self.content)
+        self.assertIn(".buttonStyle(ModernButtonStyle(variant: store.visibleWindowCount > 0 ? .primary : .secondary))", self.content)
+        self.assertIn("一键收起所有正在显示的 Antigravity 窗口回到监控台 (快捷键 ⌥0，后台任务继续保持运行)", self.content)
+
+    def test_status_bar_and_hud_collapse_shortcuts(self):
+        # Status bar menu and Floating HUD must show collapse button with Option+0 hint
+        self.assertIn('let collapseItem = NSMenuItem(title: "一键收起所有窗口 (⌥0)"', self.content)
+        self.assertIn("collapseItem.keyEquivalentModifierMask = [.option]", self.content)
+        self.assertIn('Image(systemName: "rectangle.compress.vertical")', self.content)
 
 
 if __name__ == "__main__":

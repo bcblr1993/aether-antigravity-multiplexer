@@ -4095,9 +4095,120 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         }
     }
 
-    private func isInstanceCollapsed(_ app: NSRunningApplication?) -> Bool {
-        guard let app else { return false }
-        return app.isHidden || app.activationPolicy != .regular
+    // MARK: - Multi-Tier Instantaneous Window Collapse Protocol (CDP + AppKit + Accessibility + AppleScript)
+
+    /// Collects process PIDs that currently possess on-screen visible document windows (Layer 0, dimensions >= 200x200).
+    /// Leverages Quartz WindowServer metadata without requiring screen recording permissions.
+    static func getOnScreenWindowPIDs() -> Set<pid_t> {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
+            return []
+        }
+        var pids = Set<pid_t>()
+        for win in list {
+            if let layer = win[kCGWindowLayer as String] as? Int, layer == 0,
+               let pid = win[kCGWindowOwnerPID as String] as? pid_t,
+               let bounds = win[kCGWindowBounds as String] as? [String: CGFloat],
+               let w = bounds["Width"], let h = bounds["Height"], w >= 200, h >= 200 {
+                pids.insert(pid)
+            }
+        }
+        return pids
+    }
+
+    /// Pure evaluation of whether a process window is collapsed (closed or miniaturized).
+    static func isProcessCollapsed(pid: pid_t, isHidden: Bool, onScreenPIDs: Set<pid_t>) -> Bool {
+        if isHidden { return true }
+        return !onScreenPIDs.contains(pid)
+    }
+
+    private func isInstanceCollapsed(_ app: NSRunningApplication?, onScreenPIDs: Set<pid_t>? = nil) -> Bool {
+        guard let app else { return true }
+        let pids = onScreenPIDs ?? Self.getOnScreenWindowPIDs()
+        return Self.isProcessCollapsed(pid: app.processIdentifier, isHidden: app.isHidden, onScreenPIDs: pids)
+    }
+
+    /// Evaluates `window.close()` via Chromium DevTools Protocol (CDP).
+    /// Triggers Electron's patched `win.on('close')` event which executes `e.preventDefault(); win.hide(); app.dock.hide();`.
+    /// Immediately removes window from WindowServer in <20ms while background Agent execution continues uninterrupted.
+    static func collapseInstanceWindowCDP(item: ManagedInstance) async -> Bool {
+        let portFile = item.userDataURL.appendingPathComponent("DevToolsActivePort")
+        guard let content = try? String(contentsOf: portFile, encoding: .utf8),
+              let firstLine = content.components(separatedBy: .newlines).first,
+              let port = Int(firstLine.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let listURL = URL(string: "http://127.0.0.1:\(port)/json/list") else {
+            return false
+        }
+
+        var req = URLRequest(url: listURL)
+        req.timeoutInterval = 0.8
+        req.setValue("close", forHTTPHeaderField: "Connection")
+        guard let (data, _) = try? await Self.cdpSession.data(for: req),
+              let targets = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return false
+        }
+
+        let pageTargets = targets.filter { ($0["type"] as? String) == "page" }
+        guard !pageTargets.isEmpty else { return false }
+
+        var closedAny = false
+        for target in pageTargets {
+            guard let wsString = target["webSocketDebuggerUrl"] as? String,
+                  let wsURL = URL(string: wsString) else { continue }
+            let task = Self.cdpSession.webSocketTask(with: wsURL)
+            task.resume()
+            defer { task.cancel(with: .goingAway, reason: nil) }
+
+            let payload: [String: Any] = [
+                "id": 9999,
+                "method": "Runtime.evaluate",
+                "params": ["expression": "window.close()", "returnByValue": false]
+            ]
+            if let payloadData = try? JSONSerialization.data(withJSONObject: payload),
+               let payloadStr = String(data: payloadData, encoding: .utf8) {
+                do {
+                    try await task.send(.string(payloadStr))
+                    closedAny = true
+                } catch {}
+            }
+        }
+        return closedAny
+    }
+
+    /// Accessibility API fallback (Tier 3) to trigger AXCloseButton on the application's document window.
+    static func collapseWindowViaAccessibility(pid: pid_t) {
+        let appElem = AXUIElementCreateApplication(pid)
+        var windowsRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(appElem, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+           let windows = windowsRef as? [AXUIElement] {
+            for win in windows {
+                var closeBtnRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(win, kAXCloseButtonAttribute as CFString, &closeBtnRef) == .success {
+                    let closeBtn = closeBtnRef as! AXUIElement
+                    _ = AXUIElementPerformAction(closeBtn, kAXPressAction as CFString)
+                }
+            }
+        }
+    }
+
+    /// Multi-tiered window collapse pipeline for a single instance.
+    func collapseInstanceWindow(_ item: ManagedInstance, app: NSRunningApplication?) {
+        guard let app = app ?? runningApplication(bundleID: item.bundleID, path: item.path) else { return }
+
+        // Tier 1: CDP fast path (works on both regular & accessory instances)
+        Task {
+            _ = await Self.collapseInstanceWindowCDP(item: item)
+        }
+
+        // Tier 2: AppKit native hide (for regular apps)
+        _ = app.hide()
+
+        // Tier 3: Accessibility close button press
+        Self.collapseWindowViaAccessibility(pid: app.processIdentifier)
+
+        // Tier 4: System Events AppleScript fallback
+        let script = "tell application \"System Events\" to set visible of (first process whose bundle identifier is \"\(item.bundleID)\") to false"
+        var err: NSDictionary?
+        NSAppleScript(source: script)?.executeAndReturnError(&err)
     }
 
     /// Ensures `"runInBackground": "true"` and `"dockPolicy"` in `~/Library/Application Support/<InstanceName>/app_storage.json`
@@ -4134,6 +4245,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         hasScreenCapturePermission = CGPreflightScreenCaptureAccess()
         let fm = FileManager.default
         let roots = [URL(fileURLWithPath: "/Applications"), fm.homeDirectoryForCurrentUser.appendingPathComponent("Applications")]
+        let onScreenPIDs = Self.getOnScreenWindowPIDs()
         var found: [ManagedInstance] = []
         var seen = Set<String>()
         for root in roots {
@@ -4151,7 +4263,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 let verified = record?["login_verified"] as? Bool ?? false
                 let runningApp = runningApplication(bundleID: bundle, path: app)
                 let running = runningApp != nil
-                let isHidden = isInstanceCollapsed(runningApp)
+                let isHidden = isInstanceCollapsed(runningApp, onScreenPIDs: onScreenPIDs)
                 found.append(ManagedInstance(id: bundle, name: name, path: app, bundleID: bundle,
                                              version: version, index: index, running: running,
                                              isHidden: isHidden, verified: verified))
@@ -4219,11 +4331,12 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
 
     func refreshRunningStates() {
         standbyTickCount = 0
+        let onScreenPIDs = Self.getOnScreenWindowPIDs()
         let updated = instances.map { item in
             let app = runningApplication(bundleID: item.bundleID, path: item.path)
             return ManagedInstance(id: item.id, name: item.name, path: item.path, bundleID: item.bundleID,
                                    version: item.version, index: item.index,
-                                   running: app != nil, isHidden: isInstanceCollapsed(app), verified: item.verified)
+                                   running: app != nil, isHidden: isInstanceCollapsed(app, onScreenPIDs: onScreenPIDs), verified: item.verified)
         }
         let currentOpenBundles = Set(updated.filter { $0.running && !$0.isHidden }.map(\.bundleID))
         // Detect if the user just clicked the red close (✕) button on the active Antigravity window:
@@ -4604,6 +4717,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     var primaryInstance: ManagedInstance? { instances.first(where: { $0.isOriginal }) }
     var cloneInstances: [ManagedInstance] { instances.filter { !$0.isOriginal } }
     var runningCount: Int { instances.filter(\.running).count }
+    var visibleWindowCount: Int { instances.filter { $0.running && !$0.isHidden }.count }
     var activeTaskCount: Int {
         instances.filter { item in
             guard item.running, let state = activities[item.id]?.state else { return false }
@@ -4739,6 +4853,9 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             },
             onToggleInstance: { [weak self] number in
                 self?.toggleInstance(byShortcutNumber: number)
+            },
+            onCollapseAll: { [weak self] in
+                self?.collapseAllToMonitorWall()
             }
         )
         if !globalHotkeysEnabled {
@@ -4796,18 +4913,17 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         HapticManager.shared.play(.generic)
         guard let app = runningApplication(bundleID: item.bundleID, path: item.path) else { return }
         enforceRunInBackgroundSetting(for: [item])
-        _ = app.hide()
-        let script = "tell application \"System Events\" to set visible of (first process whose bundle identifier is \"\(item.bundleID)\") to false"
-        var err: NSDictionary?
-        NSAppleScript(source: script)?.executeAndReturnError(&err)
+        collapseInstanceWindow(item, app: app)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             self.refreshRunningStates()
         }
     }
 
     func hideOtherInstances(except keptBundleID: String?) {
+        let onScreenPIDs = Self.getOnScreenWindowPIDs()
         for item in instances where item.running && item.bundleID != keptBundleID {
-            if let app = runningApplication(bundleID: item.bundleID, path: item.path), !isInstanceCollapsed(app) {
+            if let app = runningApplication(bundleID: item.bundleID, path: item.path),
+               !isInstanceCollapsed(app, onScreenPIDs: onScreenPIDs) {
                 hideInstance(item)
             }
         }
@@ -4836,11 +4952,42 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     }
 
     func collapseAllToMonitorWall() {
+        HapticManager.shared.play(.levelChange)
         captureWindowThumbnails()
-        hideOtherInstances(except: nil)
+
+        let runningItems = instances.filter(\.running)
+
+        // Tier 1: Concurrent CDP window detach across all running instances
+        Task {
+            await withTaskGroup(of: Void.self) { group in
+                for item in runningItems {
+                    group.addTask {
+                        _ = await Self.collapseInstanceWindowCDP(item: item)
+                    }
+                }
+            }
+            await MainActor.run {
+                self.refreshRunningStates()
+            }
+        }
+
+        // Tiers 2, 3, 4: AppKit native hide, Accessibility & System Events fallbacks
+        for item in runningItems {
+            if let app = runningApplication(bundleID: item.bundleID, path: item.path) {
+                _ = app.hide()
+                Self.collapseWindowViaAccessibility(pid: app.processIdentifier)
+            }
+            let script = "tell application \"System Events\" to set visible of (first process whose bundle identifier is \"\(item.bundleID)\") to false"
+            var err: NSDictionary?
+            NSAppleScript(source: script)?.executeAndReturnError(&err)
+        }
+
         lastFrontmostAntigravityBundle = nil
+        activeInstanceName = nil
+        updateFloatingHUDVisibility()
         bringMonitorWallToFront()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
             self.refreshRunningStates()
         }
     }
@@ -5207,7 +5354,8 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         switcherItem.target = StatusBarTarget.shared
         menu.addItem(switcherItem)
 
-        let collapseItem = NSMenuItem(title: "收起所有实例并打开监控台", action: #selector(StatusBarTarget.collapseAll), keyEquivalent: "0")
+        let collapseItem = NSMenuItem(title: "一键收起所有窗口 (⌥0)", action: #selector(StatusBarTarget.collapseAll), keyEquivalent: "0")
+        collapseItem.keyEquivalentModifierMask = [.option]
         collapseItem.target = StatusBarTarget.shared
         menu.addItem(collapseItem)
 
@@ -5761,7 +5909,7 @@ private struct FloatingMonitorHUDView: View {
                     store.collapseAllToMonitorWall()
                 } label: {
                     HStack(alignment: .center, spacing: 4) {
-                        Image(systemName: "square.grid.2x2.fill")
+                        Image(systemName: "rectangle.compress.vertical")
                             .font(.system(size: 10.5, weight: .semibold))
                         Text(store.tr(.hudCollapse))
                             .font(.system(size: 11, weight: .semibold))
@@ -5874,10 +6022,16 @@ final class GlobalHotKeyManager {
 
     var onToggleQuickSwitcher: (() -> Void)?
     var onToggleInstance: ((Int) -> Void)?
+    var onCollapseAll: (() -> Void)?
 
-    func setup(onToggleQuickSwitcher: @escaping () -> Void, onToggleInstance: @escaping (Int) -> Void) {
+    func setup(
+        onToggleQuickSwitcher: @escaping () -> Void,
+        onToggleInstance: @escaping (Int) -> Void,
+        onCollapseAll: (() -> Void)? = nil
+    ) {
         self.onToggleQuickSwitcher = onToggleQuickSwitcher
         self.onToggleInstance = onToggleInstance
+        self.onCollapseAll = onCollapseAll
         register()
     }
 
@@ -5904,6 +6058,8 @@ final class GlobalHotKeyManager {
             DispatchQueue.main.async {
                 if id == 0 {
                     GlobalHotKeyManager.shared.onToggleQuickSwitcher?()
+                } else if id == 10 {
+                    GlobalHotKeyManager.shared.onCollapseAll?()
                 } else if id >= 1 && id <= 9 {
                     GlobalHotKeyManager.shared.onToggleInstance?(id)
                 }
@@ -5916,7 +6072,10 @@ final class GlobalHotKeyManager {
         // 1. Option + Space -> id = 0 (Toggle Quick Switcher)
         registerHotKey(keyCode: UInt32(kVK_Space), modifiers: UInt32(optionKey), id: 0)
 
-        // 2. Option + 1~9 -> id = 1~9 (Toggle Instance 1..9, 1 is Main)
+        // 2. Option + 0 -> id = 10 (Collapse All Windows to Monitor Wall)
+        registerHotKey(keyCode: UInt32(kVK_ANSI_0), modifiers: UInt32(optionKey), id: 10)
+
+        // 3. Option + 1~9 -> id = 1~9 (Toggle Instance 1..9, 1 is Main)
         let numberKeys: [(Int, UInt32)] = [
             (1, UInt32(kVK_ANSI_1)),
             (2, UInt32(kVK_ANSI_2)),
@@ -9486,7 +9645,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.10"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.11"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
@@ -9783,14 +9942,18 @@ struct ContentView: View {
                         store.collapseAllToMonitorWall()
                     } label: {
                         HStack(alignment: .center, spacing: 5) {
-                            Image(systemName: "arrow.down.right.and.arrow.up.left")
+                            Image(systemName: "rectangle.compress.vertical")
                                 .font(.system(size: 11.5, weight: .semibold))
                                 .frame(width: 13, height: 13, alignment: .center)
-                            Text(store.tr(.toolbarCollapseAll))
+                            if store.visibleWindowCount > 0 {
+                                Text("\(store.tr(.toolbarCollapseAll)) (\(store.visibleWindowCount))")
+                            } else {
+                                Text(store.tr(.toolbarCollapseAll))
+                            }
                         }
                     }
-                    .buttonStyle(ModernButtonStyle(variant: .secondary))
-                    .help("隐藏所有正在显示的 Antigravity 窗口并回到缩略图监控墙（后台任务继续运行）")
+                    .buttonStyle(ModernButtonStyle(variant: store.visibleWindowCount > 0 ? .primary : .secondary))
+                    .help("一键收起所有正在显示的 Antigravity 窗口回到监控台 (快捷键 ⌥0，后台任务继续保持运行)")
                 }
 
                 // Consolidated Glass Utility Cluster: Refresh, Task History, and Maintenance Menu

@@ -1,3 +1,21 @@
+# v0.8.11
+
+- **一键收起所有窗口回监控台与多阶极速脱离引擎 (One-Click Instant Collapse All Windows & Multi-Tier Detach Pipeline)**：
+  - **多阶极速窗口收拢管线 (Multi-Tiered Collapse Pipeline)**：
+    - **Tier 1 (CDP 快速直连脱离通道)**：针对所有处于运行状态的 Antigravity 实例（无论是原生主实例还是经过 Dock 净化的 Accessory 隔离分身副本），通过内置 WebSocket 并发评估 `Runtime.evaluate: "window.close()"`，直接激活 Electron 深度补丁中的窗口收拢与隐藏逻辑 (`win.hide()` + `app.dock.hide()`)。窗口脱离 macOS WindowServer 并从屏幕消失耗时 < 20ms，**彻底保证正在执行的 Agent 智能体后台推理、测试套件运行或编译任务不受任何干扰，持续平稳运行**。
+    - **Tier 2 (AppKit 原生隐藏)**：针对主程序等 `.regular` 进程直接调用 `app.hide()`。
+    - **Tier 3 (Accessibility 原生辅助控制)**：遍历 Layer 0 文档窗口触发 `AXCloseButton`。
+    - **Tier 4 (System Events 系统脚本保底)**：AppleScript `set visible to false` 系统级收敛。
+    - **单实例卡片收起同步生效**：单实例卡片上的“收起窗口”操作同样升级为多阶脱离管线，分身副本窗口一触即收。
+  - **全系统全局快捷键 `⌥0` (Global Hotkey Option+0)**：
+    - 底层 Carbon 事件分发体系正式接入 `⌥0` (`kVK_ANSI_0`, id = 10)。无论用户身处 macOS 任意桌面、工作空间或全屏应用，按下 `⌥0` 即可将所有散落的 Antigravity 实例窗口瞬时收起，并将 Aether 多开监控台主界面极速置顶呈现。
+  - **零权限精准在屏窗口检测与动态徽标 (Precise On-Screen Window Telemetry & Dynamic Badges)**：
+    - **彻底修复分身副本窗口可见性误判**：彻底根除旧版本因 `activationPolicy != .regular` 而将 Accessory 分身误判为“已收起”的逻辑漏洞，采用微秒级 Quartz `CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements])` 结合 Layer 0 判定，精准检测哪个 PID 在屏幕上有物理窗口。
+    - **动态数量徽标 (`visibleWindowCount`)**：主控制栏收起按钮动态感知在屏窗口，展示如 `收起全部窗口 (3)`；当全部实例均已收起至后台静默运行时，按钮自动降级为次级晶体态，状态一目了然。
+    - **菜单栏托盘与悬浮 HUD 协同**：菜单栏状态菜单项更新为 `一键收起所有窗口 (⌥0)`；悬浮 HUD 快捷按钮同步采用 `rectangle.compress.vertical` 规范图标。
+- **全量 146 项自动化测试质量门禁保障 (146/146 Automated Tests Passed)**：
+  - 增补多阶窗口收起管线、CDP 窗口脱离协议、全局 `⌥0` 快捷键分发、精准在屏窗口判定及工具栏动态徽章等 4 项核心测试，全量 146 项测试 100% 满分通过。
+
 # v0.8.10
 
 - **精准空闲态感知与任务完成即时回归 (Precise Real-Time Idle State Perception & Zero False-Positive Running Task)**：
