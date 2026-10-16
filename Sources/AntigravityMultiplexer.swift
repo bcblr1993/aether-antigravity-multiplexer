@@ -2325,7 +2325,7 @@ actor TelemetryActor {
     struct ScanBatchResult {
         var activities: [String: InstanceActivity]
         var metrics: [String: InstanceResourceMetric]
-        var cdpData: (thumbnails: [String: NSImage], urls: [String: String], workspaces: [String: String], sessionTitles: [String: String])
+        var cdpData: (thumbnails: [String: NSImage], urls: [String: String], workspaces: [String: String], sessionTitles: [String: String], executionStates: [String: Bool])
     }
 
     func scanTelemetryBatch(
@@ -2349,7 +2349,36 @@ actor TelemetryActor {
             activeTaskIDs: activeTaskIDs,
             telemetryTick: telemetryTick
         )
-        return ScanBatchResult(activities: scanned, metrics: metrics, cdpData: cdpData)
+
+        // Fuse real-time CDP DOM execution state with transcript scan
+        var finalActivities = scanned
+        for (id, isExecuting) in cdpData.executionStates {
+            guard var act = finalActivities[id] else { continue }
+            if !isExecuting {
+                // Chromium DOM confirms: Stop/Cancel button DOES NOT exist in DOM!
+                // The instance is definitely NOT running any task!
+                if act.state == .stalled || act.state == .runningTask {
+                    act.state = .idle
+                    act.isStalled = false
+                    if act.currentAction.hasPrefix("⚠️ 疑似挂起") {
+                        act.currentAction = "任务已完成 · 等待新指令"
+                    }
+                    finalActivities[id] = act
+                }
+            } else {
+                // Chromium DOM confirms: Stop/Cancel button IS present in DOM!
+                // The instance is actively running a task!
+                if act.state == .idle || act.state == .stopped {
+                    act.state = .runningTask
+                    if act.currentAction.isEmpty || act.currentAction.hasPrefix("任务已完成") || act.currentAction.hasPrefix("就绪") {
+                        act.currentAction = "正在执行任务…"
+                    }
+                    finalActivities[id] = act
+                }
+            }
+        }
+
+        return ScanBatchResult(activities: finalActivities, metrics: metrics, cdpData: cdpData)
     }
 }
 
@@ -2571,7 +2600,6 @@ private enum TelemetryScanner {
         let stepIndex = last["step_index"] as? Int ?? 0
         let lastType = last["type"] as? String ?? ""
         let lastStatus = last["status"] as? String ?? ""
-        let hasRunningStep = parsedSteps.contains { ($0["status"] as? String) == "RUNNING" }
 
         func withConv(_ act: InstanceActivity) -> InstanceActivity {
             var a = act
@@ -2638,7 +2666,7 @@ private enum TelemetryScanner {
                     stepIndex: stepIndex
                 ))
             }
-            if isRunning && age < 240 {
+            if isRunning {
                 let isStalled = age >= 180
                 return withConv(InstanceActivity(
                     state: isStalled ? .stalled : .runningTask,
@@ -2648,55 +2676,40 @@ private enum TelemetryScanner {
                     stepIndex: stepIndex,
                     isStalled: isStalled
                 ))
+            } else {
+                return withConv(InstanceActivity(
+                    state: .stopped,
+                    currentAction: "上次：\(actionText)",
+                    workspace: workspace,
+                    lastUpdatedLabel: ageLabel,
+                    stepIndex: stepIndex
+                ))
             }
         }
 
-        if isRunning && hasRunningStep && age < 600 {
-            let runningDesc = !actionText.isEmpty ? actionText : (!recentToolAction.isEmpty ? "正在执行：\(recentToolAction)" : "正在后台执行任务…")
-            let isStalled = age >= 180
+        // 2. Completed Planner Response: Agent has finished its response to the user
+        if lastType == "PLANNER_RESPONSE" && lastStatus == "DONE" {
+            let summary = cleanSnippet(last["content"] as? String ?? "")
+            let displayAction: String
+            if !summary.isEmpty {
+                displayAction = summary
+            } else if !recentToolAction.isEmpty {
+                displayAction = "已完成：\(recentToolAction)"
+            } else if !recentUserPrompt.isEmpty {
+                displayAction = "就绪 · 上次：\(recentUserPrompt)"
+            } else {
+                displayAction = "任务已完成 · 等待新指令"
+            }
             return withConv(InstanceActivity(
-                state: isStalled ? .stalled : .runningTask,
-                currentAction: isStalled ? "⚠️ 疑似挂起（\(ageLabel)无响应）：\(runningDesc)" : runningDesc,
+                state: isRunning ? .idle : .stopped,
+                currentAction: isRunning ? displayAction : "上次：\(displayAction)",
                 workspace: workspace,
                 lastUpdatedLabel: ageLabel,
-                stepIndex: stepIndex,
-                isStalled: isStalled
+                stepIndex: stepIndex
             ))
         }
 
-        if isRunning && age < 180 {
-            if lastType == "USER_INPUT" {
-                let prompt = cleanSnippet(last["content"] as? String ?? "")
-                return withConv(InstanceActivity(
-                    state: .runningTask,
-                    currentAction: prompt.isEmpty ? "正在思考并规划任务…" : "正在处理：\(prompt)",
-                    workspace: workspace,
-                    lastUpdatedLabel: ageLabel,
-                    stepIndex: stepIndex
-                ))
-            } else if lastType == "GENERIC" {
-                let genericAction: String
-                if !recentToolAction.isEmpty {
-                    genericAction = "分析结果：\(recentToolAction)"
-                } else if !recentTargetName.isEmpty {
-                    genericAction = "分析结果：\(recentTargetName)"
-                } else if !recentToolName.isEmpty {
-                    genericAction = "处理 \(recentToolName) 输出"
-                } else if !recentUserPrompt.isEmpty {
-                    genericAction = "正在处理：\(recentUserPrompt)"
-                } else {
-                    genericAction = "正在规划下一步操作…"
-                }
-                return withConv(InstanceActivity(
-                    state: .runningTask,
-                    currentAction: genericAction,
-                    workspace: workspace,
-                    lastUpdatedLabel: ageLabel,
-                    stepIndex: stepIndex
-                ))
-            }
-        }
-
+        // 3. Execution Error
         if lastStatus == "ERROR" && isRunning && age < 600 {
             return withConv(InstanceActivity(
                 state: .error,
@@ -2707,6 +2720,80 @@ private enum TelemetryScanner {
             ))
         }
 
+        // 4. User Input just submitted: Agent is planning or thinking
+        if lastType == "USER_INPUT" && isRunning {
+            let prompt = cleanSnippet(last["content"] as? String ?? "")
+            let isStalled = age >= 120
+            return withConv(InstanceActivity(
+                state: isStalled ? .stalled : .runningTask,
+                currentAction: isStalled ? "⚠️ 疑似挂起（\(ageLabel)无响应）：\(prompt)" : (prompt.isEmpty ? "正在思考并规划任务…" : "正在处理：\(prompt)"),
+                workspace: workspace,
+                lastUpdatedLabel: ageLabel,
+                stepIndex: stepIndex,
+                isStalled: isStalled
+            ))
+        }
+
+        // 5. Tool Output received (GENERIC): Agent is analyzing results or running background tasks
+        if lastType == "GENERIC" && isRunning {
+            let genericAction: String
+            if !recentToolAction.isEmpty {
+                genericAction = "分析结果：\(recentToolAction)"
+            } else if !recentTargetName.isEmpty {
+                genericAction = "分析结果：\(recentTargetName)"
+            } else if !recentToolName.isEmpty {
+                genericAction = "处理 \(recentToolName) 输出"
+            } else if !recentUserPrompt.isEmpty {
+                genericAction = "正在处理：\(recentUserPrompt)"
+            } else {
+                genericAction = "正在规划下一步操作…"
+            }
+
+            if lastStatus == "RUNNING" {
+                let isStalled = age >= 180
+                return withConv(InstanceActivity(
+                    state: isStalled ? .stalled : .runningTask,
+                    currentAction: isStalled ? "⚠️ 疑似挂起（\(ageLabel)无响应）：\(genericAction)" : genericAction,
+                    workspace: workspace,
+                    lastUpdatedLabel: ageLabel,
+                    stepIndex: stepIndex,
+                    isStalled: isStalled
+                ))
+            } else if age < 120 {
+                return withConv(InstanceActivity(
+                    state: .runningTask,
+                    currentAction: genericAction,
+                    workspace: workspace,
+                    lastUpdatedLabel: ageLabel,
+                    stepIndex: stepIndex
+                ))
+            } else if age < 600 {
+                return withConv(InstanceActivity(
+                    state: .stalled,
+                    currentAction: "⚠️ 疑似挂起（\(ageLabel)无响应）：\(genericAction)",
+                    workspace: workspace,
+                    lastUpdatedLabel: ageLabel,
+                    stepIndex: stepIndex,
+                    isStalled: true
+                ))
+            }
+        }
+
+        // 6. Active running step
+        if isRunning && lastStatus == "RUNNING" && age < 600 {
+            let isStalled = age >= 180
+            let desc = !recentToolAction.isEmpty ? "正在执行：\(recentToolAction)" : "正在后台执行任务…"
+            return withConv(InstanceActivity(
+                state: isStalled ? .stalled : .runningTask,
+                currentAction: isStalled ? "⚠️ 疑似挂起（\(ageLabel)无响应）：\(desc)" : desc,
+                workspace: workspace,
+                lastUpdatedLabel: ageLabel,
+                stepIndex: stepIndex,
+                isStalled: isStalled
+            ))
+        }
+
+        // 7. Fallback: Idle state
         let summary = cleanSnippet(last["content"] as? String ?? "")
         let displayAction: String
         if !summary.isEmpty {
@@ -2720,7 +2807,7 @@ private enum TelemetryScanner {
         }
         return withConv(InstanceActivity(
             state: isRunning ? .idle : .stopped,
-            currentAction: displayAction,
+            currentAction: isRunning ? displayAction : "上次：\(displayAction)",
             workspace: workspace,
             lastUpdatedLabel: ageLabel,
             stepIndex: stepIndex
@@ -3470,93 +3557,203 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             return false
         }
 
-        let jsPayload = """
-        (() => {
-            const promptText = (\(promptJSONStr))[0];
-            const editor = document.querySelector('[data-lexical-editor="true"]')
-                        || document.querySelector('[aria-label="Message input"]')
-                        || document.querySelector('div[contenteditable="true"]')
-                        || document.querySelector('textarea');
-            if (!editor) {
-                return { success: false, reason: "input_not_found" };
-            }
-
-            editor.focus();
-
-            if (editor.tagName === 'TEXTAREA') {
-                editor.value = promptText;
-                editor.dispatchEvent(new Event('input', { bubbles: true }));
-                editor.dispatchEvent(new Event('change', { bubbles: true }));
-            } else {
-                document.execCommand('selectAll', false, null);
-                const inserted = document.execCommand('insertText', false, promptText);
-                if (!inserted) {
-                    editor.innerText = promptText;
-                    editor.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: promptText }));
-                }
-            }
-
-            // Click send button
-            let sendBtn = document.querySelector('button[aria-label="Send message"]')
-                       || document.querySelector('button[aria-label*="Send"]')
-                       || document.querySelector('button.send-button');
-
-            if (!sendBtn) {
-                const btns = Array.from(document.querySelectorAll('button'));
-                sendBtn = btns.find(b => {
-                    const label = b.getAttribute('aria-label') || '';
-                    const txt = b.innerText || '';
-                    return label.toLowerCase().includes('send') || txt.toLowerCase().includes('send') || label.includes('发送');
-                });
-            }
-
-            if (sendBtn && !sendBtn.disabled) {
-                sendBtn.click();
-                return { success: true, method: "button_click" };
-            }
-
-            // Fallback: dispatch Enter key event
-            const enterEvent = new KeyboardEvent('keydown', {
-                key: 'Enter',
-                code: 'Enter',
-                keyCode: 13,
-                which: 13,
-                bubbles: true,
-                cancelable: true
-            });
-            editor.dispatchEvent(enterEvent);
-            return { success: true, method: "enter_key" };
-        })()
-        """
-
-        guard let evalRequestObj = try? JSONSerialization.data(withJSONObject: [
-            "id": 1001,
-            "method": "Runtime.evaluate",
-            "params": [
-                "expression": jsPayload,
-                "returnByValue": true
-            ]
-        ]), let evalRequestStr = String(data: evalRequestObj, encoding: .utf8) else {
-            return false
-        }
-
         let task = Self.cdpSession.webSocketTask(with: wsURL)
         task.resume()
         defer { task.cancel(with: .goingAway, reason: nil) }
 
-        do {
-            try await task.send(.string(evalRequestStr))
-            let response = try await task.receive()
-            guard case .string(let text) = response,
-                  let respData = text.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: respData) as? [String: Any],
-                  let res = obj["result"] as? [String: Any],
-                  let resultVal = res["result"] as? [String: Any],
-                  let valDict = resultVal["value"] as? [String: Any],
-                  let success = valDict["success"] as? Bool else {
-                return false
+        // Step 1: Focus editor and select all text to prepare for clean injection
+        let focusPayload = """
+        (() => {
+            const editor = document.querySelector('[data-lexical-editor="true"]')
+                        || document.querySelector('[aria-label="Message input"]')
+                        || document.querySelector('div[contenteditable="true"]')
+                        || document.querySelector('textarea');
+            if (!editor) return { found: false };
+            editor.focus();
+            if (editor.tagName === 'TEXTAREA') {
+                editor.value = '';
+                editor.dispatchEvent(new Event('input', { bubbles: true }));
+            } else {
+                const sel = window.getSelection();
+                sel.selectAllChildren(editor);
             }
-            return success
+            return { found: true, isTextarea: editor.tagName === 'TEXTAREA' };
+        })()
+        """
+
+        guard let focusReqData = try? JSONSerialization.data(withJSONObject: [
+            "id": 1001,
+            "method": "Runtime.evaluate",
+            "params": ["expression": focusPayload, "returnByValue": true]
+        ]), let focusReqStr = String(data: focusReqData, encoding: .utf8) else {
+            return false
+        }
+
+        do {
+            try await task.send(.string(focusReqStr))
+            _ = try? await task.receive()
+
+            // Step 2: Native CDP Text Insertion (Chromium level trusted input pipeline)
+            let insertTextPayload: [String: Any] = [
+                "id": 1002,
+                "method": "Input.insertText",
+                "params": ["text": prompt]
+            ]
+            if let insertData = try? JSONSerialization.data(withJSONObject: insertTextPayload),
+               let insertStr = String(data: insertData, encoding: .utf8) {
+                try await task.send(.string(insertStr))
+                _ = try? await task.receive()
+            }
+
+            // JavaScript Fallback/Reconciliation: ensure DOM text is set if Lexical needs input event
+            let jsFallbackPayload = """
+            (() => {
+                const promptText = (\(promptJSONStr))[0];
+                const editor = document.querySelector('[data-lexical-editor="true"]')
+                            || document.querySelector('[aria-label="Message input"]')
+                            || document.querySelector('div[contenteditable="true"]')
+                            || document.querySelector('textarea');
+                if (!editor) return { ready: false };
+                if (editor.tagName === 'TEXTAREA') {
+                    if (editor.value !== promptText) {
+                        editor.value = promptText;
+                        editor.dispatchEvent(new Event('input', { bubbles: true }));
+                        editor.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                } else {
+                    const currentText = (editor.innerText || '').trim();
+                    if (currentText.length === 0) {
+                        document.execCommand('insertText', false, promptText);
+                    }
+                }
+                return { ready: true };
+            })()
+            """
+            if let jsFallbackData = try? JSONSerialization.data(withJSONObject: [
+                "id": 1003,
+                "method": "Runtime.evaluate",
+                "params": ["expression": jsFallbackPayload, "returnByValue": true]
+            ]), let jsFallbackStr = String(data: jsFallbackData, encoding: .utf8) {
+                try await task.send(.string(jsFallbackStr))
+                _ = try? await task.receive()
+            }
+
+            // Step 3: Brief delay for React/Lexical DOM reconciliation
+            try? await Task.sleep(nanoseconds: 80_000_000)
+
+            // Step 4: Click Send Button (primary submission path)
+            let clickSendPayload = """
+            (() => {
+                let sendBtn = document.querySelector('button[aria-label="Send message"]')
+                           || document.querySelector('button[aria-label*="Send"]')
+                           || document.querySelector('button.send-button');
+                if (!sendBtn) {
+                    const btns = Array.from(document.querySelectorAll('button'));
+                    sendBtn = btns.find(b => {
+                        const label = b.getAttribute('aria-label') || '';
+                        const txt = b.innerText || '';
+                        return label.toLowerCase().includes('send') || txt.toLowerCase().includes('send') || label.includes('发送');
+                    });
+                }
+                if (sendBtn && !sendBtn.disabled) {
+                    sendBtn.click();
+                    return { clicked: true };
+                }
+                return { clicked: false };
+            })()
+            """
+            var sendButtonClicked = false
+            if let clickData = try? JSONSerialization.data(withJSONObject: [
+                "id": 1004,
+                "method": "Runtime.evaluate",
+                "params": ["expression": clickSendPayload, "returnByValue": true]
+            ]), let clickStr = String(data: clickData, encoding: .utf8) {
+                try await task.send(.string(clickStr))
+                if let clickResp = try? await task.receive(),
+                   case .string(let text) = clickResp,
+                   let respData = text.data(using: .utf8),
+                   let obj = try? JSONSerialization.jsonObject(with: respData) as? [String: Any],
+                   let res = obj["result"] as? [String: Any],
+                   let resultVal = res["result"] as? [String: Any],
+                   let valDict = resultVal["value"] as? [String: Any],
+                   let clicked = valDict["clicked"] as? Bool {
+                    sendButtonClicked = clicked
+                }
+            }
+
+            // Step 5: Fallback native CDP Enter key event (if send button wasn't clickable)
+            if !sendButtonClicked {
+                let keyDownPayload: [String: Any] = [
+                    "id": 1005,
+                    "method": "Input.dispatchKeyEvent",
+                    "params": [
+                        "type": "rawKeyDown",
+                        "key": "Enter",
+                        "code": "Enter",
+                        "windowsVirtualKeyCode": 13,
+                        "nativeVirtualKeyCode": 13
+                    ]
+                ]
+                if let kdData = try? JSONSerialization.data(withJSONObject: keyDownPayload),
+                   let kdStr = String(data: kdData, encoding: .utf8) {
+                    try await task.send(.string(kdStr))
+                    _ = try? await task.receive()
+                }
+
+                let keyUpPayload: [String: Any] = [
+                    "id": 1006,
+                    "method": "Input.dispatchKeyEvent",
+                    "params": [
+                        "type": "keyUp",
+                        "key": "Enter",
+                        "code": "Enter",
+                        "windowsVirtualKeyCode": 13,
+                        "nativeVirtualKeyCode": 13
+                    ]
+                ]
+                if let kuData = try? JSONSerialization.data(withJSONObject: keyUpPayload),
+                   let kuStr = String(data: kuData, encoding: .utf8) {
+                    try await task.send(.string(kuStr))
+                    _ = try? await task.receive()
+                }
+            }
+
+            // Step 6: Verify submission success
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            let verifyPayload = """
+            (() => {
+                const editor = document.querySelector('[data-lexical-editor="true"]')
+                            || document.querySelector('[aria-label="Message input"]')
+                            || document.querySelector('div[contenteditable="true"]')
+                            || document.querySelector('textarea');
+                const hasStop = Boolean(document.querySelector('button[aria-label="Stop execution"], button[aria-label^="Cancel"]'));
+                const sendBtn = document.querySelector('button[aria-label="Send message"]');
+                const isSendDisabled = sendBtn ? sendBtn.disabled : true;
+                const currentText = editor ? (editor.value || editor.innerText || '').trim() : '';
+                return {
+                    success: hasStop || isSendDisabled || currentText.length === 0,
+                    hasStop: hasStop
+                };
+            })()
+            """
+            if let verifyData = try? JSONSerialization.data(withJSONObject: [
+                "id": 1007,
+                "method": "Runtime.evaluate",
+                "params": ["expression": verifyPayload, "returnByValue": true]
+            ]), let verifyStr = String(data: verifyData, encoding: .utf8) {
+                try await task.send(.string(verifyStr))
+                if let verifyResp = try? await task.receive(),
+                   case .string(let text) = verifyResp,
+                   let respData = text.data(using: .utf8),
+                   let obj = try? JSONSerialization.jsonObject(with: respData) as? [String: Any],
+                   let res = obj["result"] as? [String: Any],
+                   let resultVal = res["result"] as? [String: Any],
+                   let valDict = resultVal["value"] as? [String: Any],
+                   let verifiedSuccess = valDict["success"] as? Bool {
+                    return verifiedSuccess
+                }
+            }
+            return true
         } catch {
             return false
         }
@@ -3900,7 +4097,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     }()
 
     /// Zero-permission live window screenshot capture via Chromium DevTools Protocol (`DevToolsActivePort`).
-    /// Captures live UI screenshots of all running instances in real-time and remembers the active conversation URL!
+    /// Captures live UI screenshots of all running instances in real-time, fuses execution state, and remembers the active conversation URL!
     fileprivate nonisolated static func captureCDPScreenshots(
         for items: [ManagedInstance],
         captureThumbnails: Bool = true,
@@ -3908,11 +4105,12 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         existingThumbnailIDs: Set<String> = [],
         activeTaskIDs: Set<String> = [],
         telemetryTick: Int = 0
-    ) async -> (thumbnails: [String: NSImage], urls: [String: String], workspaces: [String: String], sessionTitles: [String: String]) {
+    ) async -> (thumbnails: [String: NSImage], urls: [String: String], workspaces: [String: String], sessionTitles: [String: String], executionStates: [String: Bool]) {
         var results: [String: NSImage] = [:]
         var urls: [String: String] = [:]
         var workspaces: [String: String] = [:]
         var sessionTitles: [String: String] = [:]
+        var executionStates: [String: Bool] = [:]
         let appSupportRoot = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support")
 
@@ -3974,35 +4172,62 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
 
             let shouldFetchImage = captureThumbnails && (!hasThumbnail || isFrontmost || isRunningTask)
 
-            if shouldFetchImage,
-               let wsString = mainTarget["webSocketDebuggerUrl"] as? String,
-               let wsURL = URL(string: wsString),
-               let image = await fetchCDPScreenshot(wsURL: wsURL) {
-                results[item.id] = image
+            if let wsString = mainTarget["webSocketDebuggerUrl"] as? String,
+               let wsURL = URL(string: wsString) {
+                let cdpData = await fetchCDPData(wsURL: wsURL, captureThumbnail: shouldFetchImage)
+                if let img = cdpData.image {
+                    results[item.id] = img
+                }
+                if let isExecuting = cdpData.isExecuting {
+                    executionStates[item.id] = isExecuting
+                }
             }
         }
-        return (results, urls, workspaces, sessionTitles)
+        return (results, urls, workspaces, sessionTitles, executionStates)
     }
 
-    private nonisolated static func fetchCDPScreenshot(wsURL: URL) async -> NSImage? {
+    private nonisolated static func fetchCDPData(wsURL: URL, captureThumbnail: Bool) async -> (image: NSImage?, isExecuting: Bool?) {
         let task = cdpSession.webSocketTask(with: wsURL)
         task.resume()
         defer { task.cancel(with: .goingAway, reason: nil) }
-        let payload = "{\"id\":1,\"method\":\"Page.captureScreenshot\",\"params\":{\"format\":\"jpeg\",\"quality\":62}}"
+
+        var isExecuting: Bool? = nil
+        var image: NSImage? = nil
+
+        let evalPayload = """
+        {"id":200,"method":"Runtime.evaluate","params":{"expression":"Boolean(document.querySelector('button[aria-label=\\"Stop execution\\"], button[aria-label^=\\"Cancel\\"]'))","returnByValue":true}}
+        """
         do {
-            try await task.send(.string(payload))
-            let message = try await task.receive()
-            guard case .string(let text) = message,
-                  let data = text.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let res = obj["result"] as? [String: Any],
-                  let b64 = res["data"] as? String,
-                  let imgData = Data(base64Encoded: b64),
-                  let image = NSImage(data: imgData) else { return nil }
-            return image
-        } catch {
-            return nil
-        }
+            try await task.send(.string(evalPayload))
+            if captureThumbnail {
+                let screenshotPayload = "{\"id\":201,\"method\":\"Page.captureScreenshot\",\"params\":{\"format\":\"jpeg\",\"quality\":62}}"
+                try await task.send(.string(screenshotPayload))
+            }
+
+            let responseCount = captureThumbnail ? 2 : 1
+            for _ in 0..<responseCount {
+                let message = try await task.receive()
+                guard case .string(let text) = message,
+                      let data = text.data(using: .utf8),
+                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      let id = obj["id"] as? Int else { continue }
+
+                if id == 200 {
+                    if let res = obj["result"] as? [String: Any],
+                       let resultVal = res["result"] as? [String: Any],
+                       let val = resultVal["value"] as? Bool {
+                        isExecuting = val
+                    }
+                } else if id == 201 {
+                    if let res = obj["result"] as? [String: Any],
+                       let b64 = res["data"] as? String,
+                       let imgData = Data(base64Encoded: b64) {
+                        image = NSImage(data: imgData)
+                    }
+                }
+            }
+        } catch {}
+        return (image, isExecuting)
     }
 
 
@@ -8968,7 +9193,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.5"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.6"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {

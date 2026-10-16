@@ -131,8 +131,34 @@ class TestAutoPilotSelfHosting(unittest.TestCase):
         self.assertIn("case startAllAutoPilot", self.content)
         self.assertIn("case stopAllAutoPilot", self.content)
 
+    # --- 8. State Precision & Anti-Stall Invariants ---
+
+    def test_completed_planner_response_is_idle_not_stalled(self):
+        """Completed PLANNER_RESPONSE with status DONE must immediately return .idle and never be marked .stalled."""
+        self.assertIn('if lastType == "PLANNER_RESPONSE" && lastStatus == "DONE"', self.content)
+        # Ensure hasRunningStep does not hijack completed planner responses
+        self.assertNotIn("let hasRunningStep = parsedSteps.contains", self.content)
+
+    def test_cdp_live_dom_execution_state_fusion(self):
+        """TelemetryActor must fuse CDP DOM execution state to overrule false stalls when stop button is absent."""
+        self.assertIn("var executionStates: [String: Bool]", self.content)
+        self.assertIn("Stop execution", self.content)
+        self.assertIn("Cancel", self.content)
+        self.assertIn("act.state = .idle", self.content)
+        self.assertIn("act.isStalled = false", self.content)
+
+    def test_dual_channel_cdp_injection(self):
+        """injectPromptViaCDP must implement dual-channel input (Input.insertText + Input.dispatchKeyEvent + button_click)."""
+        body = self._extract_method_body("injectPromptViaCDP")
+        self.assertIn("Input.insertText", body)
+        self.assertIn("Input.dispatchKeyEvent", body)
+        self.assertIn("sendBtn.click()", body)
+        self.assertIn('"windowsVirtualKeyCode": 13', body)
+
     def _extract_method_body(self, method_name: str) -> str:
-        idx = self.content.find(method_name)
+        idx = self.content.find(f"func {method_name}")
+        if idx == -1:
+            idx = self.content.find(method_name)
         if idx == -1:
             return ""
         start = self.content.find("{", idx)

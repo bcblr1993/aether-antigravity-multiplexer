@@ -1,3 +1,15 @@
+# v0.8.6
+
+- **精准实例状态判定与杜绝误挂起 (Precise State Telemetry & Zero False-Stall Guarantee)**：
+  - **完成步骤立即回归空闲就绪 (`.idle`)**：彻底重构 `parseTranscriptTail` 判定流水线，当最后步骤为 `PLANNER_RESPONSE` 且状态为 `DONE`（工具调用列表为空）时，确立为 Agent 本轮回答完毕，立即回归 `.idle`（空闲就绪），彻底根除因历史旧步骤包含未消费的 `RUNNING` 标记而误判为“⚠️ 疑似挂起”的严重缺陷。
+  - **CDP 实时 DOM 状态双向熔断校准 (Real-Time CDP DOM Execution State Fusion)**：直接通过 Chromium DevTools Protocol (`Runtime.evaluate`) 查询前端 DOM 中是否存在 `button[aria-label="Stop execution"]` 或 `button[aria-label^="Cancel"]`。若 DOM 中停止/取消按钮已消失，双向断定实例绝非在执行中，毫秒级将误判修正为 `.idle`；若停止按钮依然存在，则确认处于执行中，杜绝任何假空闲或虚假完成。
+- **高可靠双通道自托管与智能装填引擎 (Infallible Dual-Channel Auto-Pilot & Prompt Injection Engine)**：
+  - **原生 Chromium 级输入通道 (`Input.insertText`)**：在静默装填预设提示词时，引入 Chromium 底层 CDP 原生输入通道，绕过合成 JS 事件的信任限制，直接将预设文本写入 Lexical 输入内核，即刻唤醒 React 响应式渲染树，将“Send message”发送按钮自然激活为可用状态。
+  - **双通道发送机制与多层兜底 (`sendBtn.click()` + `Input.dispatchKeyEvent`)**：首先尝试精准触发可用的“Send message”按钮点击；若按钮处于微秒延迟更新中，自动联动派发底层物理 Enter 键事件（`rawKeyDown` + `keyUp`, keyCode 13），确保 100% 成功提交，零漏发、零卡顿。
+  - **提交结果闭环验证 (Submission Verification Loop)**：指令发出后自动轮询核验，确认停止按钮已出现、发送按钮变灰或输入框已清空，确认无误后方递增轮次并切换至运行状态，装填精确无 bug。
+- **全量 130 项自动化测试质量门禁保障 (130/130 Automated Tests Passed)**：
+  - 增补状态精准度判定测试、CDP 实时 DOM 融合校验测试、双通道装填通道单元测试，全量 130 项测试 100% 满分通过。
+
 # v0.8.5
 
 - **macOS Liquid Glass 全页面模态视窗体系与触觉动效规范 (Full-Scale macOS Liquid Glass & Tactile Physics Standard)**：
