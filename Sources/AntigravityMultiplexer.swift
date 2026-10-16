@@ -879,9 +879,60 @@ private struct GlassCardModifier: ViewModifier {
     }
 }
 
+private struct LiquidGlassSheetModifier: ViewModifier {
+    var radius: CGFloat = 16
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                ZStack {
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .fill(.regularMaterial)
+                    if colorScheme == .dark {
+                        RoundedRectangle(cornerRadius: radius, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        Color(red: 0.12, green: 0.14, blue: 0.20).opacity(0.35),
+                                        Color(red: 0.08, green: 0.09, blue: 0.14).opacity(0.45)
+                                    ],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                    } else {
+                        RoundedRectangle(cornerRadius: radius, style: .continuous)
+                            .fill(Color.white.opacity(0.45))
+                    }
+                }
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            stops: [
+                                .init(color: Color.white.opacity(colorScheme == .dark ? 0.32 : 0.60), location: 0.0),
+                                .init(color: Color.white.opacity(colorScheme == .dark ? 0.10 : 0.25), location: 0.4),
+                                .init(color: Color.primary.opacity(0.06), location: 1.0)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 0.95
+                    )
+            }
+            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+    }
+}
+
 private extension View {
     func systemSurface(radius: CGFloat, isHighlighted: Bool = false, tint: Color? = nil) -> some View {
         modifier(GlassCardModifier(radius: radius, isHighlighted: isHighlighted, tint: tint))
+    }
+
+    func liquidGlassSheet(radius: CGFloat = 16) -> some View {
+        modifier(LiquidGlassSheetModifier(radius: radius))
     }
 }
 
@@ -1334,7 +1385,7 @@ private struct ModernButtonStyle: ButtonStyle {
                         RoundedRectangle(cornerRadius: radius, style: .continuous)
                             .fill(
                                 LinearGradient(
-                                    colors: [Color.white.opacity(0.18), Color.clear],
+                                    colors: [Color.white.opacity(hovered ? 0.24 : 0.16), Color.clear],
                                     startPoint: .top,
                                     endPoint: .center
                                 )
@@ -1348,16 +1399,21 @@ private struct ModernButtonStyle: ButtonStyle {
             }
             .shadow(
                 color: buttonShadow(pressed: configuration.isPressed),
-                radius: configuration.isPressed ? 2 : (hovered ? 8 : 4),
+                radius: configuration.isPressed ? 1.5 : (hovered ? 8 : 4),
                 x: 0,
                 y: configuration.isPressed ? 1 : (hovered ? 3 : 1.5)
             )
             .contentShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
-            .scaleEffect(configuration.isPressed ? 0.965 : (hovered && isEnabled ? 1.018 : 1.0))
+            .scaleEffect(configuration.isPressed ? 0.955 : (hovered && isEnabled ? 1.025 : 1.0))
             .opacity(isEnabled ? 1.0 : 0.45)
-            .animation(.spring(response: 0.22, dampingFraction: 0.78), value: hovered)
-            .animation(.spring(response: 0.16, dampingFraction: 0.75), value: configuration.isPressed)
+            .animation(.spring(response: 0.20, dampingFraction: 0.76), value: hovered)
+            .animation(.spring(response: 0.15, dampingFraction: 0.72), value: configuration.isPressed)
             .onHover { hovered = $0 }
+            .onChange(of: configuration.isPressed) { pressed in
+                if pressed {
+                    HapticManager.shared.play(variant == .danger ? .levelChange : .alignment)
+                }
+            }
     }
 
     private var foregroundColor: Color {
@@ -1375,9 +1431,9 @@ private struct ModernButtonStyle: ButtonStyle {
         guard isEnabled && !pressed else { return .clear }
         switch variant {
         case .primary:
-            return accent.opacity(hovered ? 0.36 : 0.20)
+            return accent.opacity(hovered ? 0.38 : 0.20)
         case .upgrade:
-            return Color(red: 0.20, green: 0.46, blue: 0.95).opacity(hovered ? 0.40 : 0.24)
+            return Color(red: 0.20, green: 0.46, blue: 0.95).opacity(hovered ? 0.42 : 0.24)
         case .danger:
             return Color.red.opacity(hovered ? 0.35 : 0.15)
         case .secondary, .ghost:
@@ -1439,7 +1495,7 @@ private struct ModernButtonStyle: ButtonStyle {
             return AnyShapeStyle(
                 LinearGradient(
                     stops: [
-                        .init(color: Color.white.opacity(hovered ? 0.45 : 0.28), location: 0.0),
+                        .init(color: Color.white.opacity(hovered ? 0.48 : 0.28), location: 0.0),
                         .init(color: Color.white.opacity(0.10), location: 1.0)
                     ],
                     startPoint: .top,
@@ -1452,7 +1508,7 @@ private struct ModernButtonStyle: ButtonStyle {
             return AnyShapeStyle(
                 LinearGradient(
                     stops: [
-                        .init(color: Color.white.opacity(hovered ? 0.28 : 0.14), location: 0.0),
+                        .init(color: Color.white.opacity(hovered ? 0.32 : 0.16), location: 0.0),
                         .init(color: Color.primary.opacity(hovered ? (colorScheme == .dark ? 0.18 : 0.10) : 0.05), location: 1.0)
                     ],
                     startPoint: .top,
@@ -1465,6 +1521,107 @@ private struct ModernButtonStyle: ButtonStyle {
     }
 }
 
+// MARK: - Reusable Tactile Spring Button Style (macOS Liquid Glass Standard)
+
+private struct TactileSpringButtonStyle: ButtonStyle {
+    var pressedScale: CGFloat = 0.94
+    var hoverScale: CGFloat = 1.02
+    var haptic: NSHapticFeedbackManager.FeedbackPattern? = .alignment
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var hovered = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? pressedScale : (hovered && isEnabled ? hoverScale : 1.0))
+            .opacity(isEnabled ? (configuration.isPressed ? 0.88 : 1.0) : 0.45)
+            .animation(.spring(response: 0.18, dampingFraction: 0.74), value: hovered)
+            .animation(.spring(response: 0.14, dampingFraction: 0.70), value: configuration.isPressed)
+            .onHover { hovered = $0 }
+            .onChange(of: configuration.isPressed) { pressed in
+                if pressed, let haptic = haptic {
+                    HapticManager.shared.play(haptic)
+                }
+            }
+    }
+}
+
+// MARK: - Liquid Glass Icon Button Style
+
+private struct LiquidGlassIconButtonStyle: ButtonStyle {
+    var size: CGFloat = 30
+    var badge: Int = 0
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var hovered = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        let radius: CGFloat = size > 30 ? 9.5 : 8.5
+        ZStack(alignment: .topTrailing) {
+            configuration.label
+                .font(.system(size: size > 30 ? 13.5 : 12.5, weight: .medium))
+                .frame(width: size, height: size, alignment: .center)
+                .foregroundStyle(hovered ? Color.primary : Color.secondary)
+                .background {
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .fill(
+                            Color.primary.opacity(
+                                configuration.isPressed
+                                    ? (colorScheme == .dark ? 0.22 : 0.14)
+                                    : (hovered ? (colorScheme == .dark ? 0.14 : 0.08) : (colorScheme == .dark ? 0.06 : 0.035))
+                            )
+                        )
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: radius, style: .continuous)
+                        .strokeBorder(
+                            LinearGradient(
+                                stops: [
+                                    .init(
+                                        color: Color.white.opacity(
+                                            configuration.isPressed
+                                                ? 0.15
+                                                : (hovered ? (colorScheme == .dark ? 0.38 : 0.50) : (colorScheme == .dark ? 0.12 : 0.20))
+                                        ),
+                                        location: 0.0
+                                    ),
+                                    .init(color: Color.primary.opacity(hovered ? 0.16 : 0.06), location: 1.0)
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ),
+                            lineWidth: 0.95
+                        )
+                }
+                .shadow(
+                    color: Color.black.opacity(hovered && !configuration.isPressed ? (colorScheme == .dark ? 0.25 : 0.08) : 0.0),
+                    radius: hovered ? 4.5 : 0,
+                    y: hovered ? 1.8 : 0
+                )
+
+            if badge > 0 {
+                Text("\(badge)")
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 4.5)
+                    .padding(.vertical, 1)
+                    .background(Capsule().fill(accent))
+                    .offset(x: 4, y: -4)
+            }
+        }
+        .contentShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+        .scaleEffect(configuration.isPressed ? 0.90 : (hovered && isEnabled ? 1.045 : 1.0))
+        .opacity(isEnabled ? 1.0 : 0.45)
+        .animation(.spring(response: 0.20, dampingFraction: 0.74), value: hovered)
+        .animation(.spring(response: 0.14, dampingFraction: 0.70), value: configuration.isPressed)
+        .onHover { hovered = $0 }
+        .onChange(of: configuration.isPressed) { pressed in
+            if pressed {
+                HapticManager.shared.play(.alignment)
+            }
+        }
+    }
+}
+
 private struct IconActionButton: View {
     let symbol: String
     let tooltip: String
@@ -1473,62 +1630,15 @@ private struct IconActionButton: View {
     var badge: Int = 0
     var disabled: Bool = false
     let action: () -> Void
-    @State private var hovered = false
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        let radius: CGFloat = size > 30 ? 9.5 : 8.5
         Button(action: action) {
-            ZStack(alignment: .topTrailing) {
-                Image(systemName: symbol)
-                    .font(.system(size: size > 30 ? 13.5 : 12.5, weight: .medium))
-                    .rotationEffect(.degrees(rotation))
-                    .frame(width: size, height: size, alignment: .center)
-                    .foregroundStyle(hovered ? Color.primary : Color.secondary)
-                    .background {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: radius, style: .continuous)
-                                .fill(Color.primary.opacity(hovered ? (colorScheme == .dark ? 0.14 : 0.08) : (colorScheme == .dark ? 0.06 : 0.035)))
-                        }
-                    }
-                    .overlay {
-                        RoundedRectangle(cornerRadius: radius, style: .continuous)
-                            .strokeBorder(
-                                LinearGradient(
-                                    stops: [
-                                        .init(color: Color.white.opacity(hovered ? (colorScheme == .dark ? 0.32 : 0.45) : (colorScheme == .dark ? 0.12 : 0.20)), location: 0.0),
-                                        .init(color: Color.primary.opacity(hovered ? 0.14 : 0.06), location: 1.0)
-                                    ],
-                                    startPoint: .top,
-                                    endPoint: .bottom
-                                ),
-                                lineWidth: 0.95
-                            )
-                    }
-                    .shadow(
-                        color: Color.black.opacity(hovered ? (colorScheme == .dark ? 0.24 : 0.06) : 0.0),
-                        radius: hovered ? 4 : 0,
-                        y: hovered ? 1.5 : 0
-                    )
-                if badge > 0 {
-                    Text("\(badge)")
-                        .font(.system(size: 9, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 4.5)
-                        .padding(.vertical, 1)
-                        .background(Capsule().fill(accent))
-                        .offset(x: 4, y: -4)
-                }
-            }
-            .contentShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
-            .scaleEffect(hovered && !disabled ? 1.04 : 1.0)
-            .animation(.spring(response: 0.22, dampingFraction: 0.75), value: hovered)
+            Image(systemName: symbol)
+                .rotationEffect(.degrees(rotation))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LiquidGlassIconButtonStyle(size: size, badge: badge))
         .disabled(disabled)
-        .opacity(disabled ? 0.45 : 1.0)
         .help(tooltip)
-        .onHover { hovered = $0 }
     }
 }
 
@@ -5114,7 +5224,7 @@ private struct FloatingMonitorHUDView: View {
                             )
                         }
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.92, hoverScale: 1.08))
                 .help("快速切换到其他 Antigravity 实例 (⌥Space)")
 
                 Button {
@@ -5147,7 +5257,7 @@ private struct FloatingMonitorHUDView: View {
                     }
                     .shadow(color: accent.opacity(0.35), radius: 4, y: 1.5)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.94, hoverScale: 1.04))
                 .help("隐藏当前实例窗口并返回缩略图监控墙（后台任务继续运行）")
 
                 if hovered {
@@ -5160,7 +5270,7 @@ private struct FloatingMonitorHUDView: View {
                             .frame(width: 16, height: 16)
                             .background(Circle().fill(Color.white.opacity(0.12)))
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.88, hoverScale: 1.10))
                     .help("关闭悬浮胶囊（可在设置中重新开启）")
                     .transition(.opacity)
                 }
@@ -5399,7 +5509,7 @@ private struct QuickSwitcherView: View {
                             .font(.system(size: 13))
                             .foregroundStyle(.secondary)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.90, hoverScale: 1.08))
                 }
 
                 HStack(spacing: 4) {
@@ -6032,7 +6142,7 @@ struct BatchActionBarView: View {
                     .font(.system(size: 14))
                     .foregroundStyle(.secondary)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.90, hoverScale: 1.10))
             .padding(.trailing, 4)
         }
         .padding(.horizontal, 14)
@@ -6097,7 +6207,7 @@ struct StatusPopoverView: View {
                     .frame(height: 20)
                     .background(Capsule().fill(Color.primary.opacity(0.08)))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.94, hoverScale: 1.05))
             }
 
             // Global Sparkline Metric Summary
@@ -6172,7 +6282,7 @@ struct StatusPopoverView: View {
                                     .font(.system(size: 12))
                                     .foregroundStyle(Color.accentColor)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.90, hoverScale: 1.15))
                         }
                         .padding(.horizontal, 8)
                         .padding(.vertical, 5)
@@ -6485,7 +6595,7 @@ struct InstanceThumbnailTile: View {
                                         .strokeBorder(Color.white.opacity(hovered || showMorePopover ? 0.35 : 0.18), lineWidth: 1)
                                 }
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.92, hoverScale: 1.05))
                         .popover(isPresented: $showMorePopover, arrowEdge: .bottom) {
                             tilePopoverMenu
                         }
@@ -6677,7 +6787,7 @@ struct InstanceThumbnailTile: View {
                         .foregroundStyle(meta.hasCustomContent ? meta.color : .secondary.opacity(0.8))
                         .frame(width: 15, height: 15)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.90, hoverScale: 1.10))
                 .help("编辑此实例的项目别名与标签")
             }
             .padding(.horizontal, 11)
@@ -6728,7 +6838,7 @@ struct InstanceThumbnailTile: View {
                         .offset(x: 1)
                 }
             }
-            .buttonStyle(.plain)
+            .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.92, hoverScale: 1.08))
             .scaleEffect(hovered ? 1.08 : 1.0)
         } else if hovered {
             // Running & Hovered: Quick Focus + Collapse/Hide buttons
@@ -6746,7 +6856,7 @@ struct InstanceThumbnailTile: View {
                     .background(Capsule().fill(accent))
                     .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.94, hoverScale: 1.04))
 
                 if !item.isHidden {
                     Button(action: hideWindow) {
@@ -6762,7 +6872,7 @@ struct InstanceThumbnailTile: View {
                         .background(Capsule().fill(Color.black.opacity(0.75)))
                         .overlay(Capsule().strokeBorder(Color.white.opacity(0.25), lineWidth: 1))
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.94, hoverScale: 1.04))
                     .help("隐藏窗口回到缩略图监控台（后台任务继续运行）")
                 }
             }
@@ -6983,7 +7093,7 @@ struct InstanceThumbnailTile: View {
             .padding(.vertical, 6)
             .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.96, hoverScale: 1.01))
         .disabled(disabled)
         .opacity(disabled ? 0.4 : 1.0)
     }
@@ -7281,7 +7391,7 @@ struct InstanceCard: View {
                             border: meta.hasCustomContent ? meta.color.opacity(0.28) : Color.primary.opacity(0.06)
                         )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.96, hoverScale: 1.02))
                     .help("编辑此实例的项目别名与标签")
                 }
                 .frame(height: 22)
@@ -7501,7 +7611,7 @@ struct InstanceCard: View {
             .padding(.vertical, 6)
             .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.96, hoverScale: 1.01))
         .disabled(disabled)
         .opacity(disabled ? 0.4 : 1.0)
     }
@@ -7655,12 +7765,7 @@ struct EditInstanceMetaSheet: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button(action: onDismiss) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 17))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
+                IconActionButton(symbol: "xmark", tooltip: "关闭", size: 28, action: onDismiss)
             }
 
             ScrollView(.vertical, showsIndicators: true) {
@@ -7687,7 +7792,9 @@ struct EditInstanceMetaSheet: View {
                             HStack(spacing: 6) {
                                 ForEach(presetTags, id: \.self) { preset in
                                     Button {
-                                        tag = preset
+                                        withAnimation(.spring(response: 0.22, dampingFraction: 0.78)) {
+                                            tag = preset
+                                        }
                                     } label: {
                                         Text(preset)
                                             .font(.system(size: 10.5))
@@ -7696,7 +7803,7 @@ struct EditInstanceMetaSheet: View {
                                             .background(Capsule().fill(Color.primary.opacity(tag == preset ? 0.14 : 0.05)))
                                             .foregroundStyle(tag == preset ? Color.primary : Color.secondary)
                                     }
-                                    .buttonStyle(.plain)
+                                    .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.92, hoverScale: 1.05))
                                 }
                             }
                             .padding(.vertical, 2)
@@ -7710,7 +7817,9 @@ struct EditInstanceMetaSheet: View {
                         HStack(spacing: 12) {
                             ForEach(presetColors, id: \.id) { preset in
                                 Button {
-                                    selectedColor = preset.id
+                                    withAnimation(.spring(response: 0.22, dampingFraction: 0.78)) {
+                                        selectedColor = preset.id
+                                    }
                                 } label: {
                                     ZStack {
                                         Circle()
@@ -7723,7 +7832,7 @@ struct EditInstanceMetaSheet: View {
                                         }
                                     }
                                 }
-                                .buttonStyle(.plain)
+                                .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.88, hoverScale: 1.12))
                             }
                         }
                         .padding(.vertical, 2)
@@ -7785,7 +7894,7 @@ struct EditInstanceMetaSheet: View {
                                 }
                                 .foregroundStyle(.secondary)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.94, hoverScale: 1.04))
                         }
 
                         VStack(spacing: 6) {
@@ -7904,6 +8013,7 @@ struct EditInstanceMetaSheet: View {
         }
         .padding(22)
         .frame(width: 470)
+        .liquidGlassSheet(radius: 16)
     }
 
     private func diskStorageRow(title: String, path: String, sizeText: String, icon: String, color: Color, action: @escaping () -> Void) -> some View {
@@ -7927,7 +8037,7 @@ struct EditInstanceMetaSheet: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.90, hoverScale: 1.10))
             .help("在访达中显示该目录")
         }
     }
@@ -7984,7 +8094,7 @@ struct AutoPilotPillView: View {
                 )
                 .foregroundStyle(state.color)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.94, hoverScale: 1.05))
             .help(store.appLanguage == .zhHans || store.appLanguage == .zhHant
                   ? "🤖 自托管已启用：点击配置预设指令与防抖确认参数"
                   : "🤖 Auto-Pilot active: Click to configure prompt and debounce")
@@ -8110,14 +8220,18 @@ struct AutoPilotConfigSheet: View {
                         .font(.system(size: 10.5))
                         .foregroundStyle(.secondary)
                     ForEach(promptTemplates, id: \.title) { tmpl in
-                        Button(action: { promptText = tmpl.prompt }) {
+                        Button(action: {
+                            withAnimation(.spring(response: 0.22, dampingFraction: 0.78)) {
+                                promptText = tmpl.prompt
+                            }
+                        }) {
                             Text(tmpl.title)
-                                .font(.system(size: 10))
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 2)
+                                .font(.system(size: 10, weight: .medium))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2.5)
                                 .background(Capsule().fill(Color.primary.opacity(0.06)))
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.92, hoverScale: 1.05))
                     }
                 }
 
@@ -8219,6 +8333,7 @@ struct AutoPilotConfigSheet: View {
                     onDismiss()
                 }
                 .buttonStyle(ModernButtonStyle(variant: .ghost, compact: true))
+                .keyboardShortcut(.cancelAction)
 
                 Button("保存并应用") {
                     store.updateAutoPilotConfig(
@@ -8231,10 +8346,12 @@ struct AutoPilotConfigSheet: View {
                     onDismiss()
                 }
                 .buttonStyle(ModernButtonStyle(variant: .primary, compact: true))
+                .keyboardShortcut(.return, modifiers: .command)
             }
         }
         .padding(20)
         .frame(width: 520)
+        .liquidGlassSheet(radius: 16)
     }
 }
 
@@ -8272,6 +8389,7 @@ struct UpgradeConfirmationView: View {
         }
         .padding(24)
         .frame(width: 620)
+        .liquidGlassSheet(radius: 16)
         .onAppear {
             if store.busy {
                 isUpgrading = true
@@ -8435,7 +8553,7 @@ struct UpgradeConfirmationView: View {
                             .font(.system(size: 11.5))
                             .foregroundStyle(.secondary)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.95, hoverScale: 1.02))
                     .help("无需手动勾选，一键直接升级")
 
                     Button("备份并升级") {
@@ -8452,7 +8570,7 @@ struct UpgradeConfirmationView: View {
                             .font(.system(size: 11.5))
                             .foregroundStyle(.secondary)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.95, hoverScale: 1.02))
 
                     Button("直接升级 (不备份)") {
                         startUpgrade(backup: false)
@@ -8586,7 +8704,7 @@ struct UpgradeConfirmationView: View {
                     }
                     .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.95, hoverScale: 1.02))
 
                 if showLogs {
                     ScrollViewReader { proxy in
@@ -8850,7 +8968,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.4"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.5"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
@@ -9389,7 +9507,7 @@ struct ContentView: View {
                     .background(Color.primary.opacity(0.04))
                     .clipShape(Circle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.92, hoverScale: 1.06))
             .padding(.trailing, 10)
             .help("展开大图监控卡片与详细指标")
         }
@@ -9462,7 +9580,7 @@ struct ContentView: View {
                     .background(Color.primary.opacity(0.06))
                     .clipShape(Capsule())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.92, hoverScale: 1.06))
                 .padding(8)
                 .help("折叠为紧凑状态指标条")
             }
@@ -9579,7 +9697,7 @@ struct ContentView: View {
                             }
                         }
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.94, hoverScale: 1.02))
                 }
             }
             .padding(3)
@@ -9626,7 +9744,7 @@ struct ContentView: View {
                         .fill(store.isSelectionMode ? Color.accentColor.opacity(0.14) : Color.primary.opacity(0.04))
                 }
             }
-            .buttonStyle(.plain)
+            .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.94, hoverScale: 1.02))
 
             Spacer()
 
@@ -9671,7 +9789,7 @@ struct ContentView: View {
                             }
                         }
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.94, hoverScale: 1.02))
                 }
             }
             .padding(3)
@@ -9740,7 +9858,7 @@ struct ContentView: View {
                 }
                 .shadow(color: Color(red: 0.52, green: 0.28, blue: 0.98).opacity(0.12), radius: 4, y: 1.5)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.96, hoverScale: 1.02))
             .help("呼出极速切换悬浮窗 (全局快捷键 ⌥Space)")
 
             // Options & Preferences Popover Button
@@ -9766,7 +9884,7 @@ struct ContentView: View {
                         .strokeBorder(Color.primary.opacity(showOptionsPopover ? 0.20 : 0.08), lineWidth: 1)
                 }
             }
-            .buttonStyle(.plain)
+            .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.96, hoverScale: 1.02))
             .help("工作台窗口管理与通知偏好设置")
             .popover(isPresented: $showOptionsPopover, arrowEdge: .bottom) {
                 toolbarOptionsPopover
@@ -9803,7 +9921,7 @@ struct ContentView: View {
                             .strokeBorder(Color.white.opacity(active ? (colorScheme == .dark ? 0.25 : 0.40) : 0.0), lineWidth: 0.95)
                     )
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.94, hoverScale: 1.02))
                 .help(density.localized(lang: store.appLanguage))
             }
         }
@@ -10038,7 +10156,7 @@ struct ContentView: View {
                                 .fill(Color.primary.opacity(active ? (colorScheme == .dark ? 0.16 : 0.10) : 0.0))
                         )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.95, hoverScale: 1.02))
                 }
             }
             .padding(3)
@@ -10095,7 +10213,7 @@ struct ContentView: View {
                         .frame(height: 24)
                         .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.04)))
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.95, hoverScale: 1.02))
                     .help(layout.localized(lang: store.appLanguage))
                 }
             }
@@ -10134,7 +10252,7 @@ struct ContentView: View {
                                 .fill(Color.primary.opacity(active ? (colorScheme == .dark ? 0.16 : 0.10) : 0.0))
                         )
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.95, hoverScale: 1.02))
                 }
             }
             .padding(3)
@@ -10415,7 +10533,7 @@ struct ContentView: View {
                         }
                         .foregroundStyle(accent)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.95, hoverScale: 1.03))
                 }
 
                 Button {
@@ -10432,7 +10550,7 @@ struct ContentView: View {
                     }
                     .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.95, hoverScale: 1.03))
 
                 if !store.busy {
                     Button {
@@ -10443,7 +10561,7 @@ struct ContentView: View {
                             .foregroundStyle(.secondary)
                             .frame(width: 15, height: 15, alignment: .center)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.90, hoverScale: 1.10))
                     .help("关闭操作记录")
                 }
             }
@@ -10550,6 +10668,7 @@ struct ContentView: View {
         }
         .padding(24)
         .frame(width: 520)
+        .liquidGlassSheet(radius: 16)
     }
 
     private func ordinalName(_ number: Int) -> String {
@@ -10688,6 +10807,7 @@ private struct ClearWorkspaceView: View {
         }
         .padding(24)
         .frame(width: 540)
+        .liquidGlassSheet(radius: 16)
     }
 }
 
@@ -10761,6 +10881,7 @@ private struct DestroyInstanceView: View {
         }
         .padding(24)
         .frame(width: 540)
+        .liquidGlassSheet(radius: 16)
     }
 }
 
@@ -10884,6 +11005,7 @@ private struct BackupManagementView: View {
         }
         .padding(24)
         .frame(width: 580)
+        .liquidGlassSheet(radius: 16)
         .alert("永久删除此备份？", isPresented: Binding(get: { pendingDeletion != nil },
                                              set: { if !$0 { pendingDeletion = nil } })) {
             Button("永久删除", role: .destructive) {
@@ -10947,6 +11069,7 @@ private struct UpdateSettingsView: View {
         }
         .padding(24)
         .frame(width: 460)
+        .liquidGlassSheet(radius: 16)
         .onAppear { automatic = updater.automaticallyChecksForUpdates && updater.automaticallyDownloadsUpdates }
     }
 }
@@ -11028,15 +11151,8 @@ private struct TaskHistorySheet: View {
 
                 Spacer()
 
-                Button {
-                    dismiss()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 18))
-                        .foregroundStyle(.secondary.opacity(0.8))
-                }
-                .buttonStyle(.plain)
-                .keyboardShortcut(.cancelAction)
+                IconActionButton(symbol: "xmark", tooltip: "关闭", size: 28, action: { dismiss() })
+                    .keyboardShortcut(.cancelAction)
             }
             .padding(.horizontal, 22)
             .padding(.top, 18)
@@ -11072,7 +11188,7 @@ private struct TaskHistorySheet: View {
                                 .font(.system(size: 12))
                                 .foregroundStyle(.secondary)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.88, hoverScale: 1.10))
                     }
                 }
                 .padding(.horizontal, 9)
@@ -11183,6 +11299,7 @@ private struct TaskHistorySheet: View {
             .background(Color.primary.opacity(colorScheme == .dark ? 0.03 : 0.02))
         }
         .frame(minWidth: 740, idealWidth: 780, minHeight: 520, idealHeight: 580)
+        .liquidGlassSheet(radius: 16)
         .confirmationDialog(
             "确定要清空所有任务历史记录吗？",
             isPresented: $showClearConfirmation,
@@ -11226,7 +11343,7 @@ private struct TaskHistorySheet: View {
                     .strokeBorder(isSelected ? color : Color.primary.opacity(0.08), lineWidth: 1)
             }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.94, hoverScale: 1.03))
     }
 }
 

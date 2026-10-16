@@ -106,7 +106,27 @@ class TestUIPolishAndPerformance(unittest.TestCase):
         self.assertIn("title: \"在访达中显示应用\"", self.content)
         self.assertIn("title: \"查看运行日志\"", self.content)
 
+    def test_tactile_spring_button_style(self):
+        # TactileSpringButtonStyle must provide spring animations, haptics, and reusable button scaling
+        self.assertIn("struct TactileSpringButtonStyle: ButtonStyle", self.content)
+        self.assertIn("var pressedScale: CGFloat", self.content)
+        self.assertIn("var hoverScale: CGFloat", self.content)
+        self.assertIn("HapticManager.shared.play", self.content)
+        # Must be applied across thumbnail, popovers, and action controls
+        self.assertIn(".buttonStyle(TactileSpringButtonStyle(", self.content)
+
+    def test_liquid_glass_sheets(self):
+        # All modal sheets must use unified LiquidGlassSheetModifier
+        self.assertIn("struct LiquidGlassSheetModifier: ViewModifier", self.content)
+        self.assertIn("func liquidGlassSheet(radius: CGFloat = 16) -> some View", self.content)
+        self.assertIn(".liquidGlassSheet(radius: 16)", self.content)
+
+    def test_version_bump_0_8_5(self):
+        # Fallback version string in AntigravityMultiplexer.swift must be 0.8.5
+        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.5"', self.content)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

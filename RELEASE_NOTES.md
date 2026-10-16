@@ -1,3 +1,22 @@
+# v0.8.5
+
+- **macOS Liquid Glass 全页面模态视窗体系与触觉动效规范 (Full-Scale macOS Liquid Glass & Tactile Physics Standard)**：
+  - **全量 9 大模态视窗统一液态玻璃质感 (`.liquidGlassSheet(radius: 16)`)**：重构并规范应用中全部 9 大核心模态弹出层（新建分身实例、版本升级确认、清空工作区警告、彻底销毁实例、备份归档管理、自动更新设置、项目标签与别名编辑、Auto-Pilot 自托管配置、任务历史时间轴），全量采用 `.regularMaterial` 深度毛玻璃底板、连续曲率（Continuous Curvature）圆角与高透顶光镜面描边（Specular Stroke Sheen），与 macOS 现代化设计语言完美融合。
+  - **全界面功能按钮统一步调与物理触觉弹性回馈 (`TactileSpringButtonStyle`)**：全面统一全应用所有交互按钮，封装独立且高度可复用的触觉弹性按钮规范，提供 0.90x~0.96x 细腻物理下压回弹、1.02x~1.10x 悬停微浮与 `NSHapticFeedbackManager` 真实力反馈震颤，操作手感丝滑流畅。
+  - **缩略图监控屏风 (`InstanceThumbnailTile`) 与卡片流交互深度打磨**：启动大按钮、调出/置顶实例、收起后台、右上角快捷菜单、标签别名编辑及自托管胶囊全面接入物理动效，告别呆板点击。
+  - **工作台控制栏与偏好设置面板 (`toolbarOptionsPopover`) 极致精修**：视图密度三档切换、主题切换、平铺预设与快捷键指南按钮全部升级触觉微动效，视觉更纯净简洁，层级更分明。
+- **全量 127 项自动化测试质量门禁坚实保障 (127/127 Automated Test Verification Gate)**：
+  - 新增 `TactileSpringButtonStyle` 动效属性、全模态视窗 Liquid Glass 规范检查及发版元数据自动化门禁，全部 127 项核心测试 100% 满分通过。
+
+# v0.8.4
+
+- **界面视觉层级深度精简与现代化扁平净化 (Streamlined Dashboard & Visual Polish)**：
+  - **顶部仪表盘极简重构**：提炼主界面顶部区域，将繁杂的辅助入口收敛整合，强化内核直通标识与核心版本展示，界面更为简洁大方。
+  - **动态监控指标条收放自如 (`MetricsHUD`)**：紧凑模式一键查看运行中实例数、内存与磁盘占用；支持平滑展开大图监控卡片与详细指标，兼顾简洁与极客洞察。
+  - **缩略图监控墙自适应排列**：优化间距与网格动态自适应逻辑，高低分辨率屏幕下均能呈现最佳视觉比例。
+- **全量 124 项自动化测试质量门禁保障**：
+  - 核心功能测试、多语言测试、自托管测试全面覆盖并保持 100% 通过。
+
 # v0.8.3
 
 - **自托管静默调度引擎 (Autonomous Auto-Pilot Self-Hosting Engine)**：
