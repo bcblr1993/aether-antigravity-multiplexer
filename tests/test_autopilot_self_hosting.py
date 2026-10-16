@@ -115,9 +115,22 @@ class TestAutoPilotSelfHosting(unittest.TestCase):
     # --- 6. Circuit Breaker & Round Counter ---
 
     def test_autopilot_circuit_breaker_max_rounds(self):
-        """Auto-pilot must halt and transition to .completed when autoPilotMaxRounds is met."""
+        """Auto-pilot must halt, transition to .completed, and automatically disable autoPilotEnabled when autoPilotMaxRounds is met."""
         self.assertIn("autoPilotCurrentRounds >= meta.autoPilotMaxRounds", self.content)
         self.assertIn(".completed", self.content)
+        # Must automatically disable auto-pilot in metadata
+        self.assertIn("updated.autoPilotEnabled = false", self.content)
+        # Must send system notification upon completion
+        self.assertIn("autopilot-completed-", self.content)
+
+    def test_autopilot_pill_view_shows_completed_badge(self):
+        """AutoPilotPillView must remain visible with .completed badge even after auto-pilot is automatically turned off."""
+        self.assertIn("if meta.autoPilotEnabled || state == .completed", self.content)
+
+    def test_re_enabling_resets_rounds(self):
+        """Re-enabling auto-pilot after reaching max rounds must reset autoPilotCurrentRounds to 0."""
+        self.assertIn("m.autoPilotCurrentRounds >= m.autoPilotMaxRounds", self.content)
+        self.assertIn("m.autoPilotCurrentRounds = 0", self.content)
 
     # --- 7. UI Integration & Command Palette ---
 

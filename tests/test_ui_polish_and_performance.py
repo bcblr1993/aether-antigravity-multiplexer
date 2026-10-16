@@ -121,9 +121,9 @@ class TestUIPolishAndPerformance(unittest.TestCase):
         self.assertIn("func liquidGlassSheet(radius: CGFloat = 16) -> some View", self.content)
         self.assertIn(".liquidGlassSheet(radius: 16)", self.content)
 
-    def test_version_bump_0_8_6(self):
-        # Fallback version string in AntigravityMultiplexer.swift must be 0.8.6
-        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.6"', self.content)
+    def test_version_bump_0_8_7(self):
+        # Fallback version string in AntigravityMultiplexer.swift must be 0.8.7
+        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.7"', self.content)
 
 
 if __name__ == "__main__":

@@ -3325,7 +3325,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         m.autoPilotPrompt = prompt
         m.autoPilotMaxRounds = maxRounds
         m.autoPilotDebounceSeconds = max(1.0, debounceSeconds)
-        if enabled && !wasEnabled {
+        if enabled && (!wasEnabled || (m.autoPilotMaxRounds > 0 && m.autoPilotCurrentRounds >= m.autoPilotMaxRounds)) {
             m.autoPilotCurrentRounds = 0
         }
         saveInstanceMeta(for: item.id, meta: m)
@@ -3398,7 +3398,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     func handleAutoPilotStateChange(for item: ManagedInstance, newState: TaskRunState) {
         let meta = meta(for: item)
         guard meta.autoPilotEnabled else {
-            if autoPilotStates[item.id] != .disabled {
+            if autoPilotStates[item.id] != .disabled && autoPilotStates[item.id] != .completed {
                 autoPilotStates[item.id] = .disabled
                 cancelAutoPilotDebounce(for: item.id)
             }
@@ -3431,6 +3431,28 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             if meta.autoPilotMaxRounds > 0 && meta.autoPilotCurrentRounds >= meta.autoPilotMaxRounds {
                 cancelAutoPilotDebounce(for: item.id)
                 autoPilotStates[item.id] = .completed
+                if meta.autoPilotEnabled {
+                    var updated = meta
+                    updated.autoPilotEnabled = false
+                    saveInstanceMeta(for: item.id, meta: updated)
+                    let displayName = meta.nickname.isEmpty ? item.name : meta.nickname
+                    let isMainPrefix = item.isOriginal ? "🌟 " : ""
+                    recordTaskEvent(
+                        item: item,
+                        category: .autoPilot,
+                        action: "🏁 自托管已达预设最大轮数 (\(updated.autoPilotCurrentRounds)/\(updated.autoPilotMaxRounds))，已自动关闭自托管",
+                        workspace: activities[item.id]?.workspace ?? "",
+                        stepIndex: activities[item.id]?.stepIndex ?? 0,
+                        duration: nil
+                    )
+                    sendSystemNotification(
+                        identifier: "autopilot-completed-\(item.id)-\(Int(Date().timeIntervalSince1970))",
+                        title: "\(isMainPrefix)\(displayName) · 自托管已完成",
+                        subtitle: "已达成预设最大轮数 (\(updated.autoPilotCurrentRounds)/\(updated.autoPilotMaxRounds))",
+                        body: "自托管指令已执行完毕，托管功能已自动安全关闭。",
+                        bundleID: item.bundleID
+                    )
+                }
                 return
             }
 
@@ -3478,6 +3500,26 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                     guard latestMeta.autoPilotEnabled else { return }
                     if latestMeta.autoPilotMaxRounds > 0 && latestMeta.autoPilotCurrentRounds >= latestMeta.autoPilotMaxRounds {
                         self.autoPilotStates[item.id] = .completed
+                        var updated = latestMeta
+                        updated.autoPilotEnabled = false
+                        self.saveInstanceMeta(for: item.id, meta: updated)
+                        let displayName = latestMeta.nickname.isEmpty ? item.name : latestMeta.nickname
+                        let isMainPrefix = item.isOriginal ? "🌟 " : ""
+                        self.recordTaskEvent(
+                            item: item,
+                            category: .autoPilot,
+                            action: "🏁 自托管已达预设最大轮数 (\(updated.autoPilotCurrentRounds)/\(updated.autoPilotMaxRounds))，已自动关闭自托管",
+                            workspace: self.activities[item.id]?.workspace ?? "",
+                            stepIndex: self.activities[item.id]?.stepIndex ?? 0,
+                            duration: nil
+                        )
+                        self.sendSystemNotification(
+                            identifier: "autopilot-completed-\(item.id)-\(Int(Date().timeIntervalSince1970))",
+                            title: "\(isMainPrefix)\(displayName) · 自托管已完成",
+                            subtitle: "已达成预设最大轮数 (\(updated.autoPilotCurrentRounds)/\(updated.autoPilotMaxRounds))",
+                            body: "自托管指令已执行完毕，托管功能已自动安全关闭。",
+                            bundleID: item.bundleID
+                        )
                         return
                     }
 
@@ -3492,16 +3534,12 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                                 updated.autoPilotCurrentRounds += 1
                                 self.saveInstanceMeta(for: item.id, meta: updated)
 
-                                if updated.autoPilotMaxRounds > 0 && updated.autoPilotCurrentRounds >= updated.autoPilotMaxRounds {
-                                    self.autoPilotStates[item.id] = .completed
-                                } else {
-                                    self.autoPilotStates[item.id] = .waitingRunning
-                                }
+                                self.autoPilotStates[item.id] = .waitingRunning
 
                                 self.recordTaskEvent(
                                     item: item,
                                     category: .autoPilot,
-                                    action: "🤖 自托管已静默发送预设文本 (第 \(updated.autoPilotCurrentRounds) 轮): \"\(updated.autoPilotPrompt)\"",
+                                    action: "🤖 自托管已静默发送预设文本 (第 \(updated.autoPilotCurrentRounds)/\(updated.autoPilotMaxRounds > 0 ? "\(updated.autoPilotMaxRounds)" : "∞") 轮): \"\(updated.autoPilotPrompt)\"",
                                     workspace: self.activities[item.id]?.workspace ?? "",
                                     stepIndex: self.activities[item.id]?.stepIndex ?? 0,
                                     duration: nil
@@ -8288,7 +8326,7 @@ struct AutoPilotPillView: View {
         let state = store.autoPilotState(for: item)
         let remaining = store.autoPilotDebounceRemaining[item.id]
 
-        if meta.autoPilotEnabled {
+        if meta.autoPilotEnabled || state == .completed {
             Button(action: {
                 if let onConfigure {
                     onConfigure()
@@ -8321,8 +8359,8 @@ struct AutoPilotPillView: View {
             }
             .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.94, hoverScale: 1.05))
             .help(store.appLanguage == .zhHans || store.appLanguage == .zhHant
-                  ? "🤖 自托管已启用：点击配置预设指令与防抖确认参数"
-                  : "🤖 Auto-Pilot active: Click to configure prompt and debounce")
+                  ? (state == .completed ? "🏁 自托管已达最大轮数并自动关闭：点击重新开启或调整配置" : "🤖 自托管已启用：点击配置预设指令与防抖确认参数")
+                  : (state == .completed ? "🏁 Auto-Pilot completed and disabled: Click to re-enable" : "🤖 Auto-Pilot active: Click to configure prompt and debounce"))
         }
     }
 
@@ -8428,9 +8466,9 @@ struct AutoPilotConfigSheet: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("启用此实例的后台静默自托管")
                         .font(.system(size: 12.5, weight: .medium))
-                    Text("开启后将在任务执行完成并连续空闲达到确认防抖时间后，自动注入文本继续执行")
+                    Text(state == .completed ? "已达预设最大轮数并自动关闭托管；重新开启将重置轮数并开始新一轮调度" : "开启后将在任务执行完成并连续空闲达到确认防抖时间后，自动注入文本继续执行")
                         .font(.system(size: 10.5))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(state == .completed ? .teal : .secondary)
                 }
             }
             .toggleStyle(.switch)
@@ -9193,7 +9231,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.6"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.7"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
