@@ -20,40 +20,37 @@ echo "✅ 强制测试门禁全部通过 (含升级备份可选性、进度条�
 
 NOTARY_ZIP="dist/${NAME}-notary.zip"
 
-if xcrun stapler validate "$APP" >/dev/null 2>&1; then
-  echo "✅ 检测到当前 $APP 已成功完成公证并装订票据 (Stapled)，复用当前公证构建进入打包"
-else
-  ./build.sh
-  [[ "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$APP/Contents/Info.plist")" == \
-     "$(.build/artifacts/sparkle/Sparkle/bin/generate_keys --account "$ACCOUNT" -p | tail -1 | tr -d '[:space:]')" ]] || {
-    echo 'Sparkle public key does not match the release signing account' >&2
-    exit 1
-  }
+# Always rebuild from this checkout; an old ticket does not prove source freshness.
+./build.sh
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$APP/Contents/Info.plist")" == \
+   "$(.build/artifacts/sparkle/Sparkle/bin/generate_keys --account "$ACCOUNT" -p | tail -1 | tr -d '[:space:]')" ]] || {
+  echo 'Sparkle public key does not match the release signing account' >&2
+  exit 1
+}
 
-  ditto -c -k --keepParent "$APP" "$NOTARY_ZIP"
-  xcrun notarytool submit "$NOTARY_ZIP" --keychain-profile "$NOTARY_PROFILE" \
-    --wait --timeout 20m --output-format json > dist/notarization.json
-  python3 - <<'PY'
+ditto -c -k --keepParent "$APP" "$NOTARY_ZIP"
+xcrun notarytool submit "$NOTARY_ZIP" --keychain-profile "$NOTARY_PROFILE" \
+  --wait --timeout 20m --output-format json > dist/notarization.json
+python3 - <<'PY'
 import json
 record=json.load(open('dist/notarization.json'))
 print('Notarization:',record.get('status'),'id:',record.get('id'))
 raise SystemExit(0 if record.get('status')=='Accepted' else 1)
 PY
-  SUBMISSION_ID="$(python3 -c "import json; print(json.load(open('dist/notarization.json')).get('id',''))")"
-  if [[ -n "$SUBMISSION_ID" ]] && xcrun notarytool log "$SUBMISSION_ID" --keychain-profile "$NOTARY_PROFILE" \
-    --output-format json > dist/notarization-log.json 2>/dev/null; then
-    python3 - <<'PY'
+SUBMISSION_ID="$(python3 -c "import json; print(json.load(open('dist/notarization.json')).get('id',''))")"
+if [[ -n "$SUBMISSION_ID" ]] && xcrun notarytool log "$SUBMISSION_ID" --keychain-profile "$NOTARY_PROFILE" \
+  --output-format json > dist/notarization-log.json 2>/dev/null; then
+  python3 - <<'PY'
 import json
 record=json.load(open('dist/notarization-log.json'))
 issues=record.get('issues') or []
 print('Notary issues:',len(issues))
 raise SystemExit(0 if record.get('status')=='Accepted' and not issues else 1)
 PY
-  else
-    echo "⚠️ 提示: 公证日志下载遇到瞬时网络波动，但状态已确认为 Accepted，继续执行装订与验签"
-  fi
-  xcrun stapler staple "$APP"
+else
+  echo "⚠️ 提示: 公证日志下载遇到瞬时网络波动，但状态已确认为 Accepted，继续执行装订与验签"
 fi
+xcrun stapler staple "$APP"
 xcrun stapler validate "$APP"
 codesign --verify --deep --strict "$APP"
 spctl --assess --type execute "$APP"
@@ -64,6 +61,17 @@ rm -f "$NOTARY_ZIP" dist/notarization.json dist/notarization-log.json 2>/dev/nul
 
 # 清理 dist 中历史旧版本的压缩包，确保只留存当前版本
 find dist/ -type f -name "*.zip" ! -name "${NAME}.zip" -delete 2>/dev/null || true
+
+python3 - "$VERSION" <<'PYVERIFY'
+import pathlib, plistlib, sys
+source = plistlib.loads(pathlib.Path('Info.plist').read_bytes())
+built = plistlib.loads(pathlib.Path('Aether Antigravity Multiplexer.app/Contents/Info.plist').read_bytes())
+for key in ('CFBundleShortVersionString', 'CFBundleVersion', 'SUPublicEDKey'):
+    if built.get(key) != source.get(key):
+        raise SystemExit(f'Packaged metadata mismatch: {key}')
+if built['CFBundleShortVersionString'] != sys.argv[1]:
+    raise SystemExit('Packaged release version mismatch')
+PYVERIFY
 
 ARCHIVE="dist/${NAME}.zip"
 ditto -c -k --keepParent "$APP" "$ARCHIVE"

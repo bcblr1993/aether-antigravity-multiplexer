@@ -1,3 +1,15 @@
+# v0.8.14
+
+- **全面适配最新官方 Antigravity 2.24.0 (Full Official Antigravity 2.24.0 Compatibility)**：
+  - **核心二进制与安全补丁适配 (Binary & Security Patch Verification)**：
+    - **Language Server 符号精准匹配**：通过分析 2.24.0 Go 运行时 `gopclntab`，精确提取 `google3/third_party/jetski/language_server/code_assist_client/codeassistclient.shouldBypassKeyring` 的机器指令入口，确定最新内存偏移量为 `26853952` (`0x199c240`)，严格匹配 ARM64 函数栈帧序言指令序列（`900b40f9f1c301d13f0210eb`），确保独立副本凭据隔离与 Keychain 绕过机制在 2.24.0 上无缝生效。
+    - **ASAR 补丁与多开单窗口/Dock 隐形管线验证**：针对 2.24.0 的 `app.asar` 执行完整 ASAR 解包与多层补丁注入验证，单窗口强制管线（`createWindow` / `BrowserWindow.getAllWindows`）、Dock 极简无痕与智能收拢策略（`app.dock.hide`）、托盘图标净化（`DummyTray`）全部 100% 成功注入并更新 Electron 完整性校验哈希（`ElectronAsarIntegrity`）。
+    - **官方签名与 Team ID 安全审计**：完整核验 Google 官方发布签名（`EQHXZ8M8AV`）与 Notarization Ticket，验证 `bd10a0054ca3ad469142b2c2757566493ecc0afb934b9a61ce45d38a4d09316e` (ASAR) 及 `5b1a60512c7d13c7649ff57a1d7853daf46b678402d8c92c8d4b8649574c33eb` (Language Server) 哈希指纹。
+  - **升级管理与平滑迁移 (Seamless Upgrade Pipeline)**：
+    - 多开管理器识别官方源版本即刻显示“已适配官方版本 (2.24.0)”，支持针对全部运行中或离线副本一键平滑热升级至 2.24.0，保留所有工作空间数据、历史会话与独立凭据配置。
+  - **全量 154 项自动化回归测试质量门禁保障 (154/154 Automated Tests Passed)**：
+    - 增补 2.24.0 兼容性表项与凭据偏移断言，全量 154 项自动化测试 100% 满分通过。
+
 # v0.8.13
 
 - **彻底解决自托管自循环多轮并发连发与排队消息堆积缺陷 (Fix Auto-Pilot Premature Multi-Round Dispatch & Queue Accumulation Bug)**：

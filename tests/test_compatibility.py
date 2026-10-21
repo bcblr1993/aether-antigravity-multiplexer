@@ -42,10 +42,11 @@ class CompatibilityTests(unittest.TestCase):
 
     def test_compatibility_table_entries(self):
         self.assertIn("2.23.1", KNOWN)
-        entry = KNOWN["2.23.1"]
+        self.assertIn("2.24.0", KNOWN)
+        entry = KNOWN["2.24.0"]
         self.assertEqual(len(entry["asar"]), 64)
         self.assertEqual(len(entry["language_server"]), 64)
-        self.assertGreater(entry["keyring_bypass_offset"], 0)
+        self.assertEqual(entry["keyring_bypass_offset"], 26853952)
 
     def test_patch_asar_enforces_single_window(self):
         import pathlib
@@ -85,7 +86,9 @@ class CompatibilityTests(unittest.TestCase):
         import io
         import upgrade_all
 
-        with patch("upgrade_all.source_info", return_value="2.23.1"), \
+        with tempfile.TemporaryDirectory() as support, \
+             patch("upgrade_all.APP_SUPPORT", pathlib.Path(support)), \
+             patch("upgrade_all.source_info", return_value="2.23.1"), \
              patch("upgrade_all.discover", return_value=[{
                  "app": pathlib.Path("/Applications/Antigravity Second.app"),
                  "name": "Antigravity Second",
@@ -102,6 +105,7 @@ class CompatibilityTests(unittest.TestCase):
              patch("upgrade_all.run"), \
              patch("pathlib.Path.rename"), \
              patch("pathlib.Path.write_text"), \
+             patch("upgrade_all.os.replace"), \
              patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
 
             upgrade_all.upgrade_all(pathlib.Path("/Applications/Antigravity.app"), skip_backup=True)
@@ -115,7 +119,9 @@ class CompatibilityTests(unittest.TestCase):
         import io
         import upgrade_all
 
-        with patch("upgrade_all.source_info", return_value="2.23.1"), \
+        with tempfile.TemporaryDirectory() as support, \
+             patch("upgrade_all.APP_SUPPORT", pathlib.Path(support)), \
+             patch("upgrade_all.source_info", return_value="2.23.1"), \
              patch("upgrade_all.discover", return_value=[{
                  "app": pathlib.Path("/Applications/Antigravity Second.app"),
                  "name": "Antigravity Second",
@@ -132,6 +138,7 @@ class CompatibilityTests(unittest.TestCase):
              patch("upgrade_all.run"), \
              patch("pathlib.Path.rename"), \
              patch("pathlib.Path.write_text"), \
+             patch("upgrade_all.os.replace"), \
              patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
 
             upgrade_all.upgrade_all(pathlib.Path("/Applications/Antigravity.app"), skip_backup=False)

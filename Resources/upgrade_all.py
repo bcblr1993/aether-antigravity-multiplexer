@@ -199,7 +199,7 @@ def upgrade_all(source, dry_run=False, only_indices=None, build_only=False, skip
     print("[PROGRESS:5] 正在验证主程序版本与签名完整性...", flush=True)
     version = source_info(source)
     instances = discover()
-    pending = [item for item in instances if (force or version_tuple(item["version"]) < version_tuple(version)) and (only_indices is None or item["index"] in only_indices)]
+    pending = [item for item in instances if (version_tuple(item["version"]) < version_tuple(version) or (force and version_tuple(item["version"]) == version_tuple(version))) and (only_indices is None or item["index"] in only_indices)]
     print(f"[PROGRESS:12] 本机主实例：{version}；发现 {len(instances)} 个副本；待升级/重适配 {len(pending)} 个", flush=True)
     for item in pending:
         tag = f"{item['version']} → {version}" if item['version'] != version else f"{item['version']} (刷新适配补丁)"
@@ -207,6 +207,14 @@ def upgrade_all(source, dry_run=False, only_indices=None, build_only=False, skip
     if dry_run or not pending:
         print("[PROGRESS:100] 无需升级或已完成预检", flush=True)
         return
+    # Validate every existing manifest before closing or replacing any application.
+    records = {}
+    for item in pending:
+        manifest = APP_SUPPORT / f"instance-{item['index']}.json"
+        require(not manifest.is_symlink(), f"实例清单不能是符号链接：{manifest}")
+        record = json.loads(manifest.read_text()) if manifest.exists() else {}
+        require(isinstance(record, dict), f"实例清单格式异常：{manifest}")
+        records[item["index"]] = record
     APP_SUPPORT.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     backup_dir = APP_SUPPORT / "Backups" / stamp if not skip_backup else None
@@ -262,14 +270,18 @@ def upgrade_all(source, dry_run=False, only_indices=None, build_only=False, skip
         print("[PROGRESS:96] 正在更新实例元数据清单与版本标识...", flush=True)
         for item, target, scheme in built:
             manifest = APP_SUPPORT / f"instance-{item['index']}.json"
-            record = json.loads(manifest.read_text()) if manifest.exists() else {}
+            record = records[item["index"]].copy()
             record.update({"index": item["index"], "name": item["name"], "app": str(item["app"]),
                            "profile": str(item["profile"]), "version": version, "scheme": scheme,
                            "source_asar_sha256": KNOWN[version]["asar"],
                            "login_verified": False})
             if backup_dir is not None:
                 record["upgrade_backup"] = str(backup_dir)
-            manifest.write_text(json.dumps(record, ensure_ascii=False, indent=2))
+            else:
+                record.pop("upgrade_backup", None)
+            temporary_manifest = staging / f"manifest-{item['index']}.json"
+            temporary_manifest.write_text(json.dumps(record, ensure_ascii=False, indent=2))
+            os.replace(temporary_manifest, manifest)
         if running_apps:
             print("[PROGRESS:98] 正在重新拉起升级前处于运行状态的实例...", flush=True)
             host_app = get_current_host_app()

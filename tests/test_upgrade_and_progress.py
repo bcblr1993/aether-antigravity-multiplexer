@@ -68,6 +68,7 @@ class UpgradeAndProgressTests(unittest.TestCase):
              patch("upgrade_all.APP_SUPPORT", self.app_support), \
              patch("pathlib.Path.rename"), \
              patch("pathlib.Path.write_text"), \
+             patch("upgrade_all.os.replace"), \
              patch("sys.stdout", new_callable=io.StringIO) as mock_stdout:
 
             upgrade_all.upgrade_all(pathlib.Path("/Applications/Antigravity.app"), skip_backup=False)
@@ -256,6 +257,7 @@ class UpgradeAndProgressTests(unittest.TestCase):
              patch("upgrade_all.run"), \
              patch("pathlib.Path.rename"), \
              patch("pathlib.Path.write_text"), \
+             patch("upgrade_all.os.replace"), \
              patch("upgrade_all.APP_SUPPORT", self.app_support):
 
             # Without force: 0 pending, build is not called

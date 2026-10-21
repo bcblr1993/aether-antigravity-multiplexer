@@ -5757,31 +5757,38 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
-        pipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
-            let data = handle.availableData
-            guard !data.isEmpty, let message = String(data: data, encoding: .utf8) else { return }
-            Task { @MainActor in self?.processStreamChunk(message) }
-        }
-        process.terminationHandler = { [weak self] completed in
-            pipe.fileHandleForReading.readabilityHandler = nil
-            let remainder = pipe.fileHandleForReading.readDataToEndOfFile()
-            Task { @MainActor in
-                if let text = String(data: remainder, encoding: .utf8) { self?.processStreamChunk(text) }
-                withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
-                    self?.busy = false
-                    if completed.terminationStatus == 0 {
-                        self?.operationProgress = 1.0
-                        self?.operationStage = "操作已全部顺利完成"
-                    } else {
-                        self?.error = "操作未完成，请查看下方记录。"
-                    }
-                }
-                self?.refresh()
-            }
-        }
         do {
             try process.run()
             try? pipe.fileHandleForWriting.close()
+            // One reader owns the pipe through EOF; completion follows all queued output.
+            DispatchQueue(label: "dev.chenxu.multiplexer.script-output").async { [weak self] in
+                var decoder = ScriptOutputDecoder()
+                while true {
+                    let data = pipe.fileHandleForReading.availableData
+                    guard !data.isEmpty else { break }
+                    let text = decoder.append(data)
+                    if !text.isEmpty {
+                        DispatchQueue.main.async { self?.processStreamChunk(text) }
+                    }
+                }
+                let tail = decoder.append(Data(), finishing: true)
+                process.waitUntilExit()
+                try? pipe.fileHandleForReading.close()
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    if !tail.isEmpty { self.processStreamChunk(tail) }
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                        self.busy = false
+                        if process.terminationStatus == 0 {
+                            self.operationProgress = 1.0
+                            self.operationStage = "操作已全部顺利完成"
+                        } else {
+                            self.error = "操作未完成，请查看下方记录。"
+                        }
+                    }
+                    self.refresh()
+                }
+            }
         } catch {
             withAnimation {
                 busy = false
@@ -9833,7 +9840,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.13"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.14"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
