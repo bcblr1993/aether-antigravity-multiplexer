@@ -4302,9 +4302,10 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         return Self.isProcessCollapsed(pid: app.processIdentifier, isHidden: app.isHidden, onScreenPIDs: pids)
     }
 
-    /// Evaluates `window.close()` via Chromium DevTools Protocol (CDP).
-    /// Triggers Electron's patched `win.on('close')` event which executes `e.preventDefault(); win.hide(); app.dock.hide();`.
-    /// Immediately removes window from WindowServer in <20ms while background Agent execution continues uninterrupted.
+    /// Evaluates non-destructive window minimization via Chromium DevTools Protocol (CDP).
+    /// Calls official `window.electronNative.minimize()` which delegates to Electron's `win.minimize()`.
+    /// Immediately collapses the window while preserving WebContents, DOM state, React conversation session, and running Agent tasks.
+    /// Under NO circumstances executes window close evaluation which terminates the active conversation.
     static func collapseInstanceWindowCDP(item: ManagedInstance) async -> Bool {
         let portFile = item.userDataURL.appendingPathComponent("DevToolsActivePort")
         guard let content = try? String(contentsOf: portFile, encoding: .utf8),
@@ -4325,7 +4326,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         let pageTargets = targets.filter { ($0["type"] as? String) == "page" }
         guard !pageTargets.isEmpty else { return false }
 
-        var closedAny = false
+        var collapsedAny = false
         for target in pageTargets {
             guard let wsString = target["webSocketDebuggerUrl"] as? String,
                   let wsURL = URL(string: wsString) else { continue }
@@ -4333,51 +4334,68 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             task.resume()
             defer { task.cancel(with: .goingAway, reason: nil) }
 
+            let jsExpr = """
+            (() => {
+                try {
+                    if (window.electronNative && typeof window.electronNative.minimize === 'function') {
+                        window.electronNative.minimize();
+                        return true;
+                    }
+                } catch (e) {}
+                return false;
+            })()
+            """
             let payload: [String: Any] = [
                 "id": 9999,
                 "method": "Runtime.evaluate",
-                "params": ["expression": "window.close()", "returnByValue": false]
+                "params": ["expression": jsExpr, "returnByValue": true]
             ]
             if let payloadData = try? JSONSerialization.data(withJSONObject: payload),
                let payloadStr = String(data: payloadData, encoding: .utf8) {
                 do {
                     try await task.send(.string(payloadStr))
-                    closedAny = true
+                    collapsedAny = true
                 } catch {}
             }
         }
-        return closedAny
+        return collapsedAny
     }
 
-    /// Accessibility API fallback (Tier 3) to trigger AXCloseButton on the application's document window.
+    /// Accessibility API fallback (Tier 3) to trigger window minimization on the application's document window.
+    /// Sets `AXMinimized` to true or presses `AXMinimizeButton` (yellow).
+    /// NEVER triggers `AXCloseButton` (red) which destroys the document window and drops the session.
     static func collapseWindowViaAccessibility(pid: pid_t) {
         let appElem = AXUIElementCreateApplication(pid)
         var windowsRef: CFTypeRef?
         if AXUIElementCopyAttributeValue(appElem, kAXWindowsAttribute as CFString, &windowsRef) == .success,
            let windows = windowsRef as? [AXUIElement] {
             for win in windows {
-                var closeBtnRef: CFTypeRef?
-                if AXUIElementCopyAttributeValue(win, kAXCloseButtonAttribute as CFString, &closeBtnRef) == .success {
-                    let closeBtn = closeBtnRef as! AXUIElement
-                    _ = AXUIElementPerformAction(closeBtn, kAXPressAction as CFString)
+                _ = AXUIElementSetAttributeValue(win, "AXMinimized" as CFString, kCFBooleanTrue)
+                var minBtnRef: CFTypeRef?
+                if AXUIElementCopyAttributeValue(win, "AXMinimizeButton" as CFString, &minBtnRef) == .success {
+                    let minBtn = minBtnRef as! AXUIElement
+                    _ = AXUIElementPerformAction(minBtn, kAXPressAction as CFString)
                 }
             }
         }
     }
 
     /// Multi-tiered window collapse pipeline for a single instance.
+    /// All tiers are strictly non-destructive: windows are hidden or minimized, preserving
+    /// the full conversation session, DOM state, and running Agent tasks intact.
     func collapseInstanceWindow(_ item: ManagedInstance, app: NSRunningApplication?) {
         guard let app = app ?? runningApplication(bundleID: item.bundleID, path: item.path) else { return }
 
-        // Tier 1: CDP fast path (works on both regular & accessory instances)
+        // Tier 1: AppKit native hide (for regular apps like Antigravity.app)
+        // Instantly removes windows from screen without closing or resetting the conversation
+        _ = app.hide()
+
+        // Tier 2: CDP minimize fast path via official electronNative.minimize()
         Task {
             _ = await Self.collapseInstanceWindowCDP(item: item)
         }
 
-        // Tier 2: AppKit native hide (for regular apps)
-        _ = app.hide()
-
-        // Tier 3: Accessibility close button press
+        // Tier 3: Accessibility minimize (sets AXMinimized or presses AXMinimizeButton, NEVER AXCloseButton)
         Self.collapseWindowViaAccessibility(pid: app.processIdentifier)
 
         // Tier 4: System Events AppleScript fallback
@@ -5132,7 +5150,14 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
 
         let runningItems = instances.filter(\.running)
 
-        // Tier 1: Concurrent CDP window detach across all running instances
+        // Tier 1: AppKit native hide across all regular running instances (instantaneous)
+        for item in runningItems {
+            if let app = runningApplication(bundleID: item.bundleID, path: item.path) {
+                _ = app.hide()
+            }
+        }
+
+        // Tier 2: Concurrent CDP non-destructive window minimization across all running instances
         Task {
             await withTaskGroup(of: Void.self) { group in
                 for item in runningItems {
@@ -5146,10 +5171,9 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             }
         }
 
-        // Tiers 2, 3, 4: AppKit native hide, Accessibility & System Events fallbacks
+        // Tiers 3 & 4: Accessibility minimize & System Events fallbacks (strictly non-destructive)
         for item in runningItems {
             if let app = runningApplication(bundleID: item.bundleID, path: item.path) {
-                _ = app.hide()
                 Self.collapseWindowViaAccessibility(pid: app.processIdentifier)
             }
             let script = "tell application \"System Events\" to set visible of (first process whose bundle identifier is \"\(item.bundleID)\") to false"
@@ -9840,7 +9864,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.14"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.15"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {

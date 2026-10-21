@@ -121,9 +121,9 @@ class TestUIPolishAndPerformance(unittest.TestCase):
         self.assertIn("func liquidGlassSheet(radius: CGFloat = 16) -> some View", self.content)
         self.assertIn(".liquidGlassSheet(radius: 16)", self.content)
 
-    def test_version_bump_0_8_14(self):
-        # Fallback version string in AntigravityMultiplexer.swift must be 0.8.14
-        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.14"', self.content)
+    def test_version_bump_0_8_15(self):
+        # Fallback version string in AntigravityMultiplexer.swift must be 0.8.15
+        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.15"', self.content)
 
     def test_popover_menu_row_item_reuse(self):
         # PopoverMenuRowItem must be defined and reused across tile and list item popovers
@@ -188,13 +188,16 @@ class TestUIPolishAndPerformance(unittest.TestCase):
         self.assertIn('guard !isScanningTelemetry else { return }', self.content)
 
     def test_multi_tier_window_collapse_protocol(self):
-        # Multi-tier instantaneous window collapse protocol checks
+        # Multi-tier instantaneous window collapse protocol checks (strictly non-destructive)
         self.assertIn("static func getOnScreenWindowPIDs() -> Set<pid_t>", self.content)
         self.assertIn("static func isProcessCollapsed(pid: pid_t, isHidden: Bool, onScreenPIDs: Set<pid_t>) -> Bool", self.content)
         self.assertIn("static func collapseInstanceWindowCDP(item: ManagedInstance) async -> Bool", self.content)
         self.assertIn("static func collapseWindowViaAccessibility(pid: pid_t)", self.content)
         self.assertIn("func collapseInstanceWindow(_ item: ManagedInstance, app: NSRunningApplication?)", self.content)
-        self.assertIn('"expression": "window.close()"', self.content)
+        self.assertNotIn('"expression": "window.close()"', self.content)
+        self.assertIn("window.electronNative.minimize()", self.content)
+        self.assertIn('"AXMinimized"', self.content)
+        self.assertNotIn("kAXCloseButtonAttribute", self.content)
         self.assertIn("collapseInstanceWindow(item, app: app)", self.content)
         self.assertIn("collapseAllToMonitorWall()", self.content)
 
@@ -250,6 +253,18 @@ class TestUIPolishAndPerformance(unittest.TestCase):
         self.assertIn("Sends after agent finishes", self.content)
         self.assertIn("canInject: !hasStop && !hasQueued", self.content)
         self.assertIn("case .busyRunningOrQueued(let hasStop, let hasQueued):", self.content)
+
+    def test_collapse_preserves_conversation_and_never_closes_window(self):
+        # Guarantee that window collapse is strictly non-destructive:
+        # 1. No window.close() calls anywhere in Sources/AntigravityMultiplexer.swift
+        self.assertNotIn('"expression": "window.close()"', self.content)
+        self.assertNotIn("window.close()", self.content)
+        # 2. No kAXCloseButtonAttribute clicks anywhere in Sources/AntigravityMultiplexer.swift
+        self.assertNotIn("kAXCloseButtonAttribute", self.content)
+        # 3. Minimization and AppKit hide are used instead
+        self.assertIn("window.electronNative.minimize()", self.content)
+        self.assertIn('"AXMinimized"', self.content)
+        self.assertIn('"AXMinimizeButton"', self.content)
 
 
 if __name__ == "__main__":

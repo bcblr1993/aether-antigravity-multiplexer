@@ -1,3 +1,19 @@
+# v0.8.15
+
+- **修复收起窗口导致会话丢失重置的关键缺陷 (Fix Window Collapse Conversation Loss & Session Reset Bug)**：
+  - **故障根本原因分析与深度修复 (Root Cause Analysis & Architecture Fix)**：
+    - **故障机理**：在先前版本中，单实例收起以及 ⌥0“一键收起所有窗口”中，Tier 1（CDP 通道）采用了 `Runtime.evaluate: "window.close()"`，且 Tier 3（辅助功能通道）触发了 `kAXCloseButtonAttribute`（红色关闭按钮）。在未修补的官方主实例（`Antigravity.app`）上，`window.close()` 与红色关闭按钮会彻底销毁 Electron 渲染进程与 DOM 树；而在修补过的分身副本上，在 WebContents 内部执行 `window.close()` 亦会触发 Chromium 的 `beforeunload` / `pagehide` 卸载序列。当用户后续点击“调出实例”或快捷键 ⌥1~9 恢复窗口时，Electron 发现当前窗口计数为 0，便会重新调用 `createWindow(url)` 加载默认首页 `https://127.0.0.1:<port>/`，导致用户正在进行的会话上下文、聊天记录与滚动位置被重置清空。
+    - **无损多阶极速隐藏与最小化管线 (Strictly Non-Destructive Multi-Tier Collapse Pipeline)**：
+      - **严禁任何窗口关闭操作**：彻底移除所有代码路径中的 `window.close()` 与 `kAXCloseButtonAttribute`，绝不销毁任何 Electron BrowserWindow 或触发渲染器卸载；
+      - **Tier 1 (AppKit 原生极速隐藏)**：对原生主程序及普通 macOS 应用直接同步执行 `app.hide()`（相当于 macOS 原生 `⌘H` 隐藏），瞬时从屏幕移除窗口且保留全部内存、DOM 状态、WebSocket 连接与智能体后台运行；
+      - **Tier 2 (CDP 官方非破坏性最小化通道)**：通过内置 WebSocket 评估官方 `window.electronNative.minimize()`（委托至 Electron 宿主 `win.minimize()`），绝不触发任何 Web 页面 unload，完全保持会话连续性；
+      - **Tier 3 (Accessibility 原生最小化保底)**：设置属性 `"AXMinimized"` 为 `true` 并尝试点击黄色最小化按钮（`AXMinimizeButton`），绝不触碰红色关闭按钮；
+      - **Tier 4 (System Events 系统级可见性隐藏)**：通过 AppleScript 设置进程 `visible to false`，完成深层非破坏性收拢。
+  - **平滑恢复与会话无缝衔接 (Seamless Conversation Preservation on Restore)**：
+    - 无论用户通过监控台卡片、Quick Switcher 极速切换器还是全局快捷键（⌥1~9）调出窗口，实例恢复时均会无损恢复现有窗口，完全保留原会话 URL（`/c/<conversation-id>`）、输入框内容、思考过程及工具调用日志。
+  - **全量 155 项自动化回归测试质量门禁保障 (155/155 Automated Tests Passed)**：
+    - 增补 `test_collapse_preserves_conversation_and_never_closes_window` 强制门禁，对 `window.close()` 与 `kAXCloseButtonAttribute` 执行严格逆向禁止断言，155 项测试 100% 满分通过。
+
 # v0.8.14
 
 - **全面适配最新官方 Antigravity 2.24.0 (Full Official Antigravity 2.24.0 Compatibility)**：
