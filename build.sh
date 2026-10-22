@@ -25,11 +25,15 @@ cp Icon.icns "$APP/Contents/Resources/Icon.icns"
 mkdir -p "$APP/Contents/Frameworks"
 ditto "$SPARKLE" "$APP/Contents/Frameworks/Sparkle.framework"
 cp .build/artifacts/sparkle/Sparkle/LICENSE "$APP/Contents/Resources/Sparkle-LICENSE"
+xattr -cr "$APP"
 FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
 if [[ -n "${SIGN_IDENTITY:-}" ]]; then
-  for COMPONENT in XPCServices/Installer.xpc XPCServices/Downloader.xpc Autoupdate Updater.app; do
-    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$FRAMEWORK/Versions/B/$COMPONENT"
+  for COMPONENT in XPCServices/Installer.xpc XPCServices/Downloader.xpc Autoupdate Updater.app/Contents/MacOS/Updater Updater.app; do
+    if [[ -e "$FRAMEWORK/Versions/B/$COMPONENT" ]]; then
+      codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$FRAMEWORK/Versions/B/$COMPONENT"
+    fi
   done
+  codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$FRAMEWORK/Versions/B/Sparkle"
   codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$FRAMEWORK"
   codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
 else

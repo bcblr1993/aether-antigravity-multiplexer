@@ -12504,9 +12504,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+final class MultiplexerUpdaterDelegate: NSObject, SPUUpdaterDelegate {
+    func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
+        let nsError = error as NSError
+        NSLog("[Sparkle] Update aborted with error: domain=%@, code=%ld, description=%@", nsError.domain, nsError.code, nsError.localizedDescription)
+    }
+
+    func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck, error: Error?) {
+        if let error = error {
+            let nsError = error as NSError
+            NSLog("[Sparkle] Update cycle finished with error: domain=%@, code=%ld, description=%@", nsError.domain, nsError.code, nsError.localizedDescription)
+        } else {
+            NSLog("[Sparkle] Update cycle finished successfully")
+        }
+    }
+}
+
 @main struct AntigravityMultiplexerApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    private let updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+    private static let updaterDelegate = MultiplexerUpdaterDelegate()
+    private let updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: updaterDelegate, userDriverDelegate: nil)
     var body: some Scene {
         Window("Aether Antigravity Multiplexer", id: "main") {
             ContentView(updaterController: updaterController)

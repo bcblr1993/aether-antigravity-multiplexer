@@ -28,7 +28,8 @@ NOTARY_ZIP="dist/${NAME}-notary.zip"
   exit 1
 }
 
-ditto -c -k --keepParent "$APP" "$NOTARY_ZIP"
+xattr -cr "$APP"
+COPYFILE_DISABLE=1 ditto -c -k --noextattr --norsrc --keepParent "$APP" "$NOTARY_ZIP"
 xcrun notarytool submit "$NOTARY_ZIP" --keychain-profile "$NOTARY_PROFILE" \
   --wait --timeout 20m --output-format json > dist/notarization.json
 python3 - <<'PY'
@@ -74,8 +75,19 @@ if built['CFBundleShortVersionString'] != sys.argv[1]:
 PYVERIFY
 
 ARCHIVE="dist/${NAME}.zip"
-ditto -c -k --keepParent "$APP" "$ARCHIVE"
+xattr -cr "$APP"
+COPYFILE_DISABLE=1 ditto -c -k --noextattr --norsrc --keepParent "$APP" "$ARCHIVE"
 unzip -tq "$ARCHIVE"
+
+python3 - "$ARCHIVE" <<'PYARCHIVE'
+import sys, zipfile
+archive = sys.argv[1]
+with zipfile.ZipFile(archive) as z:
+    corrupted = [n for n in z.namelist() if "._" in n or "__MACOSX" in n]
+    if corrupted:
+        raise SystemExit(f"Archive contains {len(corrupted)} forbidden AppleDouble files: {corrupted[:5]}")
+print(f"✅ 归档包结构完全纯净，无任何 AppleDouble 干扰文件: {archive}")
+PYARCHIVE
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/antigravity-appcast.XXXXXX")"
 trap 'rm -rf "$STAGE"' EXIT
 cp "$ARCHIVE" "$STAGE/"
