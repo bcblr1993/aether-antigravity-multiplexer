@@ -1,3 +1,11 @@
+## v0.8.17 (Build 65) — 2026-10-22
+
+### 🎨 全新 App 图标
+- 采用全新设计图标：无限轨道 / 克隆运行主题
+- 深紫→电蓝渐变背景 + 3D 无限符号轨道，4 个发光节点沿轨道运行
+- 高清 1024×1024 ICNS，支持 Retina 显示屏
+- 所有系统图标位置（Dock、启动台、Finder、菜单栏）全部更新
+
 # v0.8.16
 
 - **全面适配最新官方 Antigravity 2.25.0 (Full Official Antigravity 2.25.0 Compatibility)**：

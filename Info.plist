@@ -1,24 +1,46 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>CFBundleDevelopmentRegion</key><string>zh_CN</string>
-<key>CFBundleExecutable</key><string>AntigravityMultiplexer</string>
-<key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleIdentifier</key><string>dev.chenxu.antigravity-multiplexer</string>
-<key>CFBundleName</key><string>Aether Antigravity Multiplexer</string>
-<key>CFBundleDisplayName</key><string>Aether Antigravity Multiplexer</string>
-<key>CFBundleVersion</key><string>64</string>
-<key>CFBundleShortVersionString</key><string>0.8.16</string>
-<key>CFBundleIconFile</key><string>Icon.icns</string>
-<key>LSMinimumSystemVersion</key><string>13.0</string>
-<key>NSHighResolutionCapable</key><true/>
-<key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
-<key>SUFeedURL</key><string>https://aethernative.com/apps/antigravity-multiplexer/appcast.xml</string>
-<key>SUPublicEDKey</key><string>pMww3oxkkT9VcymetHFOUIF1thb/n+xjVMlxuFXVHsY=</string>
-<key>SURequireSignedFeed</key><true/>
-<key>SUEnableAutomaticChecks</key><true/>
-<key>SUAutomaticallyUpdate</key><true/>
-<key>SUEnableSystemProfiling</key><false/>
-<key>SUScheduledCheckInterval</key><integer>86400</integer>
-<key>SUVerifyUpdateBeforeExtraction</key><true/>
-</dict></plist>
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh_CN</string>
+	<key>CFBundleDisplayName</key>
+	<string>Aether Antigravity Multiplexer</string>
+	<key>CFBundleExecutable</key>
+	<string>AntigravityMultiplexer</string>
+	<key>CFBundleIconFile</key>
+	<string>Icon.icns</string>
+	<key>CFBundleIdentifier</key>
+	<string>dev.chenxu.antigravity-multiplexer</string>
+	<key>CFBundleName</key>
+	<string>Aether Antigravity Multiplexer</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.8.17</string>
+	<key>CFBundleVersion</key>
+	<string>65</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.developer-tools</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>SUAutomaticallyUpdate</key>
+	<true/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUEnableSystemProfiling</key>
+	<false/>
+	<key>SUFeedURL</key>
+	<string>https://aethernative.com/apps/antigravity-multiplexer/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>pMww3oxkkT9VcymetHFOUIF1thb/n+xjVMlxuFXVHsY=</string>
+	<key>SURequireSignedFeed</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
+</dict>
+</plist>
