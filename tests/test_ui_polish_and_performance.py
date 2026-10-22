@@ -121,9 +121,9 @@ class TestUIPolishAndPerformance(unittest.TestCase):
         self.assertIn("func liquidGlassSheet(radius: CGFloat = 16) -> some View", self.content)
         self.assertIn(".liquidGlassSheet(radius: 16)", self.content)
 
-    def test_version_bump_0_8_18(self):
-        # Fallback version string in AntigravityMultiplexer.swift must be 0.8.18
-        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.18"', self.content)
+    def test_version_bump_0_8_19(self):
+        # Fallback version string in AntigravityMultiplexer.swift must be 0.8.19
+        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.19"', self.content)
 
     def test_popover_menu_row_item_reuse(self):
         # PopoverMenuRowItem must be defined and reused across tile and list item popovers
