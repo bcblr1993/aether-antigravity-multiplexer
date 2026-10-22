@@ -169,6 +169,12 @@ enum L10nKey {
     case metricCompatAllLatest
     case metricCompatUpgradeable
 
+    // One-Click Close
+    case toolbarCloseAll
+    case toolbarCloseClones
+    case closeAllIncludesMainTitle
+    case closeAllIncludesMainSubtitle
+
     // Filters & View Modes
     case filterAll
     case filterRunning
@@ -384,6 +390,11 @@ struct L10n {
         case .legendDirect: return "直达/收起"
         case .legendClose: return "关闭"
         case .quickSwitcherSummary: return "运行中 · 共"
+
+        case .toolbarCloseAll: return "一键关闭全部"
+        case .toolbarCloseClones: return "一键关闭分身"
+        case .closeAllIncludesMainTitle: return "一键关闭包含主实例 (👑 Antigravity)"
+        case .closeAllIncludesMainSubtitle: return "开启时一键关闭退出所有实例包括主实例；关闭时仅退出多开分身，保留官方主实例"
         }
     }
 
@@ -481,6 +492,11 @@ struct L10n {
         case .legendDirect: return "Direct/Hide"
         case .legendClose: return "Close"
         case .quickSwitcherSummary: return "running · Total"
+
+        case .toolbarCloseAll: return "Quit All"
+        case .toolbarCloseClones: return "Quit Clones"
+        case .closeAllIncludesMainTitle: return "One-Click Close Includes Main (👑 Antigravity)"
+        case .closeAllIncludesMainSubtitle: return "When enabled, terminates all instances including main; when disabled, keeps main instance running."
         }
     }
 
@@ -578,6 +594,11 @@ struct L10n {
         case .legendDirect: return "直達/格納"
         case .legendClose: return "閉じる"
         case .quickSwitcherSummary: return "稼働中 · 合計"
+
+        case .toolbarCloseAll: return "全インスタンス一括終了"
+        case .toolbarCloseClones: return "クローン一括終了"
+        case .closeAllIncludesMainTitle: return "一括終了にメインインスタンスを含める (👑 Antigravity)"
+        case .closeAllIncludesMainSubtitle: return "有効時はメインを含む全インスタンスを終了、無効時はクローンのみ終了しメインを保持"
         }
     }
 
@@ -675,6 +696,11 @@ struct L10n {
         case .legendDirect: return "直達/收起"
         case .legendClose: return "關閉"
         case .quickSwitcherSummary: return "運行中 · 共"
+
+        case .toolbarCloseAll: return "一鍵結束全部"
+        case .toolbarCloseClones: return "一鍵結束分身"
+        case .closeAllIncludesMainTitle: return "一鍵結束包含主實例 (👑 Antigravity)"
+        case .closeAllIncludesMainSubtitle: return "開啟時一鍵結束所有實例包括主實例；關閉時僅結束多開分身，保留官方主實例"
         }
     }
 }
@@ -3165,6 +3191,9 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     @Published var ecoModeEnabled: Bool = UserDefaults.standard.object(forKey: "ecoModeEnabled") as? Bool ?? true {
         didSet { UserDefaults.standard.set(ecoModeEnabled, forKey: "ecoModeEnabled") }
     }
+    @Published var closeAllIncludesMainInstance: Bool = UserDefaults.standard.object(forKey: "closeAllIncludesMainInstance") as? Bool ?? false {
+        didSet { UserDefaults.standard.set(closeAllIncludesMainInstance, forKey: "closeAllIncludesMainInstance") }
+    }
 
     var effectiveLanguage: AppLanguage {
         appLanguage.effective
@@ -3293,9 +3322,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 open(item)
             }
         case .stopAll:
-            for item in instances where item.running {
-                quit(item)
-            }
+            quitAllInstances()
         case .restartAll:
             let running = instances.filter(\.running)
             for item in running {
@@ -4910,6 +4937,13 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     var primaryInstance: ManagedInstance? { instances.first(where: { $0.isOriginal }) }
     var cloneInstances: [ManagedInstance] { instances.filter { !$0.isOriginal } }
     var runningCount: Int { instances.filter(\.running).count }
+    var runningCloneCount: Int { cloneInstances.filter(\.running).count }
+    var runningPrimaryCount: Int { (primaryInstance?.running == true) ? 1 : 0 }
+
+    func runningTargetsCount(includeMain: Bool? = nil) -> Int {
+        let shouldInclude = includeMain ?? closeAllIncludesMainInstance
+        return instances.filter { $0.running && (shouldInclude || !$0.isOriginal) }.count
+    }
     var visibleWindowCount: Int { instances.filter { $0.running && !$0.isHidden }.count }
     var activeTaskCount: Int {
         instances.filter { item in
@@ -5558,6 +5592,15 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         collapseItem.target = StatusBarTarget.shared
         menu.addItem(collapseItem)
 
+        if runningCount > 0 {
+            let quitTitle = closeAllIncludesMainInstance
+                ? "一键关闭所有实例 (\(runningCount))"
+                : "一键关闭所有分身 (\(runningCloneCount))"
+            let quitAllItem = NSMenuItem(title: quitTitle, action: #selector(StatusBarTarget.quitAllInstancesAction), keyEquivalent: "")
+            quitAllItem.target = StatusBarTarget.shared
+            menu.addItem(quitAllItem)
+        }
+
         let showMainWindowItem = NSMenuItem(title: "显示多开监控台主窗口", action: #selector(StatusBarTarget.showMainWindow), keyEquivalent: "")
         showMainWindowItem.target = StatusBarTarget.shared
         menu.addItem(showMainWindowItem)
@@ -5757,6 +5800,17 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         }
     }
 
+    func quitAllInstances(includeMain: Bool? = nil) {
+        guard !busy else { return }
+        let shouldInclude = includeMain ?? closeAllIncludesMainInstance
+        let targets = instances.filter { $0.running && (shouldInclude || !$0.isOriginal) }
+        guard !targets.isEmpty else { return }
+        HapticManager.shared.play(.levelChange)
+        for item in targets {
+            quit(item)
+        }
+    }
+
     func clearOutput() {
         guard !busy else { return }
         withAnimation(.spring(response: 0.25, dampingFraction: 0.82)) {
@@ -5909,6 +5963,10 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
 
     @objc func collapseAll() {
         store?.collapseAllToMonitorWall()
+    }
+
+    @objc func quitAllInstancesAction() {
+        store?.quitAllInstances()
     }
 
     @objc func showMainWindow() {
@@ -10175,6 +10233,71 @@ struct ContentView: View {
                     .help("一键收起所有正在显示的 Antigravity 窗口回到监控台 (快捷键 ⌥0，后台任务继续保持运行)")
                 }
 
+                if store.runningCount > 0 {
+                    let targetCount = store.runningTargetsCount()
+                    Menu {
+                        Button(role: .destructive) {
+                            store.quitAllInstances()
+                        } label: {
+                            Label(
+                                store.closeAllIncludesMainInstance
+                                    ? (store.effectiveLanguage == .en ? "Quit All Running Instances (\(store.runningCount))" : "安全退出全部实例 (\(store.runningCount))")
+                                    : (store.effectiveLanguage == .en ? "Quit All Running Clones (\(store.runningCloneCount))" : "安全退出所有分身 (\(store.runningCloneCount))"),
+                                systemImage: "xmark.circle.fill"
+                            )
+                        }
+                        .disabled(targetCount == 0)
+
+                        Divider()
+
+                        Button {
+                            store.quitAllInstances(includeMain: true)
+                        } label: {
+                            Label(
+                                store.effectiveLanguage == .en ? "Quit All (Including Main: \(store.runningCount))" : "退出全部（含主实例 \(store.runningCount)）",
+                                systemImage: "xmark.seal"
+                            )
+                        }
+                        .disabled(store.runningCount == 0)
+
+                        Button {
+                            store.quitAllInstances(includeMain: false)
+                        } label: {
+                            Label(
+                                store.effectiveLanguage == .en ? "Quit Clones Only (Keep Main: \(store.runningCloneCount))" : "仅退出分身（保留主实例 \(store.runningCloneCount)）",
+                                systemImage: "macwindow.badge.minus"
+                            )
+                        }
+                        .disabled(store.runningCloneCount == 0)
+
+                        Divider()
+
+                        Toggle(
+                            store.tr(.closeAllIncludesMainTitle),
+                            isOn: $store.closeAllIncludesMainInstance
+                        )
+                    } label: {
+                        HStack(alignment: .center, spacing: 5) {
+                            Image(systemName: "xmark.circle")
+                                .font(.system(size: 11.5, weight: .semibold))
+                                .frame(width: 13, height: 13, alignment: .center)
+                            if store.closeAllIncludesMainInstance {
+                                Text("\(store.tr(.toolbarCloseAll)) (\(store.runningCount))")
+                            } else {
+                                Text("\(store.tr(.toolbarCloseClones)) (\(store.runningCloneCount))")
+                            }
+                        }
+                    } primaryAction: {
+                        store.quitAllInstances()
+                    }
+                    .buttonStyle(ModernButtonStyle(variant: .danger))
+                    .help(
+                        store.closeAllIncludesMainInstance
+                            ? "一键安全退出所有运行中的 Antigravity 实例（包含官方主实例）。点击执行，按下拉箭头可调整选项。"
+                            : "一键安全退出所有运行中的多开分身（保留官方主实例）。点击执行，按下拉箭头可调整选项。"
+                    )
+                }
+
                 // Consolidated Glass Utility Cluster: Refresh, Task History, and Maintenance Menu
                 HStack(spacing: 2) {
                     IconActionButton(
@@ -11012,6 +11135,17 @@ struct ContentView: View {
                         Text("Dock 图标任务角标")
                             .font(.system(size: 12, weight: .semibold))
                         Text("在程序坞图标实时显示后台正在跑任务或等待确认的实例数量")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+
+                Toggle(isOn: $store.closeAllIncludesMainInstance) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(store.tr(.closeAllIncludesMainTitle))
+                            .font(.system(size: 12, weight: .semibold))
+                        Text(store.tr(.closeAllIncludesMainSubtitle))
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }
