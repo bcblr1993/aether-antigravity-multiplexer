@@ -1,3 +1,11 @@
+## v0.8.20 (Build 68) — 2026-10-22
+
+### ⚡️ 彻底修复软件自动更新失败缺陷 (Fix Sparkle Autoupdate Issues)
+- **根除代码签名校验错误 (-67030)**：彻底修复后台运行中更新时因 XPC 权限校验与磁盘文件冲突导致的 `errSecCSInfoPlistFailed` (-67030) 错误，确保从旧版本平滑安装。
+- **发布归档包零污染规范 (Zero AppleDouble Packaging)**：重构发布归档管线，全面剥离 macOS 隔离属性与 AppleDouble 扩展资源文件（`._*` / `__MACOSX`），解压环境 100% 纯净合规。
+- **全链路自底向上（Inside-Out）深度递归代码签名**：自底向上完整密封 Sparkle 辅助工具（`Autoupdate`、`Updater.app`、`XPCServices`）及动态库，全面满足 Apple Developer ID 与 Hardened Runtime 严苛安全标准。
+- **接入更新器生命周期诊断委托 (`SPUUpdaterDelegate`)**：增补更新失败与阶段流转的系统级诊断日志，显著增强更新过程的稳定性与透明度。
+
 ## v0.8.19 (Build 67) — 2026-10-22
 
 ### 🎨 全新 Google Antigravity 专属高清晰度图标 (三重反重力共振波)
