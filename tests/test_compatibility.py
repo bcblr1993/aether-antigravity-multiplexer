@@ -43,10 +43,11 @@ class CompatibilityTests(unittest.TestCase):
     def test_compatibility_table_entries(self):
         self.assertIn("2.23.1", KNOWN)
         self.assertIn("2.24.0", KNOWN)
-        entry = KNOWN["2.24.0"]
+        self.assertIn("2.25.0", KNOWN)
+        entry = KNOWN["2.25.0"]
         self.assertEqual(len(entry["asar"]), 64)
         self.assertEqual(len(entry["language_server"]), 64)
-        self.assertEqual(entry["keyring_bypass_offset"], 26853952)
+        self.assertEqual(entry["keyring_bypass_offset"], 27121568)
 
     def test_patch_asar_enforces_single_window(self):
         import pathlib
