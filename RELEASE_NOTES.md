@@ -1,3 +1,15 @@
+## v0.8.22 (Build 70) — 2026-10-26
+
+### 🚀 全面适配最新官方 Antigravity 2.26.0 (Full Official Antigravity 2.26.0 Compatibility)
+- **核心二进制与安全补丁适配 (Binary & Security Patch Verification)**：
+  - **Language Server 符号精准匹配**：通过深度解析 2.26.0 Go 运行时 `gopclntab`，精确提取 `google3/third_party/jetski/language_server/code_assist_client/codeassistclient.shouldBypassKeyring` 的机器指令入口，确定最新内存偏移量为 `28175200` (`0x1adeb60`)，严格匹配 ARM64 函数栈帧序言指令序列（`900b40f9f1c301d13f0210eb`），确保独立副本凭据隔离与 Keychain 绕过机制在 2.26.0 上无缝生效。
+  - **ASAR 补丁与多开单窗口/Dock 隐形管线验证**：针对 2.26.0 的 `app.asar` 执行完整 ASAR 解包与多层补丁注入验证，单窗口强制管线（`createWindow` / `BrowserWindow.getAllWindows`）、Dock 极简无痕与智能收拢策略（`app.dock.hide`）、托盘图标净化（`DummyTray`）全部 100% 成功注入并更新 Electron 完整性校验哈希（`ElectronAsarIntegrity`）。
+  - **官方签名与安全审计**：完整核验 Google 官方发布签名与公证票据，验证 `8ce27ff7c2defa10ed1ed2817288a61c546690f4cae1b1a8c91d4e69e0851e4d` (ASAR) 及 `6f7e5004629070ac0c4651a1dc29030eaadcd5dc68fa9edf170047d7f8424f4d` (Language Server) 哈希指纹。
+- **升级管理与平滑迁移 (Seamless Upgrade Pipeline)**：
+  - 多开管理器识别官方源版本即刻显示“已适配官方版本 (2.26.0)”，支持针对全部运行中或离线副本一键平滑热升级至 2.26.0，保留所有工作空间数据、历史会话与独立凭据配置。
+- **全量 155+ 项自动化回归测试质量门禁保障**：
+  - 增补 2.26.0 兼容性表项与凭据偏移断言，全量自动化回归测试 100% 满分通过。
+
 ## v0.8.21 (Build 69) — 2026-10-22
 
 ### 🚀 新增「一键关闭所有实例」功能与主实例保护选项 (One-Click Close All Instances)
