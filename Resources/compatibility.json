@@ -58,6 +58,16 @@
     "asar": "4a145127f2fa419489701fd67415feb8667bb14a6f228231c48ebc02c26704b2",
     "language_server": "7e25e79c819ab9b2e27ad5cfbc5822e5d47885a6c5c033e8d9b7b2e79b8565b0",
     "keyring_bypass_offset": 28917744
+  },
+  "2.28.1": {
+    "asar": "cec1039f841be1976dfeef6a9fdb6e71c6981e6857c222430105e3b6979612af",
+    "language_server": "bdc0f805e3cfb44c93e4ed9029b37d8800bda9742b02cbf6ae9278fbaadb6073",
+    "keyring_bypass_offset": 28921056
+  },
+  "2.28.2": {
+    "asar": "046fa2ba9abe96bc915eb7ed12887c067396a8a12148842ab4f4e2cd05a68feb",
+    "language_server": "8b660ea42c9e24b7a6be339bfa573d25b19d0770dba6e5185c205f2ad1da26d6",
+    "keyring_bypass_offset": 28921056
   }
 }
 
