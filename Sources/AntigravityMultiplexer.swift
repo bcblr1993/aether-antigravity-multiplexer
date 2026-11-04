@@ -3386,7 +3386,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     func upgradeAllEligible() {
         let eligible = cloneInstances.filter { $0.version.compare(sourceVersion, options: .numeric) == .orderedAscending }
         if !eligible.isEmpty {
-            upgrade(eligible, backup: true)
+            upgrade(eligible, backup: false)
         }
     }
 
@@ -5741,7 +5741,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         catch { self.error = "无法保存验证状态：\(error.localizedDescription)" }
     }
 
-    func upgrade(_ selected: [ManagedInstance], backup: Bool = true) {
+    func upgrade(_ selected: [ManagedInstance], backup: Bool = false) {
         guard !busy && !selected.isEmpty && selected.allSatisfy({ pendingUpgrades.contains($0) }) else { return }
         guard let script = Bundle.main.url(forResource: "upgrade_all", withExtension: "py") else {
             error = "应用缺少升级组件。"; return
@@ -5749,7 +5749,9 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         activeUpgradeInstances = selected
         var args = ["--source", "/Applications/Antigravity.app",
                     "--only-indices", selected.map { String($0.index) }.joined(separator: ",")]
-        if !backup {
+        if backup {
+            args.append("--backup")
+        } else {
             args.append("--skip-backup")
         }
         runScript(script, arguments: args,
@@ -9321,7 +9323,7 @@ struct UpgradeConfirmationView: View {
     let targetVersion: String
     let dismiss: () -> Void
 
-    @State private var createBackup: Bool = true
+    @State private var createBackup: Bool = false
     @State private var isUpgrading: Bool = false
     @State private var showLogs: Bool = false
 
@@ -9922,7 +9924,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.24"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.25"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {

@@ -191,7 +191,9 @@ def patch_asar(source, target, name, data_dir, scheme):
             content = replace_once(content, "'--standalone',",
                                    f"'--standalone',\n            '--gemini_dir',\n            path_1.default.join(require('os').homedir(), {json.dumps(data_dir)}),",
                                    "gemini argument")
-            anchor = "const env = { ...process.env, ...(0, shell_env_1.shellEnvSync)() };"
+            anchor = "const env = { ...process.env, ...loginShellEnv };"
+            if anchor not in content:
+                anchor = "const env = { ...process.env, ...(0, shell_env_1.shellEnvSync)() };"
             content = replace_once(content, anchor,
                                    anchor + f"\n        env['ANTIGRAVITY_AUTH_SUCCESS_APP'] = {json.dumps(scheme)};",
                                    "OAuth callback setting")

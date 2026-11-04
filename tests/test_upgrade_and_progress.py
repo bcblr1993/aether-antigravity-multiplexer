@@ -264,8 +264,8 @@ class UpgradeAndProgressTests(unittest.TestCase):
             upgrade_all.upgrade_all(pathlib.Path("/Applications/Antigravity.app"), force=False)
             mock_build.assert_not_called()
 
-            # With force: 1 pending, build is called
-            upgrade_all.upgrade_all(pathlib.Path("/Applications/Antigravity.app"), force=True, skip_backup=True)
+            # With force: 1 pending, build is called (and default skip_backup=True means backup is not called)
+            upgrade_all.upgrade_all(pathlib.Path("/Applications/Antigravity.app"), force=True)
             mock_build.assert_called_once()
 
     def test_get_current_host_app_detection(self):

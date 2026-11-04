@@ -195,7 +195,7 @@ def get_running_instances(instances):
     return running
 
 
-def upgrade_all(source, dry_run=False, only_indices=None, build_only=False, skip_backup=False, force=False):
+def upgrade_all(source, dry_run=False, only_indices=None, build_only=False, skip_backup=True, force=False):
     print("[PROGRESS:5] 正在验证主程序版本与签名完整性...", flush=True)
     version = source_info(source)
     instances = discover()
@@ -305,7 +305,8 @@ def main():
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--only-indices", help=argparse.SUPPRESS)
     parser.add_argument("--build-only", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--skip-backup", action="store_true", help="跳过升级前备份旧程序和数据的步骤")
+    parser.add_argument("--skip-backup", dest="skip_backup", action="store_true", default=True, help="跳过升级前备份旧程序和数据的步骤（默认开启）")
+    parser.add_argument("--backup", dest="skip_backup", action="store_false", help="升级前创建旧程序和数据的完整安全备份")
     parser.add_argument("--force", action="store_true", help="强制重新适配与构建所有实例（即使版本号一致）")
     args = parser.parse_args()
     try:
