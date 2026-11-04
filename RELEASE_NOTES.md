@@ -1,3 +1,18 @@
+## v0.8.26 (Build 74) — 2026-11-04
+
+### 📌 自定义任意多实例同时常驻 macOS Dock 栏 (Multi-Instance Custom Dock Residency)
+- **打破仅固定第 1 个主实例的限制 (Multi-Select Dock Pinned Instances)**：
+  - 支持手动勾选 `#01` 官方主实例与 `#02` ~ `#09`+ 任意分身实例组合，让任意一个或多个实例同时在 macOS 程序坞 (Dock) 上常驻显示。
+  - **双通道实时生效**：
+    - **运行期动态显隐**：被勾选的分身实例独立写入 `"dockPolicy": "always"`，未勾选的分身保持全局无痕策略（默认 `"hidden"`），通过分身内置的 `fs.watchFile` 在 **1 秒内** 动态执行 `app.dock.show()` / `app.dock.hide()`，无需重启实例。
+    - **系统程序坞固定图标同步**：自动在 `~/Library/Preferences/com.apple.dock.plist` 的原 Antigravity 槽位处原位写入所选实例组合，清理未勾选实例在 `persistent-apps` 与 `recent-apps` 中的残留并刷新 `Dock`。
+- **四处便捷操作入口**：
+  - **右上角⚙️设置面板**：新增「📌 指定在 Dock 栏显示的实例 (可多选)」双列多选网格，支持一键 **全选 / 仅主实例 / 全不选** 或单独勾选任意实例。
+  - **监控墙与列表卡片**：已常驻 Dock 的实例显示可点击青色徽章（`Dock` / `Dock 常驻`），卡片右上角 `⋯` 菜单新增「📌 在 Dock 栏显示此实例 / 📌 从 Dock 栏移除此实例」。
+  - **顶部状态栏菜单与 Dock 右键菜单**：状态栏新增「📌 指定 Dock 栏显示实例」子菜单，多开管理器自身 Dock 右键菜单（`applicationDockMenu`）支持直接勾选/取消要在 Dock 显示的实例。
+- **全量自动化回归测试质量门禁保障**：
+  - 增补多实例自定义常驻 Dock 状态与 UI 断言，全量 165 项自动化回归测试 100% 满分通过。
+
 ## v0.8.25 (Build 73) — 2026-11-04
 
 ### 🚀 全面适配官方最新 Antigravity 2.29.0 与默认不备份极速升级 (Full Official Antigravity 2.29.0 Compatibility & Default No-Backup Fast Upgrade)

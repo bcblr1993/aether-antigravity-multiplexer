@@ -3161,6 +3161,17 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             enforceRunInBackgroundSetting(for: instances)
         }
     }
+    @Published var dockVisibleInstanceIDs: Set<String> = {
+        if let saved = UserDefaults.standard.stringArray(forKey: "dockVisibleInstanceIDs") {
+            return Set(saved)
+        }
+        return InstanceStore.readSystemDockAntigravityBundleIDs()
+    }() {
+        didSet {
+            UserDefaults.standard.set(Array(dockVisibleInstanceIDs).sorted(), forKey: "dockVisibleInstanceIDs")
+            enforceRunInBackgroundSetting(for: instances)
+        }
+    }
     @Published var appTheme: AppTheme = {
         let raw = UserDefaults.standard.string(forKey: "appTheme") ?? AppTheme.system.rawValue
         return AppTheme(rawValue: raw) ?? .system
@@ -4451,12 +4462,197 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 json["runInBackground"] = "true"
                 changed = true
             }
-            if (json["dockPolicy"] as? String) != cloneDockPolicy.rawValue {
-                json["dockPolicy"] = cloneDockPolicy.rawValue
+            let effectivePolicy = dockVisibleInstanceIDs.contains(item.id) ? CloneDockPolicy.always : cloneDockPolicy
+            if (json["dockPolicy"] as? String) != effectivePolicy.rawValue || (!dockVisibleInstanceIDs.contains(item.id) && (json["dockPolicy"] as? String) != cloneDockPolicy.rawValue) {
+                json["dockPolicy"] = effectivePolicy.rawValue
                 changed = true
             }
             if changed, let encoded = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys]) {
                 try? encoded.write(to: storageFile, options: .atomic)
+            }
+        }
+    }
+
+    // MARK: - Multi-Instance Custom Dock Display (自定义任意多实例常驻 Dock 栏)
+
+    func isShownInDock(_ item: ManagedInstance) -> Bool {
+        dockVisibleInstanceIDs.contains(item.id)
+    }
+
+    func toggleShowInDock(_ item: ManagedInstance) {
+        setShowInDock(item, show: !isShownInDock(item), syncSystemDock: true)
+    }
+
+    func setShowInDock(_ item: ManagedInstance, show: Bool, syncSystemDock: Bool = true) {
+        var updated = dockVisibleInstanceIDs
+        if show {
+            updated.insert(item.id)
+        } else {
+            updated.remove(item.id)
+        }
+        dockVisibleInstanceIDs = updated
+        if item.isOriginal && !show && item.running {
+            let state = activity(for: item).state
+            if state != .runningTask && state != .needsAttention {
+                quit(item)
+            }
+        }
+        if syncSystemDock {
+            syncSystemDockPersistentApps()
+        }
+    }
+
+    func setBatchShowInDock(_ ids: Set<String>, syncSystemDock: Bool = true) {
+        let removedOriginal = dockVisibleInstanceIDs.contains("com.google.antigravity") && !ids.contains("com.google.antigravity")
+        dockVisibleInstanceIDs = ids
+        if removedOriginal, let orig = instances.first(where: { $0.isOriginal }), orig.running {
+            let state = activity(for: orig).state
+            if state != .runningTask && state != .needsAttention {
+                quit(orig)
+            }
+        }
+        if syncSystemDock {
+            syncSystemDockPersistentApps()
+        }
+    }
+
+    static func readSystemDockAntigravityBundleIDs() -> Set<String> {
+        let dockPlistURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Preferences/com.apple.dock.plist")
+        guard let data = try? Data(contentsOf: dockPlistURL),
+              let plist = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any],
+              let persistentApps = plist["persistent-apps"] as? [[String: Any]] else {
+            return ["com.google.antigravity"]
+        }
+        var found = Set<String>()
+        for entry in persistentApps {
+            guard let tileData = entry["tile-data"] as? [String: Any],
+                  let bid = tileData["bundle-identifier"] as? String else { continue }
+            if bid == "com.google.antigravity" || bid.hasPrefix("local.antigravity.") {
+                found.insert(bid)
+            }
+        }
+        return found.isEmpty ? ["com.google.antigravity"] : found
+    }
+
+    func syncSystemDockPersistentApps() {
+        let selectedItems = instances
+            .filter { dockVisibleInstanceIDs.contains($0.id) }
+            .sorted { a, b in
+                if a.isOriginal != b.isOriginal { return a.isOriginal }
+                return a.index < b.index
+            }
+        let selectedBundleIDs = Set(selectedItems.map(\.bundleID))
+        let dockPlistURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Preferences/com.apple.dock.plist")
+
+        guard let data = try? Data(contentsOf: dockPlistURL),
+              var format = Optional(PropertyListSerialization.PropertyListFormat.binary),
+              var plist = (try? PropertyListSerialization.propertyList(from: data, options: [.mutableContainersAndLeaves], format: &format)) as? [String: Any],
+              var persistentApps = plist["persistent-apps"] as? [[String: Any]] else {
+            return
+        }
+
+        var existingTilesByBundle: [String: [String: Any]] = [:]
+        var insertionIndex: Int? = nil
+        var multiplexerIndex: Int? = nil
+
+        for (idx, entry) in persistentApps.enumerated() {
+            guard let tileData = entry["tile-data"] as? [String: Any],
+                  let bid = tileData["bundle-identifier"] as? String else { continue }
+            if bid == "com.google.antigravity" || bid.hasPrefix("local.antigravity.") {
+                if insertionIndex == nil {
+                    insertionIndex = idx
+                }
+                existingTilesByBundle[bid] = entry
+            } else if bid == "dev.chenxu.antigravity-multiplexer" && multiplexerIndex == nil {
+                multiplexerIndex = idx
+            }
+        }
+
+        // Compute how many items before insertionIndex remain after filtering out Antigravity entries
+        let targetSlot: Int
+        if let firstAntigravityIdx = insertionIndex {
+            let keptBefore = persistentApps.prefix(firstAntigravityIdx).filter { entry in
+                guard let td = entry["tile-data"] as? [String: Any],
+                      let bid = td["bundle-identifier"] as? String else { return true }
+                return bid != "com.google.antigravity" && !bid.hasPrefix("local.antigravity.")
+            }.count
+            targetSlot = keptBefore
+        } else if let muxIdx = multiplexerIndex {
+            let keptBefore = persistentApps.prefix(muxIdx).filter { entry in
+                guard let td = entry["tile-data"] as? [String: Any],
+                      let bid = td["bundle-identifier"] as? String else { return true }
+                return bid != "com.google.antigravity" && !bid.hasPrefix("local.antigravity.")
+            }.count
+            targetSlot = keptBefore
+        } else {
+            targetSlot = persistentApps.count
+        }
+
+        persistentApps.removeAll { entry in
+            guard let td = entry["tile-data"] as? [String: Any],
+                  let bid = td["bundle-identifier"] as? String else { return false }
+            return bid == "com.google.antigravity" || bid.hasPrefix("local.antigravity.")
+        }
+
+        var newEntries: [[String: Any]] = []
+        for item in selectedItems {
+            var urlString = item.path.absoluteString
+            if !urlString.hasSuffix("/") {
+                urlString += "/"
+            }
+            if var cachedEntry = existingTilesByBundle[item.bundleID],
+               var cachedTileData = cachedEntry["tile-data"] as? [String: Any] {
+                cachedTileData["bundle-identifier"] = item.bundleID
+                cachedTileData["file-label"] = item.name
+                cachedTileData["file-data"] = [
+                    "_CFURLString": urlString,
+                    "_CFURLStringType": 15
+                ]
+                cachedEntry["tile-data"] = cachedTileData
+                newEntries.append(cachedEntry)
+            } else {
+                let freshEntry: [String: Any] = [
+                    "tile-type": "file-tile",
+                    "tile-data": [
+                        "bundle-identifier": item.bundleID,
+                        "dock-extra": 0,
+                        "file-data": [
+                            "_CFURLString": urlString,
+                            "_CFURLStringType": 15
+                        ],
+                        "file-label": item.name,
+                        "file-type": 41
+                    ]
+                ]
+                newEntries.append(freshEntry)
+            }
+        }
+
+        let safeSlot = min(max(0, targetSlot), persistentApps.count)
+        persistentApps.insert(contentsOf: newEntries, at: safeSlot)
+        plist["persistent-apps"] = persistentApps
+
+        if var recentApps = plist["recent-apps"] as? [[String: Any]] {
+            recentApps.removeAll { entry in
+                guard let td = entry["tile-data"] as? [String: Any],
+                      let bid = td["bundle-identifier"] as? String else { return false }
+                let isAntigravity = (bid == "com.google.antigravity" || bid.hasPrefix("local.antigravity."))
+                return isAntigravity && !selectedBundleIDs.contains(bid)
+            }
+            plist["recent-apps"] = recentApps
+        }
+
+        if let outData = try? PropertyListSerialization.data(fromPropertyList: plist, format: format, options: 0) {
+            try? outData.write(to: dockPlistURL, options: .atomic)
+            CFPreferencesAppSynchronize("com.apple.dock" as CFString)
+            Task.detached(priority: .utility) {
+                let proc = Process()
+                proc.executableURL = URL(fileURLWithPath: "/usr/bin/killall")
+                proc.arguments = ["Dock"]
+                try? proc.run()
+                proc.waitUntilExit()
             }
         }
     }
@@ -5567,6 +5763,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 hasher.combine(act.workspace)
             }
         }
+        hasher.combine(dockVisibleInstanceIDs)
         hasher.combine(taskHistory.count)
         for item in taskHistory.prefix(3) {
             hasher.combine(item.id)
@@ -5646,8 +5843,9 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             let statePrefix = !item.running ? "⏹" : (act.state == .runningTask ? "⚡" : (act.state == .stalled ? "⚠️" : (act.state == .needsAttention ? "🔔" : "🟢")))
             let shortcutHint = item.isOriginal ? "[⌥1]" : "[⌥\(item.index)]"
             let isMainPrefix = item.isOriginal ? "👑 " : ""
+            let dockPinSuffix = isShownInDock(item) ? " · 📌Dock" : ""
             let menuItem = NSMenuItem(
-                title: "\(statePrefix) \(isMainPrefix)\(displayName) \(shortcutHint) · \(act.state.label)",
+                title: "\(statePrefix) \(isMainPrefix)\(displayName) \(shortcutHint) · \(act.state.label)\(dockPinSuffix)",
                 action: #selector(StatusBarTarget.openInstance(_:)),
                 keyEquivalent: ""
             )
@@ -5655,6 +5853,25 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             menuItem.target = StatusBarTarget.shared
             menu.addItem(menuItem)
         }
+
+        let dockSubmenuItem = NSMenuItem(title: "📌 指定 Dock 栏显示实例 (已选 \(dockVisibleInstanceIDs.count) 个)", action: nil, keyEquivalent: "")
+        let dockSubmenu = NSMenu()
+        for item in instances {
+            let meta = meta(for: item)
+            let displayName = meta.nickname.isEmpty ? item.name : "\(meta.nickname) (\(item.name))"
+            let prefix = item.isOriginal ? "#01 主实例" : "#\(String(format: "%02d", item.index))"
+            let pinItem = NSMenuItem(
+                title: "\(prefix) · \(displayName)",
+                action: #selector(StatusBarTarget.toggleInstanceDock(_:)),
+                keyEquivalent: ""
+            )
+            pinItem.state = isShownInDock(item) ? .on : .off
+            pinItem.representedObject = item.id
+            pinItem.target = StatusBarTarget.shared
+            dockSubmenu.addItem(pinItem)
+        }
+        dockSubmenuItem.submenu = dockSubmenu
+        menu.addItem(dockSubmenuItem)
 
         if !taskHistory.isEmpty {
             menu.addItem(.separator())
@@ -5979,6 +6196,12 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         guard let id = sender.representedObject as? String,
               let item = store?.instances.first(where: { $0.id == id }) else { return }
         store?.open(item)
+    }
+
+    @objc func toggleInstanceDock(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let item = store?.instances.first(where: { $0.id == id }) else { return }
+        store?.toggleShowInDock(item)
     }
 
     @objc func openHistoryInstance(_ sender: NSMenuItem) {
@@ -7397,6 +7620,8 @@ struct InstanceThumbnailTile: View {
     let verify: () -> Void
     let editMeta: () -> Void
     var editAutoPilot: (() -> Void)? = nil
+    var isShownInDock: Bool = false
+    var toggleDock: (() -> Void)? = nil
     let clearWorkspace: () -> Void
     let destroy: () -> Void
 
@@ -7729,6 +7954,26 @@ struct InstanceThumbnailTile: View {
 
                 Spacer(minLength: 4)
 
+                if isShownInDock {
+                    Button {
+                        toggleDock?()
+                    } label: {
+                        HStack(spacing: 2.5) {
+                            Image(systemName: "dock.rectangle")
+                                .font(.system(size: 8.5, weight: .bold))
+                            Text("Dock")
+                                .font(.system(size: 9, weight: .bold, design: .rounded))
+                        }
+                        .foregroundStyle(Color.cyan)
+                        .padding(.horizontal, 5)
+                        .frame(height: 17)
+                        .background(Capsule().fill(Color.cyan.opacity(colorScheme == .dark ? 0.18 : 0.12)))
+                        .overlay(Capsule().strokeBorder(Color.cyan.opacity(0.38), lineWidth: 0.8))
+                    }
+                    .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.92, hoverScale: 1.05))
+                    .help("当前已在 macOS Dock 栏显示 · 点击从 Dock 栏移除")
+                }
+
                 if let store = InstanceStore.current {
                     AutoPilotPillView(store: store, item: item, onConfigure: editAutoPilot)
                 }
@@ -7956,6 +8201,14 @@ struct InstanceThumbnailTile: View {
                 editAutoPilot?()
             }
 
+            tileMenuItem(
+                title: isShownInDock ? "📌 从 Dock 栏移除此实例" : "📌 在 Dock 栏显示此实例",
+                symbol: isShownInDock ? "dock.arrow.down.rectangle" : "dock.arrow.up.rectangle"
+            ) {
+                showMorePopover = false
+                toggleDock?()
+            }
+
             Divider().padding(.vertical, 3)
 
             tileMenuItem(
@@ -8065,7 +8318,8 @@ extension InstanceThumbnailTile: Equatable {
         lhs.duration == rhs.duration &&
         lhs.density == rhs.density &&
         lhs.busy == rhs.busy &&
-        lhs.canUpgrade == rhs.canUpgrade
+        lhs.canUpgrade == rhs.canUpgrade &&
+        lhs.isShownInDock == rhs.isShownInDock
     }
 }
 
@@ -8090,6 +8344,8 @@ struct InstanceCard: View {
     let verify: () -> Void
     let editMeta: () -> Void
     var editAutoPilot: (() -> Void)? = nil
+    var isShownInDock: Bool = false
+    var toggleDock: (() -> Void)? = nil
     let clearWorkspace: () -> Void
     let destroy: () -> Void
 
@@ -8221,8 +8477,24 @@ struct InstanceCard: View {
                             .strokeBorder(item.running ? activity.state.color.opacity(0.30) : Color.primary.opacity(0.08), lineWidth: 1)
                     }
 
-                    if let store = InstanceStore.current {
-                        AutoPilotPillView(store: store, item: item, onConfigure: editAutoPilot)
+                    if isShownInDock {
+                        Button {
+                            toggleDock?()
+                        } label: {
+                            HStack(alignment: .center, spacing: 3.5) {
+                                Image(systemName: "dock.rectangle")
+                                    .font(.system(size: 9.5, weight: .semibold))
+                                Text("Dock 常驻")
+                                    .font(.system(size: 10.5, weight: .semibold))
+                            }
+                            .foregroundStyle(Color.cyan)
+                            .padding(.horizontal, 7.5)
+                            .frame(height: 20)
+                            .background(Capsule().fill(Color.cyan.opacity(colorScheme == .dark ? 0.16 : 0.11)))
+                            .overlay(Capsule().strokeBorder(Color.cyan.opacity(0.32), lineWidth: 1))
+                        }
+                        .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.94, hoverScale: 1.03))
+                        .help("当前已在 macOS Dock 栏显示 · 点击从 Dock 栏移除")
                     }
 
                     if item.isOriginal {
@@ -8420,6 +8692,14 @@ struct InstanceCard: View {
                             showMorePopover = false
                             editAutoPilot?()
                         }
+                        popoverMenuButton(
+                            title: isShownInDock ? "📌 从 Dock 栏移除此实例" : "📌 在 Dock 栏显示此实例",
+                            symbol: isShownInDock ? "dock.arrow.down.rectangle" : "dock.arrow.up.rectangle",
+                            destructive: false
+                        ) {
+                            showMorePopover = false
+                            toggleDock?()
+                        }
                         Divider().padding(.vertical, 3)
 
                         if item.index >= 8 {
@@ -8570,7 +8850,8 @@ extension InstanceCard: Equatable {
         lhs.diskUsage == rhs.diskUsage &&
         lhs.sourceVersion == rhs.sourceVersion &&
         lhs.busy == rhs.busy &&
-        lhs.canUpgrade == rhs.canUpgrade
+        lhs.canUpgrade == rhs.canUpgrade &&
+        lhs.isShownInDock == rhs.isShownInDock
     }
 }
 
@@ -9924,7 +10205,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.25"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.26"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
@@ -11179,6 +11460,94 @@ struct ContentView: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.top, 1)
                 }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "pin.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color.cyan)
+                        Text(store.effectiveLanguage == .en ? "Pinned Instances in Dock (Multi-select)" : "指定在 Dock 栏显示的实例 (可多选)")
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(.primary)
+                        Spacer()
+                        HStack(spacing: 4) {
+                            Button(store.effectiveLanguage == .en ? "All" : "全选") {
+                                HapticManager.shared.play(.levelChange)
+                                store.setBatchShowInDock(Set(store.instances.map(\.id)))
+                            }
+                            .font(.system(size: 10, weight: .medium))
+                            .buttonStyle(.plain)
+                            .foregroundStyle(Color.accentColor)
+
+                            Text("·").font(.system(size: 10)).foregroundStyle(.tertiary)
+
+                            Button(store.effectiveLanguage == .en ? "Main Only" : "仅主实例") {
+                                HapticManager.shared.play(.levelChange)
+                                store.setBatchShowInDock(["com.google.antigravity"])
+                            }
+                            .font(.system(size: 10, weight: .medium))
+                            .buttonStyle(.plain)
+                            .foregroundStyle(Color.accentColor)
+
+                            Text("·").font(.system(size: 10)).foregroundStyle(.tertiary)
+
+                            Button(store.effectiveLanguage == .en ? "None" : "全不选") {
+                                HapticManager.shared.play(.levelChange)
+                                store.setBatchShowInDock([])
+                            }
+                            .font(.system(size: 10, weight: .medium))
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    Text(store.effectiveLanguage == .en
+                         ? "Select any combination of instances (#01 ~ #09+) to display simultaneously on the macOS Dock."
+                         : "打破仅固定第 1 个主实例的限制：勾选任意一个或多个实例，即可同时固定并显示在 macOS 程序坞 (Dock) 上。")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)], spacing: 6) {
+                        ForEach(store.instances) { inst in
+                            let selected = store.isShownInDock(inst)
+                            let meta = store.meta(for: inst)
+                            let labelText = inst.isOriginal
+                                ? "#01 主实例"
+                                : "#\(String(format: "%02d", inst.index)) \(meta.nickname.isEmpty ? inst.name.replacingOccurrences(of: "Antigravity ", with: "#") : meta.nickname)"
+                            Button {
+                                HapticManager.shared.play(.alignment)
+                                store.toggleShowInDock(inst)
+                            } label: {
+                                HStack(spacing: 5) {
+                                    Image(systemName: selected ? "checkmark.square.fill" : "square")
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundStyle(selected ? Color.cyan : Color.secondary)
+                                    Text(labelText)
+                                        .font(.system(size: 11, weight: selected ? .semibold : .medium))
+                                        .foregroundStyle(selected ? Color.primary : Color.secondary)
+                                        .lineLimit(1)
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(.horizontal, 8)
+                                .frame(height: 26)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .fill(selected
+                                              ? Color.cyan.opacity(colorScheme == .dark ? 0.18 : 0.12)
+                                              : Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.035))
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .strokeBorder(selected ? Color.cyan.opacity(0.45) : Color.primary.opacity(0.08), lineWidth: 0.9)
+                                )
+                            }
+                            .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.96, hoverScale: 1.02))
+                        }
+                    }
+                }
             }
 
             Divider()
@@ -11382,6 +11751,8 @@ struct ContentView: View {
                             verify: { store.toggleVerified(item) },
                             editMeta: { editingMetaItem = item },
                             editAutoPilot: { editingAutoPilotItem = item },
+                            isShownInDock: store.isShownInDock(item),
+                            toggleDock: { store.toggleShowInDock(item) },
                             clearWorkspace: { pendingClear = item },
                             destroy: { pendingDestroy = item }
                         )
@@ -11440,6 +11811,8 @@ struct ContentView: View {
                 verify: {},
                 editMeta: { editingMetaItem = primary },
                 editAutoPilot: { editingAutoPilotItem = primary },
+                isShownInDock: store.isShownInDock(primary),
+                toggleDock: { store.toggleShowInDock(primary) },
                 clearWorkspace: {},
                 destroy: {}
             )
@@ -11508,6 +11881,8 @@ struct ContentView: View {
                             verify: { store.toggleVerified(item) },
                             editMeta: { editingMetaItem = item },
                             editAutoPilot: { editingAutoPilotItem = item },
+                            isShownInDock: store.isShownInDock(item),
+                            toggleDock: { store.toggleShowInDock(item) },
                             clearWorkspace: { pendingClear = item },
                             destroy: { pendingDestroy = item }
                         )
@@ -12621,6 +12996,51 @@ private struct MainWindowCommands: Commands {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    @MainActor func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        guard let store = InstanceStore.current else { return nil }
+        StatusBarTarget.shared.store = store
+        let menu = NSMenu()
+
+        let header = NSMenuItem(title: "📌 勾选要在 Dock 栏显示的实例 (可多选)", action: nil, keyEquivalent: "")
+        header.isEnabled = false
+        menu.addItem(header)
+
+        for item in store.instances {
+            let meta = store.meta(for: item)
+            let displayName = meta.nickname.isEmpty ? item.name : "\(meta.nickname) (\(item.name))"
+            let prefix = item.isOriginal ? "#01" : "#\(String(format: "%02d", item.index))"
+            let pinItem = NSMenuItem(
+                title: "\(prefix) \(displayName)",
+                action: #selector(StatusBarTarget.toggleInstanceDock(_:)),
+                keyEquivalent: ""
+            )
+            pinItem.state = store.isShownInDock(item) ? .on : .off
+            pinItem.representedObject = item.id
+            pinItem.target = StatusBarTarget.shared
+            menu.addItem(pinItem)
+        }
+
+        menu.addItem(.separator())
+        let openHeader = NSMenuItem(title: "🚀 快速打开 / 切换实例", action: nil, keyEquivalent: "")
+        openHeader.isEnabled = false
+        menu.addItem(openHeader)
+
+        for item in store.instances {
+            let act = store.activity(for: item)
+            let meta = store.meta(for: item)
+            let displayName = meta.nickname.isEmpty ? item.name : "\(meta.nickname) (\(item.name))"
+            let openItem = NSMenuItem(
+                title: "\(item.running ? "🟢" : "⏹") \(displayName) · \(act.state.label)",
+                action: #selector(StatusBarTarget.openInstance(_:)),
+                keyEquivalent: ""
+            )
+            openItem.representedObject = item.id
+            openItem.target = StatusBarTarget.shared
+            menu.addItem(openItem)
+        }
+        return menu
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         var shown = false
         for window in sender.windows where !(window is NSPanel) && !window.isSheet && window.canBecomeMain {

@@ -121,9 +121,9 @@ class TestUIPolishAndPerformance(unittest.TestCase):
         self.assertIn("func liquidGlassSheet(radius: CGFloat = 16) -> some View", self.content)
         self.assertIn(".liquidGlassSheet(radius: 16)", self.content)
 
-    def test_version_bump_0_8_25(self):
-        # Fallback version string in AntigravityMultiplexer.swift must be 0.8.25
-        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.25"', self.content)
+    def test_version_bump_0_8_26(self):
+        # Fallback version string in AntigravityMultiplexer.swift must be 0.8.26
+        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.26"', self.content)
 
     def test_upgrade_defaults_to_no_backup(self):
         # Upgrade confirmation dialog, upgradeAllEligible, and upgrade() must default to backup = false
@@ -271,6 +271,21 @@ class TestUIPolishAndPerformance(unittest.TestCase):
         self.assertIn("window.electronNative.minimize()", self.content)
         self.assertIn('"AXMinimized"', self.content)
         self.assertIn('"AXMinimizeButton"', self.content)
+
+    def test_multi_instance_custom_dock_display(self):
+        # Verify multi-instance custom Dock residency state and system Dock synchronization
+        self.assertIn("@Published var dockVisibleInstanceIDs: Set<String>", self.content)
+        self.assertIn('UserDefaults.standard.set(Array(dockVisibleInstanceIDs).sorted(), forKey: "dockVisibleInstanceIDs")', self.content)
+        self.assertIn("let effectivePolicy = dockVisibleInstanceIDs.contains(item.id) ? CloneDockPolicy.always : cloneDockPolicy", self.content)
+        self.assertIn("func isShownInDock(_ item: ManagedInstance) -> Bool", self.content)
+        self.assertIn("func toggleShowInDock(_ item: ManagedInstance)", self.content)
+        self.assertIn("func setBatchShowInDock(_ ids: Set<String>, syncSystemDock: Bool = true)", self.content)
+        self.assertIn("func syncSystemDockPersistentApps()", self.content)
+        self.assertIn("static func readSystemDockAntigravityBundleIDs() -> Set<String>", self.content)
+        self.assertIn("指定在 Dock 栏显示的实例 (可多选)", self.content)
+        self.assertIn("📌 从 Dock 栏移除此实例", self.content)
+        self.assertIn("📌 在 Dock 栏显示此实例", self.content)
+        self.assertIn("@MainActor func applicationDockMenu(_ sender: NSApplication) -> NSMenu?", self.content)
 
 
 if __name__ == "__main__":
