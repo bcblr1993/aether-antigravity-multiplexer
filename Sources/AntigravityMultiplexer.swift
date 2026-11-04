@@ -7648,296 +7648,45 @@ struct InstanceThumbnailTile: View {
     }
 
     var body: some View {
-        VStack(alignment: .center, spacing: 10) {
-            // 16:10 Miniature Monitor Screen Container
-            ZStack {
-                // Screen Background & Content
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color(red: 0.08, green: 0.09, blue: 0.13),
-                                Color(red: 0.12, green: 0.14, blue: 0.20)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-
-                if item.running, let thumbnail {
-                    Image(nsImage: thumbnail)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(height: density.screenHeight)
-                        .clipped()
-                        .opacity(item.running ? 0.96 : 0.72)
-                } else if item.running {
-                    syntheticLiveScreen
-                } else {
-                    stoppedScreen
-                }
-
-                // Top Screen Overlay Bar
-                VStack {
-                    HStack(alignment: .center, spacing: 6) {
-                        // Top-left state badge
-                        HStack(alignment: .center, spacing: 5) {
-                            PulsingStatusDot(
-                                active: item.running,
-                                activeColor: activity.state.color,
-                                pulse: item.running && (activity.state == .runningTask || activity.state == .stalled || activity.state == .needsAttention)
-                            )
-                            Text(item.running ? (item.isHidden ? "\(activity.state.label) · 后台实时" : activity.state.label) : "未启动")
-                                .font(.system(size: 10.5, weight: .semibold))
-                                .foregroundStyle(.white)
-                        }
-                        .padding(.horizontal, 8)
-                        .frame(height: 22)
-                        .background {
-                            Capsule().fill(Color.black.opacity(0.60))
-                        }
-                        .overlay {
-                            Capsule()
-                                .strokeBorder(
-                                    LinearGradient(
-                                        stops: [
-                                            .init(color: Color.white.opacity(0.42), location: 0.0),
-                                            .init(color: activity.state.color.opacity(0.40), location: 1.0)
-                                        ],
-                                        startPoint: .top,
-                                        endPoint: .bottom
-                                    ),
-                                    lineWidth: 0.95
-                                )
-                        }
-
-                        if hasPendingUpgrade {
-                            Text("可升 v\(sourceVersion)")
-                                .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-                                .foregroundStyle(.orange)
-                                .padding(.horizontal, 6.5)
-                                .frame(height: 20)
-                                .background(Capsule().fill(Color.black.opacity(0.65)))
-                                .overlay {
-                                    Capsule()
-                                        .strokeBorder(
-                                            LinearGradient(
-                                                stops: [
-                                                    .init(color: Color.white.opacity(0.45), location: 0.0),
-                                                    .init(color: Color.orange.opacity(0.45), location: 1.0)
-                                                ],
-                                                startPoint: .top,
-                                                endPoint: .bottom
-                                            ),
-                                            lineWidth: 0.95
-                                        )
-                                }
-                        }
-
-                        // Real-time Resource Metric Capsule (CPU & Memory, Equatable Subtree)
-                        InstanceThumbnailResourceBadge(isRunning: item.running, metric: resourceMetric)
-                            .equatable()
-
-                        if let duration {
-                            HStack(alignment: .center, spacing: 3.5) {
-                                Image(systemName: "stopwatch")
-                                    .font(.system(size: 8.5))
-                                Text(duration)
-                                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                            }
-                            .foregroundStyle(Color.cyan)
-                            .padding(.horizontal, 6.5)
-                            .frame(height: 22)
-                            .background(Capsule().fill(Color.black.opacity(0.60)))
-                            .overlay {
-                                Capsule()
-                                    .strokeBorder(
-                                        LinearGradient(
-                                            stops: [
-                                                .init(color: Color.white.opacity(0.45), location: 0.0),
-                                                .init(color: Color.cyan.opacity(0.45), location: 1.0)
-                                            ],
-                                            startPoint: .top,
-                                            endPoint: .bottom
-                                        ),
-                                        lineWidth: 0.95
-                                    )
-                            }
-                        }
-
-                        Spacer()
-
-                        // Top-Right [...] Menu Button
-                        Button {
-                            showMorePopover.toggle()
-                        } label: {
-                            Image(systemName: "ellipsis.circle")
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundStyle(.white.opacity(hovered || showMorePopover ? 0.98 : 0.75))
-                                .frame(width: 26, height: 26)
-                                .background {
-                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                        .fill(Color.black.opacity(hovered || showMorePopover ? 0.72 : 0.45))
-                                }
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                        .strokeBorder(Color.white.opacity(hovered || showMorePopover ? 0.35 : 0.18), lineWidth: 1)
-                                }
-                        }
-                        .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.92, hoverScale: 1.05))
-                        .popover(isPresented: $showMorePopover, arrowEdge: .bottom) {
-                            tilePopoverMenu
-                        }
-                    }
-                    .padding(10)
-
-                    Spacer()
-
-                    // Bottom Live Task Telemetry Caption Bar
-                    HStack(alignment: .center, spacing: 6) {
-                        Image(systemName: item.running ? activity.state.symbol : (activity.currentAction.hasPrefix("上次：") ? "clock.arrow.circlepath" : "circle"))
-                            .font(.system(size: 10.5, weight: .semibold))
-                            .foregroundStyle(item.running ? activity.state.color : Color.secondary)
-                            .frame(width: 13, height: 13, alignment: .center)
-
-                        Text(item.running ? activity.currentAction : (activity.currentAction.hasPrefix("上次：") ? activity.currentAction : "点击缩略图启动实例"))
-                            .font(.system(size: 10.5, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.92))
-                            .lineLimit(1)
-
-                        Spacer(minLength: 4)
-
-                        if !activity.workspace.isEmpty {
-                            Text(activity.workspace)
-                                .font(.system(size: 9.5, design: .monospaced))
-                                .foregroundStyle(.white.opacity(0.70))
-                                .lineLimit(1)
-                        } else if !activity.lastUpdatedLabel.isEmpty {
-                            Text(activity.lastUpdatedLabel)
-                                .font(.system(size: 9.5, design: .monospaced))
-                                .foregroundStyle(.white.opacity(0.60))
-                        }
-
-                        if diskUsage.totalDataBytes > 0 {
-                            Text("· 💾 \(diskUsage.formattedTotalData)")
-                                .font(.system(size: 9, weight: .medium, design: .monospaced))
-                                .foregroundStyle(.white.opacity(0.85))
-                                .lineLimit(1)
-                                .help("独立工作空间与数据占用：\(diskUsage.formattedTotalData)（工作空间 \(diskUsage.formattedProfile) · 缓存 \(diskUsage.formattedUserData) · 程序包 \(diskUsage.formattedAppBundle)）")
-                        }
-                    }
-                    .padding(.horizontal, 10)
-                    .frame(height: 28)
-                    .background {
-                        ZStack(alignment: .top) {
-                            Color.black.opacity(0.70)
-                            LinearGradient(
-                                colors: [Color.white.opacity(0.18), Color.clear],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                            .frame(height: 1)
-                        }
-                    }
-                }
-
-                // Center Play / Switch Action Overlay
-                centerPlayOverlay
-            }
-            .frame(height: density.screenHeight)
-            .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
-            .overlay {
-                AmbientGlowBorder(
-                    isActive: item.running && (activity.state == .runningTask || activity.state == .stalled || activity.state == .needsAttention),
-                    color: activity.state == .stalled ? Color(red: 0.98, green: 0.69, blue: 0.20) : Color(red: 0.15, green: 0.82, blue: 0.96),
-                    cornerRadius: 13,
-                    lineWidth: 1.8
-                )
-            }
-            .overlay {
-                GlassShimmerOverlay(isHovered: hovered, cornerRadius: 13)
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .strokeBorder(
-                        LinearGradient(
-                            stops: [
-                                .init(
-                                    color: (item.isOriginal ? Color(red: 0.75, green: 0.55, blue: 1.0) : (item.running ? borderTint : Color.white))
-                                        .opacity(hovered ? 0.70 : (item.running ? 0.42 : 0.20)),
-                                    location: 0.0
-                                ),
-                                .init(
-                                    color: (item.isOriginal ? Color(red: 0.52, green: 0.32, blue: 0.98) : borderTint)
-                                        .opacity(hovered ? 0.45 : (item.running ? 0.28 : 0.08)),
-                                    location: 0.40
-                                ),
-                                .init(
-                                    color: Color.primary.opacity(hovered ? 0.16 : 0.05),
-                                    location: 1.0
-                                )
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
-                        lineWidth: (item.isOriginal || hovered || activity.state == .runningTask || activity.state == .stalled || activity.state == .needsAttention) ? 1.5 : 1
-                    )
-            }
-            .shadow(
-                color: Color.black.opacity(colorScheme == .dark ? 0.35 : 0.06),
-                radius: 2.5,
-                x: 0,
-                y: 1.2
-            )
-            .shadow(
-                color: (item.isOriginal ? Color(red: 0.52, green: 0.32, blue: 0.98) : borderTint)
-                    .opacity(item.running || hovered ? (colorScheme == .dark ? 0.28 : 0.14) : 0.0),
-                radius: hovered ? 16 : 8,
-                x: 0,
-                y: hovered ? 5 : 2
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
-            .onTapGesture {
-                open()
-            }
-
-            // Bottom Instance Name Pill
+        VStack(alignment: .leading, spacing: 0) {
+            // MARK: Zone 1 — Unified Bento Card Header (38pt)
             HStack(alignment: .center, spacing: 6) {
+                PulsingStatusDot(
+                    active: item.running,
+                    activeColor: activity.state.color,
+                    pulse: item.running && (activity.state == .runningTask || activity.state == .stalled || activity.state == .needsAttention)
+                )
+
                 if item.isOriginal {
                     HStack(spacing: 3) {
                         Image(systemName: "sparkles")
                             .font(.system(size: 8, weight: .bold))
                         Text("MAIN 01")
-                            .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                            .font(.system(size: 9.5, weight: .bold, design: .monospaced))
                     }
                     .foregroundStyle(.white)
                     .padding(.horizontal, 6)
                     .frame(height: 18)
                     .background {
                         RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(LinearGradient(colors: [Color(red: 0.52, green: 0.28, blue: 0.98), Color(red: 0.22, green: 0.46, blue: 1.0)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                            .shadow(color: Color(red: 0.50, green: 0.28, blue: 0.98).opacity(0.35), radius: 4, y: 1)
+                            .fill(
+                                LinearGradient(
+                                    colors: [Color(red: 0.48, green: 0.30, blue: 0.96), Color(red: 0.24, green: 0.48, blue: 0.98)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
                     }
                 } else {
                     Text("#\(String(format: "%02d", item.index))")
                         .font(.system(size: 10, weight: .bold, design: .monospaced))
-                        .foregroundStyle(item.running ? borderTint : accent)
+                        .foregroundStyle(item.running ? borderTint : .secondary)
                         .padding(.horizontal, 5.5)
                         .frame(height: 18)
                         .background {
                             RoundedRectangle(cornerRadius: 4.5, style: .continuous)
-                                .fill(item.running ? borderTint.opacity(0.18) : accent.opacity(0.12))
+                                .fill(item.running ? borderTint.opacity(0.15) : Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.05))
                         }
-                }
-
-                if !meta.tag.isEmpty {
-                    Text(meta.tag)
-                        .font(.system(size: 9.5, weight: .bold))
-                        .foregroundStyle(meta.color)
-                        .padding(.horizontal, 5)
-                        .frame(height: 17)
-                        .background(Capsule().fill(meta.color.opacity(colorScheme == .dark ? 0.20 : 0.12)))
-                        .overlay(Capsule().strokeBorder(meta.color.opacity(0.35), lineWidth: 0.8))
                 }
 
                 Text(meta.nickname.isEmpty ? item.name : meta.nickname)
@@ -7945,14 +7694,31 @@ struct InstanceThumbnailTile: View {
                     .foregroundStyle(.primary)
                     .lineLimit(1)
 
-                if !meta.nickname.isEmpty {
-                    Text("(\(item.name.replacingOccurrences(of: "Antigravity", with: "").trimmingCharacters(in: .whitespaces).isEmpty ? "Main" : item.name.replacingOccurrences(of: "Antigravity", with: "").trimmingCharacters(in: .whitespaces)))")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                if !meta.tag.isEmpty {
+                    Text(meta.tag)
+                        .font(.system(size: 9.5, weight: .semibold))
+                        .foregroundStyle(meta.color)
+                        .padding(.horizontal, 5.5)
+                        .frame(height: 17)
+                        .background(Capsule().fill(meta.color.opacity(colorScheme == .dark ? 0.16 : 0.10)))
+                        .overlay(Capsule().strokeBorder(meta.color.opacity(0.28), lineWidth: 0.75))
                 }
 
                 Spacer(minLength: 4)
+
+                if hasPendingUpgrade {
+                    Button(action: upgrade) {
+                        Text("↑ v\(sourceVersion)")
+                            .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                            .foregroundStyle(.orange)
+                            .padding(.horizontal, 6)
+                            .frame(height: 18)
+                            .background(Capsule().fill(Color.orange.opacity(colorScheme == .dark ? 0.16 : 0.10)))
+                            .overlay(Capsule().strokeBorder(Color.orange.opacity(0.32), lineWidth: 0.75))
+                    }
+                    .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.92, hoverScale: 1.04))
+                    .help("可升级至 v\(sourceVersion)")
+                }
 
                 if isShownInDock {
                     Button {
@@ -7965,10 +7731,10 @@ struct InstanceThumbnailTile: View {
                                 .font(.system(size: 9, weight: .bold, design: .rounded))
                         }
                         .foregroundStyle(Color.cyan)
-                        .padding(.horizontal, 5)
-                        .frame(height: 17)
-                        .background(Capsule().fill(Color.cyan.opacity(colorScheme == .dark ? 0.18 : 0.12)))
-                        .overlay(Capsule().strokeBorder(Color.cyan.opacity(0.38), lineWidth: 0.8))
+                        .padding(.horizontal, 5.5)
+                        .frame(height: 18)
+                        .background(Capsule().fill(Color.cyan.opacity(colorScheme == .dark ? 0.16 : 0.10)))
+                        .overlay(Capsule().strokeBorder(Color.cyan.opacity(0.32), lineWidth: 0.75))
                     }
                     .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.92, hoverScale: 1.05))
                     .help("当前已在 macOS Dock 栏显示 · 点击从 Dock 栏移除")
@@ -7979,51 +7745,194 @@ struct InstanceThumbnailTile: View {
                 }
 
                 if !meta.notes.isEmpty {
-                    HStack(spacing: 3) {
-                        Image(systemName: "note.text")
-                            .font(.system(size: 9))
-                    }
-                    .foregroundStyle(.orange)
-                    .padding(.horizontal, 4.5)
-                    .frame(height: 16)
-                    .background(Capsule().fill(Color.orange.opacity(0.18)))
-                    .help("备注：\(meta.notes)")
+                    Image(systemName: "note.text")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.orange)
+                        .frame(width: 18, height: 18)
+                        .background(Circle().fill(Color.orange.opacity(0.14)))
+                        .help("备注：\(meta.notes)")
                 }
 
                 Button(action: editMeta) {
                     Image(systemName: meta.hasCustomContent ? "tag.fill" : "tag")
-                        .font(.system(size: 9.5, weight: .medium))
-                        .foregroundStyle(meta.hasCustomContent ? meta.color : .secondary.opacity(0.8))
-                        .frame(width: 15, height: 15)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(meta.hasCustomContent ? meta.color : .secondary.opacity(0.75))
+                        .frame(width: 20, height: 20)
                 }
-                .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.90, hoverScale: 1.10))
+                .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.90, hoverScale: 1.08))
                 .help("编辑此实例的项目别名与标签")
+
+                Button {
+                    showMorePopover.toggle()
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(hovered || showMorePopover ? Color.primary : Color.secondary)
+                        .frame(width: 22, height: 22)
+                        .background {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Color.primary.opacity(hovered || showMorePopover ? (colorScheme == .dark ? 0.12 : 0.08) : 0.0))
+                        }
+                }
+                .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.92, hoverScale: 1.05))
+                .popover(isPresented: $showMorePopover, arrowEdge: .bottom) {
+                    tilePopoverMenu
+                }
             }
-            .padding(.horizontal, 11)
-            .frame(height: 26)
-            .background {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(item.isOriginal
-                        ? Color(red: 0.52, green: 0.28, blue: 0.98).opacity(colorScheme == .dark ? 0.14 : 0.08)
-                        : Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.05))
-            }
-            .overlay {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .strokeBorder(
+            .padding(.horizontal, 12)
+            .frame(height: 38)
+
+            // Subtle Hairline Divider
+            Rectangle()
+                .fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.06))
+                .frame(height: 0.8)
+
+            // MARK: Zone 2 — 16:10 Live Viewport Container
+            ZStack {
+                Rectangle()
+                    .fill(
                         LinearGradient(
-                            stops: [
-                                .init(color: Color.white.opacity(colorScheme == .dark ? 0.25 : 0.40), location: 0.0),
-                                .init(color: (item.isOriginal ? Color(red: 0.52, green: 0.32, blue: 0.98) : Color.primary).opacity(hovered ? 0.24 : 0.08), location: 1.0)
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        ),
-                        lineWidth: 0.95
+                            colors: item.running
+                                ? [Color(red: 0.05, green: 0.06, blue: 0.09), Color(red: 0.08, green: 0.10, blue: 0.15)]
+                                : (colorScheme == .dark
+                                    ? [Color(red: 0.06, green: 0.07, blue: 0.10), Color(red: 0.08, green: 0.09, blue: 0.13)]
+                                    : [Color(red: 0.11, green: 0.13, blue: 0.18), Color(red: 0.15, green: 0.17, blue: 0.23)]),
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
                     )
+
+                if item.running, let thumbnail {
+                    Image(nsImage: thumbnail)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(height: density.screenHeight)
+                        .clipped()
+                        .opacity(0.97)
+                } else if item.running {
+                    syntheticLiveScreen
+                } else {
+                    stoppedScreen
+                }
+
+                // Minimal Viewport Top Floating Bar (State Pill + Telemetry Capsule)
+                VStack {
+                    HStack(alignment: .center, spacing: 6) {
+                        HStack(alignment: .center, spacing: 4.5) {
+                            Circle()
+                                .fill(item.running ? activity.state.color : Color.white.opacity(0.35))
+                                .frame(width: 5.5, height: 5.5)
+                            Text(item.running ? (item.isHidden ? "\(activity.state.label) · 后台实时" : activity.state.label) : "未启动")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundStyle(.white.opacity(item.running ? 0.95 : 0.68))
+                        }
+                        .padding(.horizontal, 7.5)
+                        .frame(height: 20)
+                        .background(Capsule().fill(Color.black.opacity(item.running ? 0.58 : 0.38)))
+                        .overlay(Capsule().strokeBorder(Color.white.opacity(item.running ? 0.18 : 0.10), lineWidth: 0.75))
+
+                        Spacer()
+
+                        InstanceThumbnailResourceBadge(isRunning: item.running, metric: resourceMetric)
+                            .equatable()
+
+                        if let duration {
+                            HStack(alignment: .center, spacing: 3) {
+                                Image(systemName: "stopwatch")
+                                    .font(.system(size: 8.5))
+                                Text(duration)
+                                    .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                            }
+                            .foregroundStyle(Color.cyan)
+                            .padding(.horizontal, 6.5)
+                            .frame(height: 20)
+                            .background(Capsule().fill(Color.black.opacity(0.58)))
+                            .overlay(Capsule().strokeBorder(Color.cyan.opacity(0.30), lineWidth: 0.75))
+                        }
+                    }
+                    .padding(9)
+
+                    Spacer()
+                }
+
+                // Center Play / Switch Action Overlay
+                centerPlayOverlay
             }
+            .frame(height: density.screenHeight)
+            .clipped()
+            .contentShape(Rectangle())
+            .onTapGesture {
+                open()
+            }
+
+            // Subtle Hairline Divider
+            Rectangle()
+                .fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.06))
+                .frame(height: 0.8)
+
+            // MARK: Zone 3 — Bento Card Footer (34pt)
+            HStack(alignment: .center, spacing: 6) {
+                Image(systemName: item.running ? activity.state.symbol : (activity.currentAction.hasPrefix("上次：") ? "clock.arrow.circlepath" : "power.circle"))
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(item.running ? activity.state.color : Color.secondary.opacity(0.75))
+                    .frame(width: 13, height: 13, alignment: .center)
+
+                Text(item.running ? activity.currentAction : (activity.currentAction.hasPrefix("上次：") ? activity.currentAction : "点击缩略图启动实例"))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(item.running ? Color.primary.opacity(0.90) : Color.secondary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 6)
+
+                HStack(alignment: .center, spacing: 5) {
+                    if !activity.workspace.isEmpty {
+                        Text(activity.workspace)
+                            .font(.system(size: 10, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    } else if !activity.lastUpdatedLabel.isEmpty {
+                        Text(activity.lastUpdatedLabel)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                    } else {
+                        Text(item.profile)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+
+                    if diskUsage.totalDataBytes > 0 {
+                        Text("· 💾 \(diskUsage.formattedTotalData)")
+                            .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.secondary.opacity(0.85))
+                            .lineLimit(1)
+                            .help("独立工作空间与数据占用：\(diskUsage.formattedTotalData)（工作空间 \(diskUsage.formattedProfile) · 缓存 \(diskUsage.formattedUserData) · 程序包 \(diskUsage.formattedAppBundle)）")
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 34)
         }
-        .scaleEffect(hovered ? 1.018 : 1.0)
-        .animation(.spring(response: 0.24, dampingFraction: 0.78), value: hovered)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .systemSurface(
+            radius: 16,
+            isHighlighted: hovered || item.isOriginal,
+            tint: item.isOriginal ? Color(red: 0.52, green: 0.32, blue: 0.98) : (item.running ? borderTint : nil)
+        )
+        .overlay {
+            AmbientGlowBorder(
+                isActive: item.running && (activity.state == .runningTask || activity.state == .stalled || activity.state == .needsAttention),
+                color: activity.state == .stalled ? Color(red: 0.98, green: 0.69, blue: 0.20) : Color(red: 0.15, green: 0.82, blue: 0.96),
+                cornerRadius: 16,
+                lineWidth: 1.8
+            )
+        }
+        .overlay {
+            GlassShimmerOverlay(isHovered: hovered, cornerRadius: 16)
+        }
+        .opacity(item.running ? 1.0 : (hovered ? 0.98 : 0.88))
+        .scaleEffect(hovered ? 1.012 : 1.0)
+        .animation(.spring(response: 0.24, dampingFraction: 0.80), value: hovered)
         .onHover { hovered = $0 }
     }
 
@@ -8031,24 +7940,27 @@ struct InstanceThumbnailTile: View {
     @ViewBuilder
     private var centerPlayOverlay: some View {
         if !item.running {
-            // Stopped: Prominent Play Button over Instance Emblem (exact match to screenshot)
             Button(action: open) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color.black.opacity(hovered ? 0.78 : 0.58))
-                        .frame(width: 54, height: 40)
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .strokeBorder(Color.white.opacity(hovered ? 0.35 : 0.18), lineWidth: 1)
-                        }
+                HStack(spacing: 6) {
                     Image(systemName: "play.fill")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundStyle(.white.opacity(hovered ? 1.0 : 0.82))
-                        .offset(x: 1)
+                        .font(.system(size: 11.5, weight: .bold))
+                    Text(hovered ? "启动实例" : "就绪")
+                        .font(.system(size: 11.5, weight: .semibold))
                 }
+                .foregroundStyle(.white.opacity(hovered ? 0.98 : 0.82))
+                .padding(.horizontal, 13)
+                .frame(height: 32)
+                .background {
+                    Capsule()
+                        .fill(hovered ? accent.opacity(0.88) : Color.white.opacity(0.08))
+                }
+                .overlay {
+                    Capsule()
+                        .strokeBorder(Color.white.opacity(hovered ? 0.38 : 0.16), lineWidth: 0.9)
+                }
+                .shadow(color: Color.black.opacity(0.32), radius: 8, y: 2)
             }
-            .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.92, hoverScale: 1.08))
-            .scaleEffect(hovered ? 1.08 : 1.0)
+            .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.94, hoverScale: 1.05))
         } else if hovered {
             // Running & Hovered: Quick Focus + Collapse/Hide buttons
             HStack(alignment: .center, spacing: 8) {
@@ -8089,26 +8001,38 @@ struct InstanceThumbnailTile: View {
         }
     }
 
-    // Stopped Screen Backdrop
+    // Stopped Screen Backdrop (Calm Studio Dot-Matrix Viewport)
     private var stoppedScreen: some View {
         ZStack {
-            // Subtle perspective window panes (echoing the screenshot's geometric window icon)
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            Canvas { context, size in
+                let step: CGFloat = 16
+                let dotRadius: CGFloat = 0.85
+                let dotColor = Color.white.opacity(0.07)
+                var y: CGFloat = 12
+                while y < size.height {
+                    var x: CGFloat = 12
+                    while x < size.width {
+                        let rect = CGRect(x: x - dotRadius, y: y - dotRadius, width: dotRadius * 2, height: dotRadius * 2)
+                        context.fill(Path(ellipseIn: rect), with: .color(dotColor))
+                        x += step
+                    }
+                    y += step
+                }
+            }
+
+            Circle()
                 .fill(
-                    LinearGradient(
-                        colors: item.isOriginal
-                            ? [Color(red: 0.20, green: 0.44, blue: 0.92).opacity(0.45), Color(red: 0.36, green: 0.25, blue: 0.85).opacity(0.25)]
-                            : [accent.opacity(0.32), Color.indigo.opacity(0.18)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
+                    RadialGradient(
+                        colors: [
+                            (item.isOriginal ? Color(red: 0.52, green: 0.32, blue: 0.98) : accent).opacity(hovered ? 0.22 : 0.10),
+                            Color.clear
+                        ],
+                        center: .center,
+                        startRadius: 4,
+                        endRadius: 80
                     )
                 )
-                .frame(width: 86, height: 68)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.16), lineWidth: 1)
-                }
-                .offset(y: -4)
+                .frame(width: 160, height: 120)
         }
     }
 
@@ -8551,8 +8475,8 @@ struct InstanceCard: View {
                 }
                 .frame(height: 22)
 
-                // Bottom Row: Uniform 22pt Technical Pills
-                HStack(alignment: .center, spacing: 7) {
+                // Bottom Row: Studio Monospace Telemetry Bar + Resource Badges
+                HStack(alignment: .center, spacing: 8) {
                     if hasPendingUpgrade {
                         metaPill(
                             icon: "arrow.up.right.circle.fill",
@@ -8563,42 +8487,45 @@ struct InstanceCard: View {
                             bold: true
                         )
                     } else {
-                        metaPill(
-                            icon: "tag.fill",
-                            text: "v\(item.version)",
-                            foreground: .secondary,
-                            background: Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.04),
-                            border: Color.primary.opacity(0.06)
-                        )
-                    }
-
-                    metaPill(
-                        icon: "folder.fill",
-                        text: item.profile,
-                        foreground: .secondary,
-                        background: Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.04),
-                        border: Color.primary.opacity(0.06)
-                    )
-
-                    if !item.isOriginal {
-                        metaPill(
-                            icon: "link",
-                            text: "\(item.callbackScheme)://",
-                            foreground: .secondary.opacity(0.85),
-                            background: Color.primary.opacity(colorScheme == .dark ? 0.045 : 0.03),
-                            border: Color.primary.opacity(0.05)
-                        )
-                    }
-
-                    if diskUsage.totalDataBytes > 0 {
-                        metaPill(
-                            icon: "internaldrive",
-                            text: "💾 \(diskUsage.formattedTotalData)",
-                            foreground: .secondary,
-                            background: Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.04),
-                            border: Color.primary.opacity(0.06)
-                        )
-                        .help("工作空间与存储：工作空间 \(diskUsage.formattedProfile) · 缓存 \(diskUsage.formattedUserData) · 程序包 \(diskUsage.formattedAppBundle)")
+                        HStack(alignment: .center, spacing: 6) {
+                            Text("v\(item.version)")
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                            Text("·")
+                                .foregroundStyle(.tertiary)
+                            HStack(spacing: 3.5) {
+                                Image(systemName: "folder")
+                                    .font(.system(size: 9.5, weight: .medium))
+                                Text(item.profile)
+                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                            }
+                            .foregroundStyle(.secondary)
+                            if !item.isOriginal {
+                                Text("·")
+                                    .foregroundStyle(.tertiary)
+                                Text("\(item.callbackScheme)://")
+                                    .font(.system(size: 10.5, design: .monospaced))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            if diskUsage.totalDataBytes > 0 {
+                                Text("·")
+                                    .foregroundStyle(.tertiary)
+                                Text("💾 \(diskUsage.formattedTotalData)")
+                                    .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .help("工作空间与存储：工作空间 \(diskUsage.formattedProfile) · 缓存 \(diskUsage.formattedUserData) · 程序包 \(diskUsage.formattedAppBundle)")
+                            }
+                        }
+                        .padding(.horizontal, 9)
+                        .frame(height: 21)
+                        .background {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Color.primary.opacity(colorScheme == .dark ? 0.05 : 0.035))
+                        }
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 0.8)
+                        }
                     }
 
                     InstanceCardResourceBadges(
@@ -8613,7 +8540,7 @@ struct InstanceCard: View {
                             icon: meta.hasCustomContent ? "tag.fill" : "tag",
                             text: meta.hasCustomContent ? (meta.nickname.isEmpty ? meta.tag : meta.nickname) : "添加备注",
                             foreground: meta.hasCustomContent ? meta.color : .secondary,
-                            background: meta.hasCustomContent ? meta.color.opacity(colorScheme == .dark ? 0.14 : 0.08) : Color.primary.opacity(colorScheme == .dark ? 0.06 : 0.04),
+                            background: meta.hasCustomContent ? meta.color.opacity(colorScheme == .dark ? 0.14 : 0.08) : Color.primary.opacity(colorScheme == .dark ? 0.05 : 0.035),
                             border: meta.hasCustomContent ? meta.color.opacity(0.28) : Color.primary.opacity(0.06)
                         )
                     }
@@ -10205,7 +10132,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.26"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.27"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
@@ -10259,19 +10186,28 @@ struct ContentView: View {
                 Rectangle().fill(.regularMaterial)
                 LinearGradient(
                     colors: [
-                        accent.opacity(colorScheme == .dark ? 0.09 : 0.05),
+                        accent.opacity(colorScheme == .dark ? 0.08 : 0.045),
                         Color.clear,
-                        Color.purple.opacity(colorScheme == .dark ? 0.05 : 0.025)
+                        Color.indigo.opacity(colorScheme == .dark ? 0.06 : 0.025)
                     ],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
+                )
+                RadialGradient(
+                    colors: [
+                        Color(red: 0.45, green: 0.30, blue: 0.96).opacity(colorScheme == .dark ? 0.07 : 0.03),
+                        Color.clear
+                    ],
+                    center: .topLeading,
+                    startRadius: 20,
+                    endRadius: 520
                 )
             }
             .ignoresSafeArea()
 
             VStack(spacing: 0) {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 14) {
                         headerDashboard
                         metricsStrip
                         controlToolbar
@@ -10287,8 +10223,8 @@ struct ContentView: View {
                             clonesSection
                         }
                     }
-                    .padding(.horizontal, 26)
-                    .padding(.top, 22)
+                    .padding(.horizontal, 24)
+                    .padding(.top, 18)
                     .padding(.bottom, (store.busy || !store.output.isEmpty) ? (logExpanded ? 230 : 76) : 28)
                 }
             }
@@ -10416,79 +10352,81 @@ struct ContentView: View {
         .preferredColorScheme(store.appTheme.colorScheme)
     }
 
-    // MARK: - Top Dashboard Header
+    // MARK: - Top Dashboard Header (Aether Studio Bento Header)
 
     private var headerDashboard: some View {
         HStack(alignment: .center, spacing: 16) {
-            HStack(alignment: .center, spacing: 14) {
+            HStack(alignment: .center, spacing: 13) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .fill(
                             LinearGradient(
-                                colors: [Color(red: 0.19, green: 0.44, blue: 0.96), Color(red: 0.36, green: 0.27, blue: 0.88)],
+                                colors: [
+                                    Color(red: 0.11, green: 0.13, blue: 0.22),
+                                    Color(red: 0.22, green: 0.18, blue: 0.42)
+                                ],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing
                             )
                         )
-                        .frame(width: 44, height: 44)
+                        .frame(width: 42, height: 42)
                         .overlay {
-                            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
                                 .strokeBorder(
                                     LinearGradient(
                                         stops: [
-                                            .init(color: Color.white.opacity(0.60), location: 0.0),
-                                            .init(color: Color.white.opacity(0.12), location: 1.0)
+                                            .init(color: Color.white.opacity(0.45), location: 0.0),
+                                            .init(color: accent.opacity(0.35), location: 0.5),
+                                            .init(color: Color(red: 0.52, green: 0.32, blue: 0.98).opacity(0.25), location: 1.0)
                                         ],
-                                        startPoint: .top,
-                                        endPoint: .bottom
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
                                     ),
-                                    lineWidth: 1.15
+                                    lineWidth: 1.1
                                 )
                         }
-                        .shadow(color: accent.opacity(0.36), radius: 10, x: 0, y: 3.5)
+                        .shadow(color: accent.opacity(colorScheme == .dark ? 0.28 : 0.16), radius: 8, x: 0, y: 3)
+
                     Image(systemName: "square.stack.3d.up.fill")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(.white)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [.white, Color(red: 0.72, green: 0.86, blue: 1.0)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
                 }
 
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 2.5) {
                     HStack(alignment: .center, spacing: 8) {
                         Text("Aether Antigravity Multiplexer")
-                            .font(.system(size: 19, weight: .bold))
+                            .font(.system(size: 18, weight: .bold))
+                            .tracking(-0.2)
                             .lineLimit(1)
 
-                        HStack(alignment: .center, spacing: 6) {
+                        HStack(alignment: .center, spacing: 5.5) {
                             Text("v\(appVersion)")
-                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                .font(.system(size: 10.5, weight: .semibold, design: .monospaced))
                                 .foregroundStyle(accent)
                             Circle()
                                 .fill(Color.green)
-                                .frame(width: 5, height: 5)
+                                .frame(width: 4.5, height: 4.5)
                             Text("Kernel Direct")
-                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
                                 .foregroundStyle(.green)
                         }
                         .padding(.horizontal, 7)
-                        .frame(height: 20)
-                        .background(Capsule().fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.045)))
+                        .frame(height: 19)
+                        .background(Capsule().fill(Color.primary.opacity(colorScheme == .dark ? 0.07 : 0.04)))
                         .overlay {
                             Capsule()
-                                .strokeBorder(
-                                    LinearGradient(
-                                        stops: [
-                                            .init(color: Color.white.opacity(colorScheme == .dark ? 0.25 : 0.40), location: 0.0),
-                                            .init(color: Color.green.opacity(0.30), location: 1.0)
-                                        ],
-                                        startPoint: .top,
-                                        endPoint: .bottom
-                                    ),
-                                    lineWidth: 0.95
-                                )
+                                .strokeBorder(Color.primary.opacity(0.10), lineWidth: 0.85)
                         }
                         .help("内核直接通信：使用 macOS Darwin libproc 直读进程指标，0 子进程开销，微秒级能效")
                     }
                     Text(store.tr(.appSubtitle))
-                        .font(.system(size: 12))
+                        .font(.system(size: 11.5))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -10686,103 +10624,95 @@ struct ContentView: View {
                     activeColor: store.activeTaskCount > 0 ? Color(red: 0.15, green: 0.82, blue: 0.96) : .green,
                     pulse: store.activeTaskCount > 0
                 )
-                VStack(alignment: .leading, spacing: 1) {
-                    HStack(spacing: 4.5) {
-                        Text("\(store.runningCount)/\(store.instances.count)")
-                            .font(.system(size: 13, weight: .bold, design: .rounded))
-                        Text("运行中")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.secondary)
-                    }
-                    Text(store.activeTaskCount > 0 ? "⚡ \(store.activeTaskCount) 个任务执行中" : "所有实例空闲")
-                        .font(.system(size: 10))
+                HStack(spacing: 5) {
+                    Text("\(store.runningCount)/\(store.instances.count)")
+                        .font(.system(size: 12.5, weight: .bold, design: .monospaced))
+                    Text("运行中")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                    Text("·")
+                        .foregroundStyle(.tertiary)
+                    Text(store.activeTaskCount > 0 ? "⚡ \(store.activeTaskCount) 任务" : "空闲")
+                        .font(.system(size: 10.5, weight: .medium))
                         .foregroundStyle(store.activeTaskCount > 0 ? Color(red: 0.15, green: 0.82, blue: 0.96) : .secondary)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 4)
                 if store.globalCpuHistory.count >= 2 {
                     SparklineView(samples: store.globalCpuHistory.map(\.value), minVal: 0, color: store.activeTaskCount > 0 ? Color(red: 0.15, green: 0.82, blue: 0.96) : accent)
-                        .frame(width: 40, height: 20)
+                        .frame(width: 38, height: 16)
                         .opacity(0.85)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 13)
 
-            Divider().frame(height: 22).opacity(0.5)
+            Divider().frame(height: 16).opacity(0.45)
 
             // Segment 2: 存储与数据
-            HStack(spacing: 8) {
+            HStack(spacing: 7) {
                 Image(systemName: "internaldrive.fill")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 11.5, weight: .semibold))
                     .foregroundStyle(.cyan)
-                VStack(alignment: .leading, spacing: 1) {
-                    HStack(spacing: 4.5) {
-                        Text(store.totalDiskUsageBytes > 0 ? store.formattedTotalDiskUsage : "统计中…")
-                            .font(.system(size: 13, weight: .bold, design: .rounded))
-                        Text("存储占用")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.secondary)
-                    }
-                    Text("\(store.instances.count) 个独立实例")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
+                HStack(spacing: 4.5) {
+                    Text(store.totalDiskUsageBytes > 0 ? store.formattedTotalDiskUsage : "统计中…")
+                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    Text("· \(store.instances.count) 实例")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 4)
                 if store.globalRamHistory.count >= 2 {
                     SparklineView(samples: store.globalRamHistory.map(\.value), minVal: 0, color: .cyan)
-                        .frame(width: 40, height: 20)
+                        .frame(width: 38, height: 16)
                         .opacity(0.85)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 13)
 
-            Divider().frame(height: 22).opacity(0.5)
+            Divider().frame(height: 16).opacity(0.45)
 
             // Segment 3: 官方主版本
-            HStack(spacing: 8) {
+            HStack(spacing: 7) {
                 Image(systemName: "checkmark.shield.fill")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 11.5, weight: .semibold))
                     .foregroundStyle(.indigo)
-                VStack(alignment: .leading, spacing: 1) {
-                    HStack(spacing: 4.5) {
-                        Text(store.sourceVersion == "—" ? "—" : "v\(store.sourceVersion)")
-                            .font(.system(size: 13, weight: .bold, design: .rounded))
-                        Text("主程序")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.secondary)
-                    }
-                    Text("/Applications/Antigravity.app")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
+                HStack(spacing: 4.5) {
+                    Text(store.sourceVersion == "—" ? "—" : "v\(store.sourceVersion)")
+                        .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    Text("官方主程序")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 13)
 
-            Divider().frame(height: 22).opacity(0.5)
+            Divider().frame(height: 16).opacity(0.45)
 
             // Segment 4: 兼容状态
-            HStack(spacing: 8) {
+            HStack(spacing: 7) {
                 Image(systemName: store.compatibility == "已支持本机版本" ? "wrench.and.screwdriver.fill" : "exclamationmark.triangle.fill")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 11.5, weight: .semibold))
                     .foregroundStyle(compatibilityColor)
-                VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 4.5) {
                     Text(store.compatibility)
-                        .font(.system(size: 12.5, weight: .bold))
+                        .font(.system(size: 11.5, weight: .semibold))
                         .foregroundStyle(compatibilityColor)
                         .lineLimit(1)
-                    Text(store.pendingUpgrades.isEmpty ? "全部副本最新" : "\(store.pendingUpgrades.count) 个可升级")
-                        .font(.system(size: 10))
+                    Text("·")
                         .foregroundStyle(.tertiary)
+                    Text(store.pendingUpgrades.isEmpty ? "全最新" : "\(store.pendingUpgrades.count) 可升级")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 14)
+            .padding(.horizontal, 13)
 
             // Far right: Expand toggle button
             Button {
@@ -10791,19 +10721,19 @@ struct ContentView: View {
                 }
             } label: {
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 10.5, weight: .semibold))
+                    .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 26, height: 26)
-                    .background(Color.primary.opacity(0.04))
+                    .frame(width: 24, height: 24)
+                    .background(Color.primary.opacity(0.05))
                     .clipShape(Circle())
             }
             .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.92, hoverScale: 1.06))
-            .padding(.trailing, 10)
+            .padding(.trailing, 8)
             .help("展开大图监控卡片与详细指标")
         }
-        .padding(.vertical, 8)
-        .frame(height: 48)
-        .systemSurface(radius: 12)
+        .padding(.vertical, 6)
+        .frame(height: 38)
+        .systemSurface(radius: 11)
     }
 
     private var expandedMetricsGrid: some View {
@@ -11765,8 +11695,6 @@ struct ContentView: View {
                         )
                     }
                 }
-                .padding(20)
-                .systemSurface(radius: 20)
             }
         }
     }

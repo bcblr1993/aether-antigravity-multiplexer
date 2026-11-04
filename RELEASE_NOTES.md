@@ -1,3 +1,19 @@
+## v0.8.27 (Build 75) — 2026-11-04
+
+### 🎨 全新 Aether Studio Bento 极客暗黑卡片工作台视觉升级 (Aether Studio Bento UI Redesign)
+- **三段式一体化 Bento 实例卡片 (`InstanceThumbnailTile`)**：
+  - **Zone 1 — 紧凑卡片头 (38pt)**：将状态呼吸脉冲点、`MAIN 01` / `#02` 等宽编号、实例名称/别名、自定义标签、升级提示、`📌 Dock` 常驻徽章、AutoPilot 自托管胶囊与 `⋯` 操作菜单整合至卡片顶栏，彻底消除原版缩略图四角胶囊遮挡画面的问题。
+  - **Zone 2 — 16:10 纯净实时视窗**：仅保留极简状态角标与右上角单枚等宽资源遥测胶囊（CPU · RAM · 运行耗时）；未启动实例采用低噪点 **Studio 点阵待机视窗 (`stoppedScreen`)** 并自动降低视觉权重（`opacity: 0.88`），让运行中与执行任务的实例一眼凸显。
+  - **Zone 3 — 遥测底栏 (34pt)**：统一展示当前 Agent 实时任务动态、工作区路径与 `💾` 独立磁盘占用。
+- **去除“框套框”冗余容器 (`thumbnailWallSection`)**：
+  - 移除缩略图网格外层的套娃大底框，Bento 卡片直接在多点散射光暗曜石画布上呼吸排布，视觉更通透现代。
+- **紧凑顶部导航与单行等宽遥测条 (`headerDashboard` & `compactMetricsHUD`)**：
+  - 升级暗曜石微光应用徽标，并将顶部状态指标条收敛为 38pt 单行等宽遥测胶囊条，释放更多垂直空间给实例监控墙。
+- **详细列表模式胶囊收敛 (`InstanceCard`)**：
+  - 将列表模式底栏原本分散的多个边框胶囊收敛为一体式等宽技术元数据条（`v2.29.0 · 📁 profile · scheme:// · 💾 占用`）。
+- **全量自动化回归测试质量门禁保障**：
+  - 新增 `test_studio_bento_ui_redesign` 架构断言，全量 166 项自动化回归测试 100% 满分通过。
+
 ## v0.8.26 (Build 74) — 2026-11-04
 
 ### 📌 自定义任意多实例同时常驻 macOS Dock 栏 (Multi-Instance Custom Dock Residency)

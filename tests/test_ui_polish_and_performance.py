@@ -121,9 +121,9 @@ class TestUIPolishAndPerformance(unittest.TestCase):
         self.assertIn("func liquidGlassSheet(radius: CGFloat = 16) -> some View", self.content)
         self.assertIn(".liquidGlassSheet(radius: 16)", self.content)
 
-    def test_version_bump_0_8_26(self):
-        # Fallback version string in AntigravityMultiplexer.swift must be 0.8.26
-        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.26"', self.content)
+    def test_version_bump_0_8_27(self):
+        # Fallback version string in AntigravityMultiplexer.swift must be 0.8.27
+        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.27"', self.content)
 
     def test_upgrade_defaults_to_no_backup(self):
         # Upgrade confirmation dialog, upgradeAllEligible, and upgrade() must default to backup = false
@@ -286,6 +286,15 @@ class TestUIPolishAndPerformance(unittest.TestCase):
         self.assertIn("📌 从 Dock 栏移除此实例", self.content)
         self.assertIn("📌 在 Dock 栏显示此实例", self.content)
         self.assertIn("@MainActor func applicationDockMenu(_ sender: NSApplication) -> NSMenu?", self.content)
+
+    def test_studio_bento_ui_redesign(self):
+        # Verify the Aether Studio Bento 3-Zone Card architecture and decluttered layout
+        self.assertIn("// MARK: Zone 1 — Unified Bento Card Header (38pt)", self.content)
+        self.assertIn("// MARK: Zone 2 — 16:10 Live Viewport Container", self.content)
+        self.assertIn("// MARK: Zone 3 — Bento Card Footer (34pt)", self.content)
+        self.assertIn("// Stopped Screen Backdrop (Calm Studio Dot-Matrix Viewport)", self.content)
+        self.assertIn("// Bottom Row: Studio Monospace Telemetry Bar + Resource Badges", self.content)
+        self.assertIn(".opacity(item.running ? 1.0 : (hovered ? 0.98 : 0.88))", self.content)
 
 
 if __name__ == "__main__":
