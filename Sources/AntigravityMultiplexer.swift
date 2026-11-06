@@ -4521,6 +4521,31 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 try? encoded.write(to: storageFile, options: .atomic)
             }
         }
+        ensureCloneLocalNetworkIsolation(for: items)
+    }
+
+    private var localNetworkVerifiedBundles = Set<String>()
+
+    /// Automatically repairs legacy clones missing `NSLocalNetworkUsageDescription` or independent Mach-O `LC_UUID`
+    /// so every multi-instance clone can independently register with macOS `nehelper` / Local Network privacy.
+    private func ensureCloneLocalNetworkIsolation(for items: [ManagedInstance]) {
+        for item in items where !item.isOriginal {
+            guard !localNetworkVerifiedBundles.contains(item.bundleID) else { continue }
+            let plistURL = item.path.appendingPathComponent("Contents/Info.plist")
+            guard let info = NSDictionary(contentsOf: plistURL) else { continue }
+            localNetworkVerifiedBundles.insert(item.bundleID)
+            if info["NSLocalNetworkUsageDescription"] == nil,
+               let script = Bundle.main.url(forResource: "create_instance", withExtension: "py") {
+                let appPath = item.path.path
+                Task.detached(priority: .utility) {
+                    let proc = Process()
+                    proc.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+                    proc.arguments = [script.path, "--repair-local-network", appPath]
+                    try? proc.run()
+                    proc.waitUntilExit()
+                }
+            }
+        }
     }
 
     // MARK: - Multi-Instance Custom Dock Display (自定义任意多实例常驻 Dock 栏)
@@ -10189,7 +10214,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.28"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.29"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {

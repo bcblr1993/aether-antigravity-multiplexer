@@ -153,6 +153,66 @@ class CompatibilityTests(unittest.TestCase):
             self.assertIn("[PROGRESS:68]", output)
             self.assertIn("安全备份", output)
 
+    def test_patch_macho_uuid_replaces_lc_uuid_deterministically(self):
+        import struct
+        import uuid
+        from create_instance import patch_macho_uuid
+
+        with tempfile.TemporaryDirectory() as directory:
+            binary = pathlib.Path(directory) / "Antigravity"
+            orig_uuid = uuid.UUID("4c4c448f-5555-3144-a1ab-f1a26eb65237").bytes
+            header = struct.pack("<8I", 0xFEEDFACF, 0x0100000C, 0, 2, 1, 24, 0, 0)
+            lc_uuid = struct.pack("<2I", 0x1B, 24) + orig_uuid
+            binary.write_bytes(header + lc_uuid + b"payload")
+
+            patch_macho_uuid(binary, "local.antigravity.fifth")
+            patched = binary.read_bytes()
+            expected_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, "local.antigravity.fifth").bytes
+            self.assertEqual(patched[40:56], expected_uuid)
+            self.assertNotEqual(patched[40:56], orig_uuid)
+
+    def test_sign_bundle_patches_uuid_and_adds_local_network_usage_description(self):
+        import struct
+        import uuid
+        from create_instance import sign_bundle
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            app = root / "Antigravity Fifth.app"
+            work = root / "work"
+            work.mkdir()
+            (app / "Contents/MacOS").mkdir(parents=True)
+            (app / "Contents/Resources/bin").mkdir(parents=True)
+            helper = app / "Contents/Frameworks/Antigravity Helper.app"
+            (helper / "Contents/MacOS").mkdir(parents=True)
+
+            (app / "Contents/Info.plist").write_bytes(plistlib.dumps({
+                "CFBundleIdentifier": "local.antigravity.fifth",
+                "CFBundleExecutable": "Antigravity",
+            }))
+            (helper / "Contents/Info.plist").write_bytes(plistlib.dumps({
+                "CFBundleIdentifier": "com.google.antigravity.helper",
+                "CFBundleExecutable": "Antigravity Helper",
+            }))
+
+            orig_uuid = uuid.UUID("4c4c448f-5555-3144-a1ab-f1a26eb65237").bytes
+            macho_bytes = struct.pack("<8I", 0xFEEDFACF, 0x0100000C, 0, 2, 1, 24, 0, 0) + struct.pack("<2I", 0x1B, 24) + orig_uuid
+            (app / "Contents/MacOS/Antigravity").write_bytes(macho_bytes)
+            (helper / "Contents/MacOS/Antigravity Helper").write_bytes(macho_bytes)
+            (app / "Contents/Resources/bin/language_server").write_bytes(macho_bytes)
+
+            with patch("create_instance.run"):
+                sign_bundle(app, "Antigravity Fifth", "local.antigravity.fifth", work)
+
+            main_info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+            self.assertIn("NSLocalNetworkUsageDescription", main_info)
+            main_uuid = (app / "Contents/MacOS/Antigravity").read_bytes()[40:56]
+            helper_uuid = (helper / "Contents/MacOS/Antigravity Helper").read_bytes()[40:56]
+            ls_uuid = (app / "Contents/Resources/bin/language_server").read_bytes()[40:56]
+            self.assertEqual(main_uuid, uuid.uuid5(uuid.NAMESPACE_DNS, "local.antigravity.fifth").bytes)
+            self.assertEqual(helper_uuid, uuid.uuid5(uuid.NAMESPACE_DNS, "local.antigravity.fifth.helper").bytes)
+            self.assertEqual(ls_uuid, uuid.uuid5(uuid.NAMESPACE_DNS, "local.antigravity.fifth.language_server").bytes)
+
 
 if __name__ == "__main__":
     unittest.main()

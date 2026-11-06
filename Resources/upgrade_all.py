@@ -15,8 +15,8 @@ import tempfile
 import time
 from datetime import datetime
 
-from create_instance import (APP_SUPPORT, KNOWN, digest, patch_asar, replace_once,
-                             require, run, sign_bundle, operation_lock)
+from create_instance import (APP_SUPPORT, KNOWN, digest, needs_local_network_patch, patch_asar,
+                             patch_macho_uuid, replace_once, require, run, sign_bundle, operation_lock)
 
 KEY_PATTERN = re.compile(rb"[a-z0-9-]{6}-standalone-oauth-token")
 WORDS = {"Second": 2, "Third": 3, "Fourth": 4, "Fifth": 5, "Sixth": 6, "Seventh": 7}
@@ -69,6 +69,7 @@ def discover():
             require(len(key) == len(b"jetski-standalone-oauth-token"), f"凭据标识长度异常：{name}")
             results.append({"app": app, "name": name, "bundle": bundle, "version": info.get("CFBundleShortVersionString"),
                             "index": index, "profile": profile, "key": key,
+                            "needs_local_network_patch": needs_local_network_patch(app, bundle),
                             "user_data": pathlib.Path.home() / "Library/Application Support" / name})
     return sorted(results, key=lambda value: value["index"])
 
@@ -90,6 +91,7 @@ def build(source, target, instance, version, signing_dir):
     info["CFBundleName"] = "Antigravity"
     info["CFBundleDisplayName"] = name
     info["NSAppleEventsUsageDescription"] = f"{name} 需要控制其他应用来执行你发起的自动化任务。"
+    info["NSLocalNetworkUsageDescription"] = f"{name} 需要访问本地网络以连接局域网设备与开发服务。"
     for item in info.get("CFBundleURLTypes", []):
         item["CFBundleURLSchemes"] = [scheme]
     info["ElectronAsarIntegrity"]["Resources/app.asar"]["hash"] = asar_hash
@@ -199,7 +201,7 @@ def upgrade_all(source, dry_run=False, only_indices=None, build_only=False, skip
     print("[PROGRESS:5] 正在验证主程序版本与签名完整性...", flush=True)
     version = source_info(source)
     instances = discover()
-    pending = [item for item in instances if (version_tuple(item["version"]) < version_tuple(version) or (force and version_tuple(item["version"]) == version_tuple(version))) and (only_indices is None or item["index"] in only_indices)]
+    pending = [item for item in instances if (version_tuple(item["version"]) < version_tuple(version) or ((force or item.get("needs_local_network_patch", False)) and version_tuple(item["version"]) == version_tuple(version))) and (only_indices is None or item["index"] in only_indices)]
     print(f"[PROGRESS:12] 本机主实例：{version}；发现 {len(instances)} 个副本；待升级/重适配 {len(pending)} 个", flush=True)
     for item in pending:
         tag = f"{item['version']} → {version}" if item['version'] != version else f"{item['version']} (刷新适配补丁)"

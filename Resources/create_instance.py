@@ -239,15 +239,51 @@ def patch_asar(source, target, name, data_dir, scheme):
     return hashlib.sha256(header_json).hexdigest()
 
 
+def patch_macho_uuid(binary_path, seed):
+    if not binary_path.is_file():
+        return
+    data = bytearray(binary_path.read_bytes())
+    if len(data) < 32:
+        return
+    magic, _, _, _, ncmds, sizeofcmds, _, _ = struct.unpack_from("<8I", data, 0)
+    if magic != 0xFEEDFACF:
+        return
+    offset = 32
+    end = min(32 + sizeofcmds, len(data))
+    new_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, seed).bytes
+    while offset + 8 <= end:
+        cmd, cmdsize = struct.unpack_from("<2I", data, offset)
+        if cmd == 0x1B and cmdsize == 24:  # LC_UUID
+            data[offset + 8:offset + 24] = new_uuid
+            mode = binary_path.stat().st_mode
+            tmp_path = binary_path.with_name(f".{binary_path.name}.uuid-tmp-{os.getpid()}")
+            tmp_path.write_bytes(data)
+            os.chmod(tmp_path, mode)
+            os.replace(tmp_path, binary_path)
+            return
+        if cmdsize == 0:
+            break
+        offset += cmdsize
+
+
 def sign_bundle(app, name, bundle_id, work):
+    main_plist = app / "Contents/Info.plist"
+    if main_plist.is_file():
+        main_info = plistlib.loads(main_plist.read_bytes())
+        if "NSLocalNetworkUsageDescription" not in main_info:
+            main_info["NSLocalNetworkUsageDescription"] = f"{name} 需要访问本地网络以连接局域网设备与开发服务。"
+            main_plist.write_bytes(plistlib.dumps(main_info))
     framework = app / "Contents/Frameworks"
     for helper in framework.glob("*.app"):
         plist_path = helper / "Contents/Info.plist"
         info = plistlib.loads(plist_path.read_bytes())
-        require(info["CFBundleIdentifier"].startswith("com.google.antigravity"), "Helper 身份不符合预期")
-        info["CFBundleIdentifier"] = info["CFBundleIdentifier"].replace("com.google.antigravity", bundle_id)
+        require(info["CFBundleIdentifier"].startswith(("com.google.antigravity", bundle_id)), "Helper 身份不符合预期")
+        if info["CFBundleIdentifier"].startswith("com.google.antigravity"):
+            info["CFBundleIdentifier"] = info["CFBundleIdentifier"].replace("com.google.antigravity", bundle_id, 1)
         info["CFBundleDisplayName"] = helper.stem.replace("Antigravity", name)
         plist_path.write_bytes(plistlib.dumps(info))
+        helper_exe = helper / "Contents/MacOS" / info.get("CFBundleExecutable", helper.stem)
+        patch_macho_uuid(helper_exe, info["CFBundleIdentifier"])
         entitlements = {"com.apple.security.cs.allow-jit": True}
         if "(Plugin)" in helper.name:
             entitlements.update({"com.apple.security.cs.allow-unsigned-executable-memory": True,
@@ -255,6 +291,8 @@ def sign_bundle(app, name, bundle_id, work):
         ent_path = work / f"{helper.stem}.plist"
         ent_path.write_bytes(plistlib.dumps(entitlements))
         run("codesign", "--force", "--sign", "-", "--entitlements", str(ent_path), str(helper))
+    patch_macho_uuid(app / "Contents/MacOS/Antigravity", bundle_id)
+    patch_macho_uuid(app / "Contents/Resources/bin/language_server", f"{bundle_id}.language_server")
     main_ent = {"com.apple.security.automation.apple-events": True,
                 "com.apple.security.cs.allow-jit": True,
                 "com.apple.security.device.audio-input": True,
@@ -264,6 +302,49 @@ def sign_bundle(app, name, bundle_id, work):
     run("codesign", "--force", "--sign", "-", str(app / "Contents/Resources/bin/language_server"))
     run("codesign", "--force", "--sign", "-", "--entitlements", str(ent_path), str(app))
     run("codesign", "--verify", "--deep", "--strict", str(app))
+
+
+def needs_local_network_patch(app, bundle_id=None):
+    plist_path = app / "Contents/Info.plist"
+    if not plist_path.is_file():
+        return False
+    info = plistlib.loads(plist_path.read_bytes())
+    bid = bundle_id or info.get("CFBundleIdentifier", "")
+    if not bid.startswith("local.antigravity."):
+        return False
+    if "NSLocalNetworkUsageDescription" not in info:
+        return True
+    exe = app / "Contents/MacOS/Antigravity"
+    if not exe.is_file():
+        return False
+    data = exe.read_bytes()
+    if len(data) < 32:
+        return False
+    magic, _, _, _, ncmds, sizeofcmds, _, _ = struct.unpack_from("<8I", data, 0)
+    if magic != 0xFEEDFACF:
+        return False
+    expected_uuid = uuid.uuid5(uuid.NAMESPACE_DNS, bid).bytes
+    offset = 32
+    end = min(32 + sizeofcmds, len(data))
+    while offset + 8 <= end:
+        cmd, cmdsize = struct.unpack_from("<2I", data, offset)
+        if cmd == 0x1B and cmdsize == 24:
+            return bytes(data[offset + 8:offset + 24]) != expected_uuid
+        if cmdsize == 0:
+            break
+        offset += cmdsize
+    return False
+
+
+def repair_local_network(app):
+    info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+    bundle_id = info.get("CFBundleIdentifier", "")
+    require(bundle_id.startswith("local.antigravity."), f"非多开实例：{app}")
+    name = info.get("CFBundleDisplayName", app.stem)
+    with tempfile.TemporaryDirectory(prefix="antigravity-ln-fix-") as work_dir:
+        sign_bundle(app, name, bundle_id, pathlib.Path(work_dir))
+    run("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
+        "-f", str(app))
 
 
 def ordinal_name(number):
@@ -334,6 +415,7 @@ def create(index, source, destination):
             item["CFBundleURLSchemes"] = [scheme]
         app_info["ElectronAsarIntegrity"]["Resources/app.asar"]["hash"] = asar_hash
         app_info["NSAppleEventsUsageDescription"] = f"{name} 需要控制其他应用来执行你发起的自动化任务。"
+        app_info["NSLocalNetworkUsageDescription"] = f"{name} 需要访问本地网络以连接局域网设备与开发服务。"
         plist_path.write_bytes(plistlib.dumps(app_info))
         server_path = stage / "Contents/Resources/bin/language_server"
         server = bytearray(server_path.read_bytes())
@@ -370,12 +452,18 @@ def create(index, source, destination):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--index", type=int, required=True)
-    parser.add_argument("--source", type=pathlib.Path, required=True)
-    parser.add_argument("--destination", type=pathlib.Path, required=True)
+    parser.add_argument("--index", type=int)
+    parser.add_argument("--source", type=pathlib.Path)
+    parser.add_argument("--destination", type=pathlib.Path)
+    parser.add_argument("--repair-local-network", type=pathlib.Path, help=argparse.SUPPRESS)
     args = parser.parse_args()
     try:
         with operation_lock():
+            if args.repair_local_network is not None:
+                repair_local_network(args.repair_local_network.resolve())
+                return
+            require(args.index is not None and args.source is not None and args.destination is not None,
+                    "缺少 --index / --source / --destination 参数")
             create(args.index, args.source.resolve(), args.destination.resolve())
     except Exception as error:
         print(f"创建失败：{error}", file=sys.stderr, flush=True)

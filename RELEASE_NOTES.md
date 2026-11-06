@@ -1,3 +1,15 @@
+## v0.8.29 (Build 77) — 2026-11-06
+
+### 🌐 根治多开实例无法加入 macOS「本地网络」权限列表的死锁缺陷 (Independent Mach-O `LC_UUID` & Local Network Privacy Isolation)
+- **多开二进制独立 `LC_UUID` 派生 (`patch_macho_uuid`)**：
+  - 修复此前所有多开实例与原版 `Antigravity.app` 共用同一个 Mach-O `LC_UUID`（`4C4C448F-5555-3144-A1AB-F1A26EB65237`），导致多开实例发起局域网连接时 `UserEventAgent` / `nehelper` 误命中原版 `com.google.antigravity` 的 UUID 缓存而不弹窗、不将多开实例加入「系统设置 -> 隐私与安全性 -> 本地网络」列表，但内核 `NECP` 又按签名 ID 拦截丢包（`reason: NECP`）的死锁问题。
+  - 在重签名（`codesign`）前，将每个多开实例主程序 `Contents/MacOS/Antigravity`、各 `Helper.app` 及 `language_server` Mach-O 头部中的 `LC_UUID`（`cmd = 0x1b, cmdsize = 24`）原子替换为按对应 `bundle_id` 派生的唯一确定性 UUID（`uuid.uuid5(uuid.NAMESPACE_DNS, seed)`）。
+- **注入 `NSLocalNetworkUsageDescription` 与存量分身自动巡检自愈 (`ensureCloneLocalNetworkIsolation`)**：
+  - 在多开实例创建（`create_instance.py`）与升级重适配（`upgrade_all.py`）管线中自动向 `Info.plist` 写入 `NSLocalNetworkUsageDescription` 权限说明并执行 `lsregister -f` 刷新系统注册。
+  - 多开管理器启动与刷新实例时自动巡检存量多开副本，若发现旧版创建的实例缺失独立 `LC_UUID` 或 `NSLocalNetworkUsageDescription`，自动在后台静默完成二进制热替换、重签名与系统注册。
+- **全量自动化回归测试质量门禁保障**：
+  - 新增 `test_patch_macho_uuid_replaces_lc_uuid_deterministically` 与 `test_sign_bundle_patches_uuid_and_adds_local_network_usage_description` 回归测试，全量 169 项自动化回归测试 100% 满分通过。
+
 ## v0.8.28 (Build 76) — 2026-11-06
 
 ### ⚡️ 深度性能优化：根除后台高 CPU 占用与 120Hz Metal 图层持续重绘 (Ultra-Low CPU & 0Hz GPU Idle Optimization)
