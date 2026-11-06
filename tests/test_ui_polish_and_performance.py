@@ -121,9 +121,9 @@ class TestUIPolishAndPerformance(unittest.TestCase):
         self.assertIn("func liquidGlassSheet(radius: CGFloat = 16) -> some View", self.content)
         self.assertIn(".liquidGlassSheet(radius: 16)", self.content)
 
-    def test_version_bump_0_8_27(self):
-        # Fallback version string in AntigravityMultiplexer.swift must be 0.8.27
-        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.27"', self.content)
+    def test_version_bump_0_8_28(self):
+        # Fallback version string in AntigravityMultiplexer.swift must be 0.8.28
+        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.28"', self.content)
 
     def test_upgrade_defaults_to_no_backup(self):
         # Upgrade confirmation dialog, upgradeAllEligible, and upgrade() must default to backup = false
@@ -295,6 +295,14 @@ class TestUIPolishAndPerformance(unittest.TestCase):
         self.assertIn("// Stopped Screen Backdrop (Calm Studio Dot-Matrix Viewport)", self.content)
         self.assertIn("// Bottom Row: Studio Monospace Telemetry Bar + Resource Badges", self.content)
         self.assertIn(".opacity(item.running ? 1.0 : (hovered ? 0.98 : 0.88))", self.content)
+
+    def test_zero_hz_idle_gpu_and_occlusion_throttling(self):
+        # Verify 0Hz GPU steady-state rendering (no continuous .repeatForever in AmbientGlowBorder / PulsingStatusDot)
+        # and window occlusion detection + transcript tail caching
+        self.assertIn("window.occlusionState.contains(.visible)", self.content)
+        self.assertIn("parsedTailCache", self.content)
+        self.assertIn("lastDirectoryScanTime", self.content)
+        self.assertIn("parseTranscriptTailUncached", self.content)
 
 
 if __name__ == "__main__":

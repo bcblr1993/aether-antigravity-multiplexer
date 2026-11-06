@@ -1033,12 +1033,12 @@ struct AmbientGlowBorder: View {
         ZStack {
             if isActive {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(color.opacity(breathing ? 0.65 : 0.20), lineWidth: lineWidth)
-                    .blur(radius: breathing ? 4.5 : 1.5)
+                    .strokeBorder(color.opacity(breathing ? 0.48 : 0.20), lineWidth: lineWidth)
+                    .blur(radius: 3.5)
 
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .strokeBorder(color.opacity(breathing ? 0.35 : 0.08), lineWidth: lineWidth * 1.8)
-                    .blur(radius: breathing ? 8.0 : 3.0)
+                    .strokeBorder(color.opacity(breathing ? 0.24 : 0.08), lineWidth: lineWidth * 1.8)
+                    .blur(radius: 6.5)
             }
         }
         .drawingGroup(opaque: false)
@@ -1053,8 +1053,7 @@ struct AmbientGlowBorder: View {
 
     private func updateBreathing(_ active: Bool) {
         if active {
-            breathing = false
-            withAnimation(.easeInOut(duration: 2.8).repeatForever(autoreverses: true)) {
+            withAnimation(.linear(duration: 0.15)) {
                 breathing = true
             }
         } else {
@@ -1838,10 +1837,10 @@ private struct PulsingStatusDot: View {
 
             if active && pulse {
                 Circle()
-                    .stroke(activeColor.opacity(0.6), lineWidth: 1.5)
-                    .frame(width: 12, height: 12)
-                    .scaleEffect(pulsing ? 1.4 : 0.6)
-                    .opacity(pulsing ? 0.0 : 0.85)
+                    .stroke(activeColor.opacity(0.55), lineWidth: 1.3)
+                    .frame(width: 11, height: 11)
+                    .scaleEffect(pulsing ? 1.05 : 0.85)
+                    .opacity(pulsing ? 0.65 : 0.0)
             }
         }
         .frame(width: 14, height: 14, alignment: .center)
@@ -1856,8 +1855,7 @@ private struct PulsingStatusDot: View {
 
     private func updateAnimation(shouldPulse: Bool) {
         if shouldPulse {
-            pulsing = false
-            withAnimation(.easeOut(duration: 1.5).repeatForever(autoreverses: false)) {
+            withAnimation(.linear(duration: 0.15)) {
                 pulsing = true
             }
         } else {
@@ -2157,16 +2155,20 @@ struct InstanceResourceMetric: Equatable {
         if mb >= 1024 {
             return String(format: "%.2f GB", mb / 1024.0)
         } else {
-            return "\(Int(mb)) MB"
+            let quantized = max(1, (Int(mb) / 4) * 4)
+            return "\(quantized) MB"
         }
     }
 
     var cpuLabel: String {
-        String(format: "%.1f%%", cpuPercent)
+        if cpuPercent < 0.8 {
+            return "0.0%"
+        }
+        return String(format: "%.1f%%", (cpuPercent * 2.0).rounded() / 2.0)
     }
 
     static func == (lhs: InstanceResourceMetric, rhs: InstanceResourceMetric) -> Bool {
-        lhs.processCount == rhs.processCount &&
+        abs(lhs.processCount - rhs.processCount) <= 1 &&
         lhs.memoryLabel == rhs.memoryLabel &&
         lhs.cpuLabel == rhs.cpuLabel &&
         (lhs.cpuPercent > 15) == (rhs.cpuPercent > 15)
@@ -2579,6 +2581,10 @@ private enum TelemetryScanner {
     private static var stoppedActivityCache: [String: InstanceActivity] = [:]
     // Cache last known transcript location per profile URL
     private static var lastKnownTranscripts: [URL: (url: URL, date: Date, convID: String)] = [:]
+    // Throttle full directory enumeration per profile URL
+    private static var lastDirectoryScanTime: [URL: Date] = [:]
+    // Cache parsed transcript tail when file modification date has not changed
+    private static var parsedTailCache: [URL: (modDate: Date, isRunning: Bool, cachedAt: Date, activity: InstanceActivity)] = [:]
 
     static func scan(instances: [ManagedInstance], knownConvIDs: [String: String] = [:]) -> [String: InstanceActivity] {
         var results: [String: InstanceActivity] = [:]
@@ -2638,11 +2644,13 @@ private enum TelemetryScanner {
             }
         }
 
-        // 2. Cache Hit: If cached transcript was recently updated (< 30 seconds ago), avoid directory traversal
+        // 2. Cache Hit: If cached transcript was recently updated (< 30 seconds ago) or full scan was done recently (< 15 seconds ago), avoid directory traversal
+        let now = Date()
         if let cached = lastKnownTranscripts[profileURL] {
             if let values = try? cached.url.resourceValues(forKeys: [.contentModificationDateKey]),
                let modDate = values.contentModificationDate {
-                if abs(modDate.timeIntervalSinceNow) < 30 {
+                let recentlyScannedDir = lastDirectoryScanTime[profileURL].map { now.timeIntervalSince($0) < 15.0 } ?? false
+                if abs(modDate.timeIntervalSinceNow) < 30 || recentlyScannedDir {
                     let updated = (cached.url, modDate, cached.convID)
                     lastKnownTranscripts[profileURL] = updated
                     return updated
@@ -2651,6 +2659,7 @@ private enum TelemetryScanner {
         }
 
         // 3. Fallback: Scan directories and update cache
+        lastDirectoryScanTime[profileURL] = now
         if let latest = latestTranscript(in: profileURL) {
             lastKnownTranscripts[profileURL] = latest
             return latest
@@ -2735,6 +2744,19 @@ private enum TelemetryScanner {
     }
 
     private static func parseTranscriptTail(at url: URL, modDate: Date, isRunning: Bool, convID: String) -> InstanceActivity {
+        let now = Date()
+        if let cached = parsedTailCache[url],
+           cached.modDate == modDate,
+           cached.isRunning == isRunning,
+           now.timeIntervalSince(cached.cachedAt) < 10.0 {
+            return cached.activity
+        }
+        let result = parseTranscriptTailUncached(at: url, modDate: modDate, isRunning: isRunning, convID: convID)
+        parsedTailCache[url] = (modDate: modDate, isRunning: isRunning, cachedAt: now, activity: result)
+        return result
+    }
+
+    private static func parseTranscriptTailUncached(at url: URL, modDate: Date, isRunning: Bool, convID: String) -> InstanceActivity {
         let age = max(0, Date().timeIntervalSince(modDate))
         let ageLabel = formatRelativeAge(age)
         guard let handle = try? FileHandle(forReadingFrom: url) else {
@@ -3213,8 +3235,8 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     func tr(_ key: L10nKey) -> String {
         L10n.tr(key, lang: appLanguage)
     }
-    @Published var activeInstanceName: String? = nil
-    @Published var activeConversationURLs: [String: String] = [:]
+    var activeInstanceName: String? = nil
+    var activeConversationURLs: [String: String] = [:]
     @Published var resourceMetrics: [String: InstanceResourceMetric] = [:]
     @Published var instanceMetas: [String: InstanceUserMeta] = [:]
     @Published var diskUsages: [String: InstanceDiskUsage] = [:]
@@ -3228,7 +3250,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     static let sampleBufferCapacity = 20
     @Published var globalCpuHistory: [MetricSample] = []
     @Published var globalRamHistory: [MetricSample] = []
-    @Published var instanceMetricHistories: [String: [MetricSample]] = [:]
+    var instanceMetricHistories: [String: [MetricSample]] = [:]
 
     func appendMetricSample(instanceID: String?, cpu: Double, ram: Double) {
         let now = Date()
@@ -3656,9 +3678,13 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     }
 
     func cancelAutoPilotDebounce(for itemID: String) {
-        autoPilotDebounceTasks[itemID]?.cancel()
-        autoPilotDebounceTasks.removeValue(forKey: itemID)
-        autoPilotDebounceRemaining.removeValue(forKey: itemID)
+        if let task = autoPilotDebounceTasks[itemID] {
+            task.cancel()
+            autoPilotDebounceTasks.removeValue(forKey: itemID)
+        }
+        if autoPilotDebounceRemaining[itemID] != nil {
+            autoPilotDebounceRemaining.removeValue(forKey: itemID)
+        }
     }
 
     func processAutoPilotStateChanges(newActivities: [String: InstanceActivity]) {
@@ -3666,7 +3692,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             if item.running {
                 let act = newActivities[item.id] ?? InstanceActivity(state: .idle)
                 handleAutoPilotStateChange(for: item, newState: act.state)
-            } else if autoPilotStates[item.id] != .disabled {
+            } else if let cur = autoPilotStates[item.id], cur != .disabled && cur != .standby {
                 cancelAutoPilotDebounce(for: item.id)
                 autoPilotStates[item.id] = .standby
             }
@@ -3676,11 +3702,15 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     func handleAutoPilotStateChange(for item: ManagedInstance, newState: TaskRunState) {
         let meta = meta(for: item)
         guard meta.autoPilotEnabled else {
-            if autoPilotStates[item.id] != .disabled && autoPilotStates[item.id] != .completed {
+            if let cur = autoPilotStates[item.id], cur != .disabled && cur != .completed {
                 autoPilotStates[item.id] = .disabled
                 cancelAutoPilotDebounce(for: item.id)
-                autoPilotAwaitingTaskCompletion.removeValue(forKey: item.id)
-                autoPilotObservedRunning.removeValue(forKey: item.id)
+                if autoPilotAwaitingTaskCompletion[item.id] != nil {
+                    autoPilotAwaitingTaskCompletion.removeValue(forKey: item.id)
+                }
+                if autoPilotObservedRunning[item.id] != nil {
+                    autoPilotObservedRunning.removeValue(forKey: item.id)
+                }
             }
             return
         }
@@ -3688,28 +3718,47 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         switch newState {
         case .runningTask:
             cancelAutoPilotDebounce(for: item.id)
-            autoPilotStates[item.id] = .waitingRunning
-            autoPilotObservedRunning[item.id] = true
+            if autoPilotStates[item.id] != .waitingRunning {
+                autoPilotStates[item.id] = .waitingRunning
+            }
+            if autoPilotObservedRunning[item.id] != true {
+                autoPilotObservedRunning[item.id] = true
+            }
 
         case .stalled:
             // Long-running build, test execution, or deep reasoning:
             // MUST passively wait and NEVER interrupt!
             cancelAutoPilotDebounce(for: item.id)
-            autoPilotStates[item.id] = .waitingStalled
-            autoPilotObservedRunning[item.id] = true
+            if autoPilotStates[item.id] != .waitingStalled {
+                autoPilotStates[item.id] = .waitingStalled
+            }
+            if autoPilotObservedRunning[item.id] != true {
+                autoPilotObservedRunning[item.id] = true
+            }
 
         case .needsAttention:
             // Waiting for user confirmation or choices:
             // MUST safely pause and wait for user, never inject blindly!
             cancelAutoPilotDebounce(for: item.id)
-            autoPilotStates[item.id] = .pausedNeedsAttention
-            autoPilotObservedRunning[item.id] = true
+            if autoPilotStates[item.id] != .pausedNeedsAttention {
+                autoPilotStates[item.id] = .pausedNeedsAttention
+            }
+            if autoPilotObservedRunning[item.id] != true {
+                autoPilotObservedRunning[item.id] = true
+            }
 
         case .stopped, .error:
             cancelAutoPilotDebounce(for: item.id)
-            autoPilotStates[item.id] = (newState == .error) ? .error : .standby
-            autoPilotAwaitingTaskCompletion[item.id] = false
-            autoPilotObservedRunning[item.id] = false
+            let targetState: AutoPilotRunState = (newState == .error) ? .error : .standby
+            if autoPilotStates[item.id] != targetState {
+                autoPilotStates[item.id] = targetState
+            }
+            if autoPilotAwaitingTaskCompletion[item.id] == true {
+                autoPilotAwaitingTaskCompletion[item.id] = false
+            }
+            if autoPilotObservedRunning[item.id] == true {
+                autoPilotObservedRunning[item.id] = false
+            }
 
         case .idle:
             // Task Execution Synchronization Gate:
@@ -4300,10 +4349,11 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
               let start = taskStartTimes[item.id] else { return nil }
         let elapsed = Int(Date().timeIntervalSince(start))
         if elapsed < 60 {
-            return "\(max(1, elapsed))s"
+            let quantized = max(1, (elapsed / 5) * 5)
+            return "\(quantized)s"
         } else {
             let m = elapsed / 60
-            let s = elapsed % 60
+            let s = (elapsed % 60) / 10 * 10
             return s > 0 ? "\(m)m \(s)s" : "\(m)m"
         }
     }
@@ -4709,8 +4759,9 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     }
 
     private func runningApplication(bundleID: String, path: URL) -> NSRunningApplication? {
-        let expected = path.resolvingSymlinksInPath().standardizedFileURL
         let candidates = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).filter { !$0.isTerminated }
+        guard candidates.count > 1 else { return candidates.first }
+        let expected = path.resolvingSymlinksInPath().standardizedFileURL
         if let match = candidates.first(where: { app in
             guard let bundleURL = app.bundleURL else { return true }
             return bundleURL.resolvingSymlinksInPath().standardizedFileURL == expected
@@ -4722,12 +4773,12 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
 
     var isMainWindowVisible: Bool {
         NSApp.windows.contains { window in
-            !(window is NSPanel) && !window.isSheet && window.canBecomeMain && window.isVisible && !window.isMiniaturized
+            !(window is NSPanel) && !window.isSheet && window.canBecomeMain && window.isVisible && !window.isMiniaturized && window.occlusionState.contains(.visible)
         }
     }
 
     var shouldCaptureScreenshots: Bool {
-        isMainWindowVisible || (quickSwitcherPanel?.isVisible == true)
+        (isMainWindowVisible && (NSApp.isActive || telemetryTickCount % 4 == 0)) || (quickSwitcherPanel?.isVisible == true)
     }
 
     private var standbyTickCount: Int = 0
@@ -4739,6 +4790,9 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             // Sentinel Low-Power Standby: when window is hidden to tray and all instances are idle,
             // throttle full scan from 2.2s to ~11s (every 5 ticks), allowing macOS App Nap to engage
             guard standbyTickCount % 5 == 0 else { return }
+        } else if !shouldCaptureScreenshots {
+            standbyTickCount += 1
+            guard standbyTickCount % 2 == 0 else { return }
         } else {
             standbyTickCount = 0
         }
@@ -4746,7 +4800,6 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     }
 
     func refreshRunningStates() {
-        standbyTickCount = 0
         let onScreenPIDs = Self.getOnScreenWindowPIDs()
         let updated = instances.map { item in
             let app = runningApplication(bundleID: item.bundleID, path: item.path)
@@ -4779,6 +4832,9 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     func refreshTelemetryAndThumbnails() {
         if let start = lastTelemetryScanStartTime, Date().timeIntervalSince(start) > 6.0 {
             isScanningTelemetry = false
+        }
+        if let start = lastTelemetryScanStartTime, Date().timeIntervalSince(start) < 1.2 {
+            return
         }
         guard !isScanningTelemetry else { return }
         isScanningTelemetry = true
@@ -4834,10 +4890,13 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 }
                 self.syncHUDState()
                 let metrics = result.metrics
+                var metricsChanged = false
                 if self.resourceMetrics != metrics {
                     self.resourceMetrics = metrics
+                    metricsChanged = true
                 }
-                if self.runningCount > 0 {
+                let isPopoverVisible = (StatusBarTarget.shared.statusPopover?.isShown == true)
+                if self.runningCount > 0 && (shouldCapture || isPopoverVisible) && (metricsChanged || self.globalCpuHistory.isEmpty) {
                     var totalCpu: Double = 0.0
                     var totalRamMB: Double = 0.0
                     for (id, metric) in metrics {
@@ -4856,7 +4915,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 if self.activeConversationURLs != result.cdpData.urls {
                     self.activeConversationURLs = result.cdpData.urls
                 }
-                if shouldCapture {
+                if shouldCapture && result.cdpData.thumbnails.isEmpty {
                     self.captureWindowThumbnails()
                 }
                 self.updateStatusBarMenu()
@@ -4965,7 +5024,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                         }
                     }
 
-                    let shouldFetchImage = captureThumbnails && (!hasThumbnail || isFrontmost || isRunningTask)
+                    let shouldFetchImage = captureThumbnails && (!hasThumbnail || ((isFrontmost || isRunningTask) && telemetryTick % 2 == 0))
                     var itemImage: NSImage? = nil
                     var itemExecuting: Bool? = nil
 
@@ -8092,9 +8151,7 @@ struct InstanceThumbnailTile: View {
                     }
                     .frame(height: 3)
                     .onAppear {
-                        withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
-                            scanProgress = true
-                        }
+                        scanProgress = true
                     }
                 }
             }
@@ -10132,7 +10189,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.27"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.28"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
