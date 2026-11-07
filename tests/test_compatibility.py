@@ -213,6 +213,19 @@ class CompatibilityTests(unittest.TestCase):
             self.assertEqual(helper_uuid, uuid.uuid5(uuid.NAMESPACE_DNS, "local.antigravity.fifth.helper").bytes)
             self.assertEqual(ls_uuid, uuid.uuid5(uuid.NAMESPACE_DNS, "local.antigravity.fifth.language_server").bytes)
 
+    def test_patch_asar_unconditional_watchfile_for_dock_policy(self):
+        create_instance_py = (pathlib.Path(__file__).resolve().parents[1] / "Resources/create_instance.py").read_text(encoding="utf-8")
+        self.assertNotIn("if (require('fs').existsSync(_cfgFile))", create_instance_py)
+        self.assertIn("require('fs').watchFile(_cfgFile, {{ interval: 1000 }}, () => _syncDockState(false));", create_instance_py)
+
+    def test_upgrade_all_supports_eighth_and_higher_ordinal_names(self):
+        import upgrade_all
+        self.assertEqual(upgrade_all.WORDS.get("Eighth"), 8)
+        self.assertEqual(upgrade_all.WORDS.get("Ninth"), 9)
+        self.assertEqual(upgrade_all.WORDS.get("Tenth"), 10)
+        self.assertEqual(upgrade_all.WORDS.get("Eleventh"), 11)
+        self.assertEqual(upgrade_all.WORDS.get("Twelfth"), 12)
+
 
 if __name__ == "__main__":
     unittest.main()

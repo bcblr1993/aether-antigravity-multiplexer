@@ -121,9 +121,9 @@ class TestUIPolishAndPerformance(unittest.TestCase):
         self.assertIn("func liquidGlassSheet(radius: CGFloat = 16) -> some View", self.content)
         self.assertIn(".liquidGlassSheet(radius: 16)", self.content)
 
-    def test_version_bump_0_8_29(self):
-        # Fallback version string in AntigravityMultiplexer.swift must be 0.8.29
-        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.29"', self.content)
+    def test_version_bump_0_8_30(self):
+        # Fallback version string in AntigravityMultiplexer.swift must be 0.8.30
+        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.30"', self.content)
         self.assertIn("ensureCloneLocalNetworkIsolation(for: items)", self.content)
 
     def test_upgrade_defaults_to_no_backup(self):
@@ -304,6 +304,65 @@ class TestUIPolishAndPerformance(unittest.TestCase):
         self.assertIn("parsedTailCache", self.content)
         self.assertIn("lastDirectoryScanTime", self.content)
         self.assertIn("parseTranscriptTailUncached", self.content)
+
+    def test_async_refresh_backups_and_pipe_cleanup(self):
+        # refreshBackups must run asynchronously off MainActor, use nullDevice for stderr, close pipe, and diff-guard backups
+        self.assertIn("struct BackupBatch: Decodable, Identifiable, Equatable, Sendable", self.content)
+        idx = self.content.find("func refreshBackups()")
+        self.assertNotEqual(idx, -1)
+        body = self.content[idx:idx + 1200]
+        self.assertIn("Task.detached(priority: .utility)", body)
+        self.assertIn("process.standardError = FileHandle.nullDevice", body)
+        self.assertIn("try? output.fileHandleForReading.close()", body)
+        self.assertIn("if self.backups != decoded", body)
+
+    def test_cdp_inject_and_collapse_timeout_protection(self):
+        # injectPromptViaCDP must wrap all task.receive() calls in Self.withTimeout
+        idx = self.content.find("func injectPromptViaCDP(")
+        self.assertNotEqual(idx, -1)
+        end_idx = self.content.find("func loadTaskHistory()", idx)
+        self.assertNotEqual(end_idx, -1)
+        inject_body = self.content[idx:end_idx]
+        self.assertIn("Self.withTimeout(seconds: 1.5, operation: { try await task.receive() })", inject_body)
+        self.assertNotIn("try? await task.receive()", inject_body)
+
+        # collapseInstanceWindowCDP must await response with timeout before defer cancels the WebSocket
+        c_idx = self.content.find("static func collapseInstanceWindowCDP(")
+        self.assertNotEqual(c_idx, -1)
+        c_end = self.content.find("static func collapseWindowViaAccessibility(", c_idx)
+        self.assertNotEqual(c_end, -1)
+        collapse_body = self.content[c_idx:c_end]
+        self.assertIn("Self.withTimeout(seconds: 0.4, operation: { try await task.receive() })", collapse_body)
+
+    def test_async_applescript_execution_non_blocking(self):
+        # AppleScript execution in collapseInstanceWindow, open, and collapseAllToMonitorWall must be non-blocking
+        self.assertIn("nonisolated static func runAppleScriptAsync(_ source: String)", self.content)
+        self.assertIn("Self.runAppleScriptAsync(script)", self.content)
+        self.assertNotIn("NSAppleScript(source: script)?.executeAndReturnError(&err)", self.content)
+
+    def test_disk_usage_app_bundle_cache_and_pipe_close(self):
+        # TelemetryScanner must cache static .app bundle sizes and close pipe handle in calculateFolderBytes
+        self.assertIn("appBundleSizeCache", self.content)
+        self.assertIn("try? pipe.fileHandleForReading.close()", self.content)
+
+    def test_task_history_static_cached_date_formatters(self):
+        # TaskHistoryItem must use static cached DateFormatters instead of allocating on every property read
+        idx = self.content.find("struct TaskHistoryItem:")
+        self.assertNotEqual(idx, -1)
+        end_idx = self.content.find("extension Notification.Name", idx)
+        self.assertNotEqual(end_idx, -1)
+        body = self.content[idx:end_idx]
+        self.assertIn("private static let timeFormatter: DateFormatter", body)
+        self.assertIn("private static let relativeDateFormatter: DateFormatter", body)
+        self.assertNotIn("let formatter = DateFormatter()", body)
+
+    def test_high_index_instance_process_matching_and_shortcut_hint(self):
+        # fallbackScanResourceMetricsViaPS must exclude all clones dynamically, not just hardcoded Second..Eighth
+        self.assertNotIn('!cmd.contains("Antigravity Eighth")', self.content)
+        self.assertIn("!sortedByLength.contains(where: { !$0.isOriginal && cmd.contains($0.name) })", self.content)
+        # updateStatusBarMenu must only show [⌥N] shortcut hint when item.index <= 9 and cache via cachedMenu
+        self.assertIn('let shortcutHint = item.isOriginal ? " [⌥1]" : (item.index <= 9 ? " [⌥\\(item.index)]" : "")', self.content)
+        self.assertIn("if currentSignature == lastStatusBarMenuSignature && StatusBarTarget.shared.cachedMenu != nil", self.content)
 
 
 if __name__ == "__main__":

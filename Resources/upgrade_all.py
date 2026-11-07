@@ -19,7 +19,10 @@ from create_instance import (APP_SUPPORT, KNOWN, digest, needs_local_network_pat
                              patch_macho_uuid, replace_once, require, run, sign_bundle, operation_lock)
 
 KEY_PATTERN = re.compile(rb"[a-z0-9-]{6}-standalone-oauth-token")
-WORDS = {"Second": 2, "Third": 3, "Fourth": 4, "Fifth": 5, "Sixth": 6, "Seventh": 7}
+WORDS = {
+    "Second": 2, "Third": 3, "Fourth": 4, "Fifth": 5, "Sixth": 6, "Seventh": 7,
+    "Eighth": 8, "Ninth": 9, "Tenth": 10, "Eleventh": 11, "Twelfth": 12,
+}
 REGISTER = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
 

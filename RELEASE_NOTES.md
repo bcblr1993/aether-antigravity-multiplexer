@@ -1,3 +1,21 @@
+## v0.8.30 (Build 78) — 2026-11-07
+
+### ⚡️ 深度并发安全、非阻塞主线程与多开补丁稳健性优化 (Deep Concurrency, Non-Blocking Main Thread & Multi-Instance Robustness)
+- **消除主线程同步子进程与 AppleScript 阻塞 (`refreshBackups` & `runAppleScriptAsync`)**：
+  - 将 `refreshBackups()` 重构为 `Task.detached(priority: .utility)` 后台异步执行，将 `standardError` 重定向至 `FileHandle.nullDevice` 并及时关闭管道读取句柄，消除每次刷新时 Python 子进程冷启动阻塞 UI 主线程 80~300ms 的问题，并通过 `BackupBatch: Equatable` 避免冗余状态广播。
+  - 新增 `runAppleScriptAsync(_:)` 后台异步执行器，将 `open(_:)`、`collapseInstanceWindow` 与 `collapseAllToMonitorWall()` 中的 `NSAppleScript` 调用移出 `@MainActor` 主线程，彻底消除目标实例高负载时缩回或唤醒窗口的界面卡顿。
+- **CDP WebSocket 全链路超时保护与最小化竞态修复 (`injectPromptViaCDP` & `collapseInstanceWindowCDP`)**：
+  - 为 `injectPromptViaCDP` 中全部 7 处 WebSocket `task.receive()` 统一包裹 `Self.withTimeout(seconds: 1.5)` 超时守卫，防止目标渲染进程无响应时导致 Auto-Pilot 自托管协程永久挂起或泄露连接。
+  - 修复 `collapseInstanceWindowCDP` 发送 `window.electronNative.minimize()` 后未等待返回即触发 `defer { task.cancel() }` 的竞态问题，确保 V8 引擎执行完毕后再优雅关闭连接。
+- **磁盘占用扫描缓存与静态 `DateFormatter` 复用 (`TelemetryScanner` & `TaskHistoryItem`)**：
+  - `TelemetryScanner.scanDiskUsage` 新增 `.app` 应用包体积缓存 (`appBundleSizeCache`)，按 `Info.plist` 修改时间复用 500MB+ 静态应用包大小，避免每次刷新重复遍历上万个应用包文件，并在 `calculateFolderBytes` 中显式关闭管道文件描述符。
+  - `TaskHistoryItem` 改为静态缓存 `DateFormatter` 实例 (`timeFormatter` / `relativeDateFormatter`)，并修复状态栏菜单 `cachedMenu` 签名缓存命中条件，消除高频对象分配与重复菜单构建。
+- **分身 Dock 策略热监听与高序号实例兼容性 (`create_instance.py` & `upgrade_all.py`)**：
+  - 移除 `create_instance.py` 中对 `app_storage.json` 注册 `fs.watchFile` 前的 `fs.existsSync` 限制，确保新实例首次启动后即可实时响应 Dock 图标显隐策略切换。
+  - 完善 `upgrade_all.py` 与 Swift 端的实例序号词表（支持 `Eighth` ~ `Twelfth` 及更高序号），修复 `fallbackScanResourceMetricsViaPS` 对第 9+ 个实例的动态归属判断及状态栏菜单 `[⌥1]`~`[⌥9]` 快捷键提示边界。
+- **全量自动化回归测试质量门禁保障**：
+  - 新增 8 项 TDD 深度回归测试，全量 177 项自动化回归测试 100% 满分通过。
+
 ## v0.8.29 (Build 77) — 2026-11-06
 
 ### 🌐 根治多开实例无法加入 macOS「本地网络」权限列表的死锁缺陷 (Independent Mach-O `LC_UUID` & Local Network Privacy Isolation)

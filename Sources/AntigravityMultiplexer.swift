@@ -2239,10 +2239,20 @@ struct TaskHistoryItem: Identifiable, Codable, Equatable {
         }
     }
 
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm:ss"
+        return f
+    }()
+
+    private static let relativeDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MM-dd HH:mm"
+        return f
+    }()
+
     var formattedTime: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        return formatter.string(from: timestamp)
+        Self.timeFormatter.string(from: timestamp)
     }
 
     var relativeTime: String {
@@ -2250,9 +2260,7 @@ struct TaskHistoryItem: Identifiable, Codable, Equatable {
         if elapsed < 60 { return "刚刚" }
         if elapsed < 3600 { return "\(Int(elapsed / 60)) 分钟前" }
         if elapsed < 86400 { return "\(Int(elapsed / 3600)) 小时前" }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "MM-dd HH:mm"
-        return formatter.string(from: timestamp)
+        return Self.relativeDateFormatter.string(from: timestamp)
     }
 }
 
@@ -2309,7 +2317,7 @@ struct SourceReleaseNotes: Decodable, Identifiable {
     }()
 }
 
-struct BackupBatch: Decodable, Identifiable {
+struct BackupBatch: Decodable, Identifiable, Equatable, Sendable {
     let name: String
     let archiveCount: Int
     let bytes: Int64
@@ -2484,7 +2492,7 @@ enum NativeProcessMonitor {
                         isMatch = true
                     } else if cmd.contains("--app_data_dir \(nameNoSpace)") {
                         isMatch = true
-                    } else if item.isOriginal && (cmd.contains("--app_data_dir antigravity ") || (cmd.contains("/Applications/Antigravity.app") && !cmd.contains("Antigravity Second") && !cmd.contains("Antigravity Third") && !cmd.contains("Antigravity Fourth") && !cmd.contains("Antigravity Fifth") && !cmd.contains("Antigravity Sixth") && !cmd.contains("Antigravity Seventh") && !cmd.contains("Antigravity Eighth"))) {
+                    } else if item.isOriginal && (cmd.contains("--app_data_dir antigravity ") || (cmd.contains("/Applications/Antigravity.app") && !sortedByLength.contains(where: { !$0.isOriginal && cmd.contains($0.name) }))) {
                         isMatch = true
                     }
 
@@ -2674,6 +2682,8 @@ private enum TelemetryScanner {
         NativeProcessMonitor.scanResourceMetrics(instances: instances, runningAppPids: runningAppPids)
     }
 
+    private static var appBundleSizeCache: [String: (modDate: Date, bytes: Int64)] = [:]
+
     static func calculateFolderBytes(at url: URL) -> Int64 {
         guard FileManager.default.fileExists(atPath: url.path) else { return 0 }
         let proc = Process()
@@ -2684,21 +2694,35 @@ private enum TelemetryScanner {
         proc.standardError = FileHandle.nullDevice
         do {
             try proc.run()
-            proc.waitUntilExit()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            try? pipe.fileHandleForReading.close()
+            proc.waitUntilExit()
             if let str = String(data: data, encoding: .utf8),
                let firstWord = str.components(separatedBy: .whitespaces).first,
                let kb = Int64(firstWord) {
                 return kb * 1024
             }
-        } catch {}
+        } catch {
+            try? pipe.fileHandleForReading.close()
+        }
         return 0
     }
 
     static func scanDiskUsage(for item: ManagedInstance) -> InstanceDiskUsage {
         let profileBytes = calculateFolderBytes(at: item.profileURL)
         let userDataBytes = calculateFolderBytes(at: item.userDataURL) + calculateFolderBytes(at: item.logsURL)
-        let appBundleBytes = calculateFolderBytes(at: item.path)
+        let plistURL = item.path.appendingPathComponent("Contents/Info.plist")
+        let bundleModDate = (try? plistURL.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+        let appBundleBytes: Int64
+        if let cached = appBundleSizeCache[item.id], cached.modDate == bundleModDate, cached.bytes > 0 {
+            appBundleBytes = cached.bytes
+        } else {
+            let computed = calculateFolderBytes(at: item.path)
+            if computed > 0 {
+                appBundleSizeCache[item.id] = (bundleModDate, computed)
+            }
+            appBundleBytes = computed
+        }
         return InstanceDiskUsage(
             profileBytes: profileBytes,
             userDataBytes: userDataBytes,
@@ -3482,7 +3506,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
               let records = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
         return Set(records.keys)
     }()
-    private let names = ["Second": 2, "Third": 3, "Fourth": 4, "Fifth": 5, "Sixth": 6, "Seventh": 7, "Eighth": 8]
+    private let names = ["Second": 2, "Third": 3, "Fourth": 4, "Fifth": 5, "Sixth": 6, "Seventh": 7, "Eighth": 8, "Ninth": 9, "Tenth": 10, "Eleventh": 11, "Twelfth": 12]
 
     init() {
         Self.current = self
@@ -4037,7 +4061,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
 
         do {
             try await task.send(.string(preflightReqStr))
-            if let preflightResp = try? await task.receive(),
+            if let preflightResp = try? await Self.withTimeout(seconds: 1.5, operation: { try await task.receive() }),
                case .string(let text) = preflightResp,
                let respData = text.data(using: .utf8),
                let obj = try? JSONSerialization.jsonObject(with: respData) as? [String: Any],
@@ -4082,7 +4106,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
 
             try await task.send(.string(focusReqStr))
             var editorFound = false
-            if let focusResp = try? await task.receive(),
+            if let focusResp = try? await Self.withTimeout(seconds: 1.5, operation: { try await task.receive() }),
                case .string(let text) = focusResp,
                let respData = text.data(using: .utf8),
                let obj = try? JSONSerialization.jsonObject(with: respData) as? [String: Any],
@@ -4105,7 +4129,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             if let insertData = try? JSONSerialization.data(withJSONObject: insertTextPayload),
                let insertStr = String(data: insertData, encoding: .utf8) {
                 try await task.send(.string(insertStr))
-                _ = try? await task.receive()
+                _ = try? await Self.withTimeout(seconds: 1.5, operation: { try await task.receive() })
             }
 
             // JavaScript Fallback/Reconciliation: ensure DOM text is set if Lexical needs input event
@@ -4138,7 +4162,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 "params": ["expression": jsFallbackPayload, "returnByValue": true]
             ]), let jsFallbackStr = String(data: jsFallbackData, encoding: .utf8) {
                 try await task.send(.string(jsFallbackStr))
-                _ = try? await task.receive()
+                _ = try? await Self.withTimeout(seconds: 1.5, operation: { try await task.receive() })
             }
 
             // Step 3: Brief delay for React/Lexical DOM reconciliation
@@ -4172,7 +4196,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 "params": ["expression": clickSendPayload, "returnByValue": true]
             ]), let clickStr = String(data: clickData, encoding: .utf8) {
                 try await task.send(.string(clickStr))
-                if let clickResp = try? await task.receive(),
+                if let clickResp = try? await Self.withTimeout(seconds: 1.5, operation: { try await task.receive() }),
                    case .string(let text) = clickResp,
                    let respData = text.data(using: .utf8),
                    let obj = try? JSONSerialization.jsonObject(with: respData) as? [String: Any],
@@ -4200,7 +4224,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 if let kdData = try? JSONSerialization.data(withJSONObject: keyDownPayload),
                    let kdStr = String(data: kdData, encoding: .utf8) {
                     try await task.send(.string(kdStr))
-                    _ = try? await task.receive()
+                    _ = try? await Self.withTimeout(seconds: 1.5, operation: { try await task.receive() })
                 }
 
                 let keyUpPayload: [String: Any] = [
@@ -4217,7 +4241,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 if let kuData = try? JSONSerialization.data(withJSONObject: keyUpPayload),
                    let kuStr = String(data: kuData, encoding: .utf8) {
                     try await task.send(.string(kuStr))
-                    _ = try? await task.receive()
+                    _ = try? await Self.withTimeout(seconds: 1.5, operation: { try await task.receive() })
                 }
             }
 
@@ -4245,7 +4269,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 "params": ["expression": verifyPayload, "returnByValue": true]
             ]), let verifyStr = String(data: verifyData, encoding: .utf8) {
                 try await task.send(.string(verifyStr))
-                if let verifyResp = try? await task.receive(),
+                if let verifyResp = try? await Self.withTimeout(seconds: 1.5, operation: { try await task.receive() }),
                    case .string(let text) = verifyResp,
                    let respData = text.data(using: .utf8),
                    let obj = try? JSONSerialization.jsonObject(with: respData) as? [String: Any],
@@ -4442,11 +4466,19 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                let payloadStr = String(data: payloadData, encoding: .utf8) {
                 do {
                     try await task.send(.string(payloadStr))
+                    _ = try? await Self.withTimeout(seconds: 0.4, operation: { try await task.receive() })
                     collapsedAny = true
                 } catch {}
             }
         }
         return collapsedAny
+    }
+
+    nonisolated static func runAppleScriptAsync(_ source: String) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            var err: NSDictionary?
+            NSAppleScript(source: source)?.executeAndReturnError(&err)
+        }
     }
 
     /// Accessibility API fallback (Tier 3) to trigger window minimization on the application's document window.
@@ -4486,10 +4518,9 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         // Tier 3: Accessibility minimize (sets AXMinimized or presses AXMinimizeButton, NEVER AXCloseButton)
         Self.collapseWindowViaAccessibility(pid: app.processIdentifier)
 
-        // Tier 4: System Events AppleScript fallback
+        // Tier 4: System Events AppleScript fallback (non-blocking)
         let script = "tell application \"System Events\" to set visible of (first process whose bundle identifier is \"\(item.bundleID)\") to false"
-        var err: NSDictionary?
-        NSAppleScript(source: script)?.executeAndReturnError(&err)
+        Self.runAppleScriptAsync(script)
     }
 
     /// Ensures `"runInBackground": "true"` and `"dockPolicy"` in `~/Library/Application Support/<InstanceName>/app_storage.json`
@@ -5291,8 +5322,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 tell application id "\(item.bundleID)" to reopen
             end try
             """
-            var err: NSDictionary?
-            NSAppleScript(source: script)?.executeAndReturnError(&err)
+            Self.runAppleScriptAsync(script)
 
             // 3. Open configuration to trigger LaunchServices de-miniaturization and activate
             let config = NSWorkspace.OpenConfiguration()
@@ -5491,8 +5521,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 Self.collapseWindowViaAccessibility(pid: app.processIdentifier)
             }
             let script = "tell application \"System Events\" to set visible of (first process whose bundle identifier is \"\(item.bundleID)\") to false"
-            var err: NSDictionary?
-            NSAppleScript(source: script)?.executeAndReturnError(&err)
+            Self.runAppleScriptAsync(script)
         }
 
         lastFrontmostAntigravityBundle = nil
@@ -5859,6 +5888,9 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         if currentSignature == lastStatusBarMenuSignature && statusItem.menu != nil {
             return
         }
+        if currentSignature == lastStatusBarMenuSignature && StatusBarTarget.shared.cachedMenu != nil {
+            return
+        }
         lastStatusBarMenuSignature = currentSignature
 
         let menu = NSMenu()
@@ -5925,11 +5957,11 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             let meta = meta(for: item)
             let displayName = meta.nickname.isEmpty ? item.name : "\(meta.nickname) (\(item.name))"
             let statePrefix = !item.running ? "⏹" : (act.state == .runningTask ? "⚡" : (act.state == .stalled ? "⚠️" : (act.state == .needsAttention ? "🔔" : "🟢")))
-            let shortcutHint = item.isOriginal ? "[⌥1]" : "[⌥\(item.index)]"
+            let shortcutHint = item.isOriginal ? " [⌥1]" : (item.index <= 9 ? " [⌥\(item.index)]" : "")
             let isMainPrefix = item.isOriginal ? "👑 " : ""
             let dockPinSuffix = isShownInDock(item) ? " · 📌Dock" : ""
             let menuItem = NSMenuItem(
-                title: "\(statePrefix) \(isMainPrefix)\(displayName) \(shortcutHint) · \(act.state.label)\(dockPinSuffix)",
+                title: "\(statePrefix) \(isMainPrefix)\(displayName)\(shortcutHint) · \(act.state.label)\(dockPinSuffix)",
                 action: #selector(StatusBarTarget.openInstance(_:)),
                 keyEquivalent: ""
             )
@@ -5996,25 +6028,45 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
 
     func refreshBackups() {
         guard let script = Bundle.main.url(forResource: "manage_backups", withExtension: "py") else {
-            backups = []; return
+            if !backups.isEmpty { backups = [] }
+            return
         }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        process.arguments = [script.path, "list"]
-        let output = Pipe()
-        process.standardOutput = output
-        process.standardError = Pipe()
-        do {
-            try process.run()
-            let data = output.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            if process.terminationStatus == 0 {
-                backups = try JSONDecoder().decode([BackupBatch].self, from: data)
-            } else {
-                backups = []
-                if error == nil { error = "无法读取备份列表，请检查备份目录。" }
+        let scriptPath = script.path
+        Task.detached(priority: .utility) {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+            process.arguments = [scriptPath, "list"]
+            let output = Pipe()
+            process.standardOutput = output
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+                let data = output.fileHandleForReading.readDataToEndOfFile()
+                try? output.fileHandleForReading.close()
+                process.waitUntilExit()
+                if process.terminationStatus == 0 {
+                    let decoded = try JSONDecoder().decode([BackupBatch].self, from: data)
+                    await MainActor.run { [weak self] in
+                        guard let self else { return }
+                        if self.backups != decoded {
+                            self.backups = decoded
+                        }
+                    }
+                } else {
+                    await MainActor.run { [weak self] in
+                        guard let self else { return }
+                        if !self.backups.isEmpty { self.backups = [] }
+                        if self.error == nil { self.error = "无法读取备份列表，请检查备份目录。" }
+                    }
+                }
+            } catch {
+                try? output.fileHandleForReading.close()
+                let desc = error.localizedDescription
+                await MainActor.run { [weak self] in
+                    self?.error = "无法读取备份列表：\(desc)"
+                }
             }
-        } catch { self.error = "无法读取备份列表：\(error.localizedDescription)" }
+        }
     }
 
     func showBackups() { NSWorkspace.shared.open(support.appendingPathComponent("Backups")) }
@@ -10214,7 +10266,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.29"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.30"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
