@@ -6,7 +6,7 @@ import UserNotifications
 import Carbon
 import Darwin
 
-private let accent = Color.accentColor
+let accent = Color.accentColor
 
 // MARK: - Haptic Feedback Manager
 
@@ -1009,7 +1009,7 @@ private struct LiquidGlassSheetModifier: ViewModifier {
     }
 }
 
-private extension View {
+extension View {
     func systemSurface(radius: CGFloat, isHighlighted: Bool = false, tint: Color? = nil) -> some View {
         modifier(GlassCardModifier(radius: radius, isHighlighted: isHighlighted, tint: tint))
     }
@@ -1434,7 +1434,7 @@ enum MultiplexerCommand: String, CaseIterable, Identifiable {
     }
 }
 
-private struct ModernButtonStyle: ButtonStyle {
+struct ModernButtonStyle: ButtonStyle {
     enum Variant {
         case primary
         case upgrade
@@ -1713,7 +1713,7 @@ private struct LiquidGlassIconButtonStyle: ButtonStyle {
     }
 }
 
-private struct IconActionButton: View {
+struct IconActionButton: View {
     let symbol: String
     let tooltip: String
     var size: CGFloat = 30
@@ -2031,6 +2031,7 @@ struct InstanceUserMeta: Codable, Equatable, Hashable {
     var notes: String = ""
     var autoPilotEnabled: Bool = false
     var autoPilotPrompt: String = ""
+    var autoPilotQueue: [String] = []
     var autoPilotMaxRounds: Int = 0
     var autoPilotCurrentRounds: Int = 0
     var autoPilotDebounceSeconds: Double = 3.0
@@ -2041,7 +2042,8 @@ struct InstanceUserMeta: Codable, Equatable, Hashable {
         colorTag != .none ||
         !notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
         autoPilotEnabled ||
-        !autoPilotPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !autoPilotPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+        !autoPilotQueue.isEmpty
     }
 
     var color: Color {
@@ -2063,6 +2065,7 @@ struct InstanceUserMeta: Codable, Equatable, Hashable {
         case nickname, tag, tagColor, colorTag, notes
         case autoPilotEnabled
         case autoPilotPrompt
+        case autoPilotQueue
         case autoPilotMaxRounds
         case autoPilotCurrentRounds
         case autoPilotDebounceSeconds
@@ -2076,6 +2079,7 @@ struct InstanceUserMeta: Codable, Equatable, Hashable {
         notes: String = "",
         autoPilotEnabled: Bool = false,
         autoPilotPrompt: String = "",
+        autoPilotQueue: [String] = [],
         autoPilotMaxRounds: Int = 0,
         autoPilotCurrentRounds: Int = 0,
         autoPilotDebounceSeconds: Double = 3.0
@@ -2087,6 +2091,7 @@ struct InstanceUserMeta: Codable, Equatable, Hashable {
         self.notes = notes
         self.autoPilotEnabled = autoPilotEnabled
         self.autoPilotPrompt = autoPilotPrompt
+        self.autoPilotQueue = autoPilotQueue
         self.autoPilotMaxRounds = autoPilotMaxRounds
         self.autoPilotCurrentRounds = autoPilotCurrentRounds
         self.autoPilotDebounceSeconds = autoPilotDebounceSeconds
@@ -2101,6 +2106,7 @@ struct InstanceUserMeta: Codable, Equatable, Hashable {
         notes = try container.decodeIfPresent(String.self, forKey: .notes) ?? ""
         autoPilotEnabled = try container.decodeIfPresent(Bool.self, forKey: .autoPilotEnabled) ?? false
         autoPilotPrompt = try container.decodeIfPresent(String.self, forKey: .autoPilotPrompt) ?? ""
+        autoPilotQueue = try container.decodeIfPresent([String].self, forKey: .autoPilotQueue) ?? []
         autoPilotMaxRounds = try container.decodeIfPresent(Int.self, forKey: .autoPilotMaxRounds) ?? 0
         autoPilotCurrentRounds = try container.decodeIfPresent(Int.self, forKey: .autoPilotCurrentRounds) ?? 0
         autoPilotDebounceSeconds = try container.decodeIfPresent(Double.self, forKey: .autoPilotDebounceSeconds) ?? 3.0
@@ -2584,7 +2590,7 @@ actor TelemetryActor {
 
 // MARK: - Background Transcript & Window Scanner
 
-private enum TelemetryScanner {
+enum TelemetryScanner {
     // Cache stopped instance activity so stopped instances never repeatedly hit disk
     private static var stoppedActivityCache: [String: InstanceActivity] = [:]
     // Cache last known transcript location per profile URL
@@ -2632,7 +2638,7 @@ private enum TelemetryScanner {
         return results
     }
 
-    private static func findTranscript(in profileURL: URL, knownConvID: String?) -> (url: URL, date: Date, convID: String)? {
+    static func findTranscript(in profileURL: URL, knownConvID: String?) -> (url: URL, date: Date, convID: String)? {
         let fm = FileManager.default
 
         // 1. Direct Hit: If we know the active conversation ID from CDP URL (e.g. /c/<uuid>), check directly!
@@ -3251,6 +3257,14 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     @Published var closeAllIncludesMainInstance: Bool = UserDefaults.standard.object(forKey: "closeAllIncludesMainInstance") as? Bool ?? false {
         didSet { UserDefaults.standard.set(closeAllIncludesMainInstance, forKey: "closeAllIncludesMainInstance") }
     }
+    @Published var idleAutoHibernateMinutes: Int = UserDefaults.standard.object(forKey: "idleAutoHibernateMinutes") as? Int ?? 0 {
+        didSet { UserDefaults.standard.set(idleAutoHibernateMinutes, forKey: "idleAutoHibernateMinutes") }
+    }
+    @Published var hibernatedInstanceIDs: Set<String> = []
+    var lastIdleSince: [String: Date] = [:]
+    @Published var inspectingTranscriptItem: ManagedInstance? = nil
+    @Published var showFleetBroadcastSheet: Bool = false
+    @Published var showProfileSyncHubSheet: Bool = false
 
     var effectiveLanguage: AppLanguage {
         appLanguage.effective
@@ -3463,7 +3477,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
     private var quickSwitcherPanel: QuickSwitcherPanel?
     private var statusItem: NSStatusItem?
     private var lastOpenWindowBundles: Set<String> = []
-    private var lastFrontmostAntigravityBundle: String? = nil
+    var lastFrontmostAntigravityBundle: String? = nil
     private var hasInitializedActivityBaseline = false
     private var lastNotifiedStates: [String: (state: TaskRunState, stepIndex: Int)] = [:]
     private var lastOpenTime: [String: Date] = [:]
@@ -3622,11 +3636,14 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         }
     }
 
-    func updateAutoPilotConfig(for item: ManagedInstance, enabled: Bool, prompt: String, maxRounds: Int, debounceSeconds: Double) {
+    func updateAutoPilotConfig(for item: ManagedInstance, enabled: Bool, prompt: String, queue: [String]? = nil, maxRounds: Int, debounceSeconds: Double) {
         var m = meta(for: item)
         let wasEnabled = m.autoPilotEnabled
         m.autoPilotEnabled = enabled
         m.autoPilotPrompt = prompt
+        if let queue {
+            m.autoPilotQueue = queue
+        }
         m.autoPilotMaxRounds = maxRounds
         m.autoPilotDebounceSeconds = max(1.0, debounceSeconds)
         if enabled && (!wasEnabled || (m.autoPilotMaxRounds > 0 && m.autoPilotCurrentRounds >= m.autoPilotMaxRounds)) {
@@ -3839,7 +3856,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 return
             }
 
-            guard !meta.autoPilotPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            guard !meta.autoPilotPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !meta.autoPilotQueue.isEmpty else {
                 autoPilotStates[item.id] = .standby
                 return
             }
@@ -3910,13 +3927,19 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                     self.autoPilotDebounceRemaining.removeValue(forKey: item.id)
 
                     Task {
-                        let injectionResult = await self.injectPromptViaCDP(item: item, prompt: latestMeta.autoPilotPrompt)
+                        var m = latestMeta
+                        let nextPrompt: String
+                        if !m.autoPilotQueue.isEmpty {
+                            nextPrompt = m.autoPilotQueue.removeFirst()
+                        } else {
+                            nextPrompt = m.autoPilotPrompt
+                        }
+                        let injectionResult = await self.injectPromptViaCDP(item: item, prompt: nextPrompt)
                         await MainActor.run {
                             switch injectionResult {
                             case .success:
-                                var updated = latestMeta
-                                updated.autoPilotCurrentRounds += 1
-                                self.saveInstanceMeta(for: item.id, meta: updated)
+                                m.autoPilotCurrentRounds += 1
+                                self.saveInstanceMeta(for: item.id, meta: m)
 
                                 // Arm the task completion gate
                                 self.autoPilotAwaitingTaskCompletion[item.id] = true
@@ -3929,7 +3952,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                                 self.recordTaskEvent(
                                     item: item,
                                     category: .autoPilot,
-                                    action: "🤖 自托管已静默发送预设文本 (第 \(updated.autoPilotCurrentRounds)/\(updated.autoPilotMaxRounds > 0 ? "\(updated.autoPilotMaxRounds)" : "∞") 轮): \"\(updated.autoPilotPrompt)\"",
+                                    action: "🤖 自托管已静默发送预设文本 (第 \(m.autoPilotCurrentRounds)/\(m.autoPilotMaxRounds > 0 ? "\(m.autoPilotMaxRounds)" : "∞") 轮): \"\(nextPrompt)\"",
                                     workspace: self.activities[item.id]?.workspace ?? "",
                                     stepIndex: self.activities[item.id]?.stepIndex ?? 0,
                                     duration: nil
@@ -4974,13 +4997,14 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
                 if shouldCapture && result.cdpData.thumbnails.isEmpty {
                     self.captureWindowThumbnails()
                 }
+                self.checkIdleAutoHibernation()
                 self.updateStatusBarMenu()
                 self.updateDockBadge()
             }
         }
     }
 
-    private nonisolated static let cdpSession: URLSession = {
+    nonisolated static let cdpSession: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.urlCache = nil
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -5119,7 +5143,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         return (results, urls, workspaces, sessionTitles, executionStates)
     }
 
-    private nonisolated static func withTimeout<T: Sendable>(seconds: Double, operation: @escaping @Sendable () async throws -> T) async throws -> T {
+    nonisolated static func withTimeout<T: Sendable>(seconds: Double, operation: @escaping @Sendable () async throws -> T) async throws -> T {
         try await withThrowingTaskGroup(of: T.self) { group in
             group.addTask {
                 try await operation()
@@ -5289,6 +5313,8 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
             return
         }
         lastOpenTime[item.id] = now
+        hibernatedInstanceIDs.remove(item.id)
+        lastIdleSince.removeValue(forKey: item.id)
 
         enforceRunInBackgroundSetting(for: [item])
         if soloFocusMode {
@@ -5752,7 +5778,7 @@ final class AppNotificationDelegate: NSObject, UNUserNotificationCenterDelegate 
         }
     }
 
-    private func sendSystemNotification(identifier: String, title: String, subtitle: String, body: String, bundleID: String) {
+    func sendSystemNotification(identifier: String, title: String, subtitle: String, body: String, bundleID: String) {
         let content = UNMutableNotificationContent()
         content.title = title
         if !subtitle.isEmpty {
@@ -7451,6 +7477,17 @@ struct BatchActionBarView: View {
             .buttonStyle(ModernButtonStyle(variant: .secondary, compact: true))
 
             Button {
+                store.showFleetBroadcastSheet = true
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "dot.radiowaves.left.and.right")
+                        .font(.system(size: 11))
+                    Text(store.effectiveLanguage == .en ? "Broadcast Prompt" : "集群广播")
+                }
+            }
+            .buttonStyle(ModernButtonStyle(variant: .secondary, compact: true))
+
+            Button {
                 store.selectAllInstances()
             } label: {
                 Text(store.effectiveLanguage == .en ? "Select All" : "全选")
@@ -7764,6 +7801,8 @@ struct InstanceThumbnailTile: View {
     @State private var hovered = false
     @State private var showMorePopover = false
     @State private var scanProgress = false
+    @State private var showQuickReplyBar = false
+    @State private var quickReplyText = ""
     @Environment(\.colorScheme) private var colorScheme
 
     private var hasPendingUpgrade: Bool {
@@ -7878,6 +7917,41 @@ struct InstanceThumbnailTile: View {
 
                 if let store = InstanceStore.current {
                     AutoPilotPillView(store: store, item: item, onConfigure: editAutoPilot)
+
+                    if item.running && activity.state == .needsAttention {
+                        Button {
+                            Task { _ = await store.approveOrRejectViaCDP(item: item, approve: true) }
+                        } label: {
+                            HStack(spacing: 2.5) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .font(.system(size: 9, weight: .bold))
+                                Text("远程批准")
+                                    .font(.system(size: 9, weight: .bold))
+                            }
+                            .foregroundStyle(.orange)
+                            .padding(.horizontal, 6)
+                            .frame(height: 18)
+                            .background(Capsule().fill(Color.orange.opacity(0.18)))
+                            .overlay(Capsule().strokeBorder(Color.orange.opacity(0.45), lineWidth: 0.8))
+                        }
+                        .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.92, hoverScale: 1.05))
+                        .help("免切窗通过 CDP 直接点击该实例内的 Proceed / 允许 确认按钮")
+                    }
+
+                    if item.running {
+                        Button {
+                            withAnimation(.spring(response: 0.22, dampingFraction: 0.8)) {
+                                showQuickReplyBar.toggle()
+                            }
+                        } label: {
+                            Image(systemName: showQuickReplyBar ? "bubble.left.and.bubble.right.fill" : "bubble.left.and.bubble.right")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(showQuickReplyBar ? accent : .secondary.opacity(0.75))
+                                .frame(width: 20, height: 20)
+                        }
+                        .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.90, hoverScale: 1.08))
+                        .help("展开/收起免切窗内联指令快回栏")
+                    }
                 }
 
                 if !meta.notes.isEmpty {
@@ -7955,12 +8029,13 @@ struct InstanceThumbnailTile: View {
                 VStack {
                     HStack(alignment: .center, spacing: 6) {
                         HStack(alignment: .center, spacing: 4.5) {
+                            let isHibernated = !item.running && (InstanceStore.current?.hibernatedInstanceIDs.contains(item.id) == true)
                             Circle()
-                                .fill(item.running ? activity.state.color : Color.white.opacity(0.35))
+                                .fill(item.running ? activity.state.color : (isHibernated ? Color.cyan : Color.white.opacity(0.35)))
                                 .frame(width: 5.5, height: 5.5)
-                            Text(item.running ? (item.isHidden ? "\(activity.state.label) · 后台实时" : activity.state.label) : "未启动")
+                            Text(item.running ? (item.isHidden ? "\(activity.state.label) · 后台实时" : activity.state.label) : (isHibernated ? "💤 已休眠省存" : "未启动"))
                                 .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(.white.opacity(item.running ? 0.95 : 0.68))
+                                .foregroundStyle(.white.opacity(item.running ? 0.95 : 0.78))
                         }
                         .padding(.horizontal, 7.5)
                         .frame(height: 20)
@@ -8048,6 +8123,54 @@ struct InstanceThumbnailTile: View {
             }
             .padding(.horizontal, 12)
             .frame(height: 34)
+
+            if showQuickReplyBar && item.running {
+                Rectangle()
+                    .fill(Color.primary.opacity(colorScheme == .dark ? 0.08 : 0.06))
+                    .frame(height: 0.8)
+
+                HStack(spacing: 6) {
+                    TextField("免切窗直接发送指令...", text: $quickReplyText)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 11))
+                        .padding(.horizontal, 8)
+                        .frame(height: 24)
+                        .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
+                        .onSubmit {
+                            guard !quickReplyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                            InstanceStore.current?.sendInlineQuickReply(to: item, prompt: quickReplyText)
+                            quickReplyText = ""
+                        }
+
+                    Button {
+                        InstanceStore.current?.inspectingTranscriptItem = item
+                    } label: {
+                        Image(systemName: "doc.text.magnifyingglass")
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .frame(width: 24, height: 24)
+                            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.08)))
+                    }
+                    .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.92, hoverScale: 1.05))
+                    .help("实时对话流抽屉预览")
+
+                    Button {
+                        InstanceStore.current?.sendInlineQuickReply(to: item, prompt: quickReplyText)
+                        quickReplyText = ""
+                    } label: {
+                        Image(systemName: "paperplane.fill")
+                            .font(.system(size: 10.5, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 24, height: 24)
+                            .background(RoundedRectangle(cornerRadius: 6).fill(accent))
+                    }
+                    .buttonStyle(TactileSpringButtonStyle(pressedScale: 0.92, hoverScale: 1.05))
+                    .disabled(quickReplyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .help("通过 CDP 后台静默发送指令")
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.primary.opacity(colorScheme == .dark ? 0.04 : 0.02))
+            }
         }
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .systemSurface(
@@ -9404,6 +9527,8 @@ struct AutoPilotConfigSheet: View {
 
     @State private var enabled: Bool
     @State private var promptText: String
+    @State private var queueItems: [String]
+    @State private var newQueueItemText: String = ""
     @State private var maxRounds: Int
     @State private var debounceSeconds: Double
     @State private var isTestingInjection = false
@@ -9423,6 +9548,7 @@ struct AutoPilotConfigSheet: View {
         let currentMeta = store.meta(for: item)
         _enabled = State(initialValue: currentMeta.autoPilotEnabled)
         _promptText = State(initialValue: currentMeta.autoPilotPrompt.isEmpty ? "继续下一步" : currentMeta.autoPilotPrompt)
+        _queueItems = State(initialValue: currentMeta.autoPilotQueue)
         _maxRounds = State(initialValue: currentMeta.autoPilotMaxRounds)
         _debounceSeconds = State(initialValue: max(1.0, currentMeta.autoPilotDebounceSeconds))
     }
@@ -9523,10 +9649,92 @@ struct AutoPilotConfigSheet: View {
 
                 TextEditor(text: $promptText)
                     .font(.system(size: 12, design: .monospaced))
-                    .frame(height: 70)
+                    .frame(height: 60)
                     .padding(5)
                     .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.04)))
                     .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Color.primary.opacity(0.12), lineWidth: 1))
+            }
+
+            // Sequential Prompt Pipeline (autoPilotQueue)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Image(systemName: "list.number")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(Color.purple)
+                    Text("多步顺序任务队列 (Prompt Playlist · 优先按序弹出执行)")
+                        .font(.system(size: 11.5, weight: .semibold))
+                    Spacer()
+                    if !queueItems.isEmpty {
+                        Button("清空队列 (\(queueItems.count))") {
+                            queueItems.removeAll()
+                        }
+                        .font(.system(size: 10, weight: .medium))
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.red)
+                    }
+                }
+
+                HStack(spacing: 6) {
+                    TextField("添加下一步顺序指令 (例如: 运行单元测试并修复报错)...", text: $newQueueItemText)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 11))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.05)))
+                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.12), lineWidth: 0.8))
+                        .onSubmit {
+                            let trimmed = newQueueItemText.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if !trimmed.isEmpty {
+                                queueItems.append(trimmed)
+                                newQueueItemText = ""
+                            }
+                        }
+
+                    Button {
+                        let trimmed = newQueueItemText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !trimmed.isEmpty {
+                            queueItems.append(trimmed)
+                            newQueueItemText = ""
+                        }
+                    } label: {
+                        Text("+ 入队")
+                            .font(.system(size: 10.5, weight: .semibold))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .background(RoundedRectangle(cornerRadius: 6).fill(Color.purple.opacity(0.15)))
+                            .foregroundStyle(Color.purple)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                if !queueItems.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(Array(queueItems.enumerated()), id: \.offset) { idx, qItem in
+                                HStack(spacing: 4) {
+                                    Text("#\(idx + 1)")
+                                        .font(.system(size: 9.5, weight: .bold, design: .monospaced))
+                                        .foregroundStyle(Color.purple)
+                                    Text(qItem)
+                                        .font(.system(size: 10))
+                                        .lineLimit(1)
+                                        .frame(maxWidth: 160, alignment: .leading)
+                                    Button {
+                                        queueItems.remove(at: idx)
+                                    } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .font(.system(size: 10))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3.5)
+                                .background(Capsule().fill(Color.purple.opacity(0.08)))
+                            }
+                        }
+                    }
+                }
             }
 
             // Sliders: Debounce Seconds & Max Rounds
@@ -9637,6 +9845,7 @@ struct AutoPilotConfigSheet: View {
                         for: item,
                         enabled: enabled,
                         prompt: promptText.trimmingCharacters(in: .whitespacesAndNewlines),
+                        queue: queueItems,
                         maxRounds: maxRounds,
                         debounceSeconds: debounceSeconds
                     )
@@ -10266,7 +10475,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.8.30"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.9.0"
     }
 
     private func matchesFilter(_ item: ManagedInstance) -> Bool {
@@ -10480,6 +10689,15 @@ struct ContentView: View {
         .sheet(isPresented: $showTaskHistory) {
             TaskHistorySheet(store: store)
         }
+        .sheet(item: $store.inspectingTranscriptItem) { item in
+            LiveTranscriptInspectorSheet(store: store, item: item)
+        }
+        .sheet(isPresented: $store.showFleetBroadcastSheet) {
+            FleetBroadcastSheet(store: store)
+        }
+        .sheet(isPresented: $store.showProfileSyncHubSheet) {
+            ProfileSyncHubSheet(store: store)
+        }
         .alert("操作未完成", isPresented: Binding(get: { store.error != nil }, set: { if !$0 { store.error = nil } })) {
             Button("好") { store.error = nil }
         } message: { Text(store.error ?? "") }
@@ -10677,6 +10895,20 @@ struct ContentView: View {
                     }
 
                     Menu {
+                        Button {
+                            store.showProfileSyncHubSheet = true
+                        } label: {
+                            Label("跨实例配置与技能同步中心...", systemImage: "arrow.triangle.2.circlepath.circle")
+                        }
+
+                        Button {
+                            store.showFleetBroadcastSheet = true
+                        } label: {
+                            Label("集群广播与批量指令分发...", systemImage: "dot.radiowaves.left.and.right")
+                        }
+
+                        Divider()
+
                         Button {
                             store.refreshBackups()
                             showBackupManager = true
@@ -11519,6 +11751,35 @@ struct ContentView: View {
                     .pickerStyle(.segmented)
 
                     Text(store.cloneDockPolicy.localizedDetail(lang: store.effectiveLanguage))
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 1)
+                }
+
+                Divider()
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "moon.zzz.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color.indigo)
+                        Text(store.effectiveLanguage == .en ? "Smart Memory Guard (Idle Auto-Hibernate)" : "智能内存护航：闲置分身自动热休眠")
+                            .font(.system(size: 11.5, weight: .semibold))
+                            .foregroundStyle(.primary)
+                    }
+
+                    Picker("", selection: $store.idleAutoHibernateMinutes) {
+                        Text(store.effectiveLanguage == .en ? "Off" : "关闭").tag(0)
+                        Text("30 min").tag(30)
+                        Text("60 min").tag(60)
+                        Text("120 min").tag(120)
+                    }
+                    .pickerStyle(.segmented)
+
+                    Text(store.effectiveLanguage == .en
+                         ? "Automatically hibernates idle clone instances to free up RAM while preserving session state."
+                         : "当后台分身连续空闲达到设定时长且无待办任务时，自动安全休眠释放内存；卡片保留「💤 已休眠省存」标识，点击一键原位唤醒。")
                         .font(.system(size: 10.5))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
