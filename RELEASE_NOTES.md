@@ -1,3 +1,11 @@
+## v0.9.1 (Build 80) — 2026-11-10
+
+### 🎯 官方 Antigravity 2.30.0 正式版适配支持 (Official Antigravity 2.30.0 Support)
+- **新增 Antigravity `2.30.0` 多开创建与一键无损升级适配**：
+  - 完成官方 Antigravity `2.30.0` (Apple Silicon `arm64`) 的 `app.asar` 完整性哈希（`00153a89...`）、`language_server` 二进制哈希（`a441ce67...`）及 `keyring_bypass_offset`（`29792496`）精准定位与实机验证。
+  - 全面兼容 `2.30.0` 新增的无端口管道式 Chromium 浏览器引擎（`PipeChromiumEngine`）、`browser-profiles` 独立目录隔离与 `DevToolsActivePort` 权限加固机制，确保各多开分身实例的内置浏览器、OAuth 独立登录与 CDP 静默注入互不干扰。
+  - 同步内置 Antigravity `2.30.0` 版本更新亮点说明（`source_release_notes.json`），支持在升级确认弹窗中直接预览新版特性。
+
 ## v0.9.0 (Build 79) — 2026-11-07
 
 ### 🚀 Aether Fleet Commander：免切换原位操控、多步任务编排与跨实例配置同步中心 (Major Release)

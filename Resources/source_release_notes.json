@@ -1,5 +1,13 @@
 [
   {
+    "version": "2.30.0",
+    "highlights": [
+      "新增无端口管道式 Chromium 引擎（PipeChromiumEngine）与独立浏览器 Profile 沙箱隔离，支持高分屏（Retina/HiDPI）像素比对齐。",
+      "引入 WebMCP 访客控制器、网络权限安全沙箱与设备选择器（Device Chooser），增强内置浏览器与 Agent 的交互安全性。",
+      "强化本地配置原子写入与损坏自动备份恢复机制（storage.js），并对 DevToolsActivePort 实施 0600 严格权限加固。"
+    ]
+  },
+  {
     "version": "2.29.0",
     "highlights": [
       "新增原生 Jupyter Notebook (.ipynb) 查看器，支持在应用内直接渲染代码单元、Markdown、表格、图片与输出结果。",
