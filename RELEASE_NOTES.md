@@ -1,3 +1,11 @@
+## v0.9.2 (Build 81) — 2026-11-11
+
+### 🎯 官方 Antigravity 2.31.0 正式版适配支持 (Official Antigravity 2.31.0 Support)
+- **新增 Antigravity `2.31.0` 多开创建与一键无损升级适配**：
+  - 完成官方 Antigravity `2.31.0` (Apple Silicon `arm64`) 的 `app.asar` 完整性哈希（`03f3d094...`）、`language_server` 二进制哈希（`abb5debf...`）及 `shouldBypassKeyring` 偏移量（`keyring_bypass_offset: 31009120`）精准定位与实机深度验签。
+  - 全面兼容 `2.31.0` 内置浏览器安全沙箱升级（`pointerLock` / `keyboardLock` 托管权限拦截、Agent 下载审批门禁 `webview:resolve-download` 与 60 秒 `AgentControlTombstone` 延迟下载防护）以及 Native Swarm 多代理协同与 `SwitchLoginToAuthCode` 授权码登录回退机制，确保各多开分身实例的独立 `.gemini-N` 配置、OAuth 登录回调与本地网络 `LC_UUID` 权限互不干扰。
+  - 同步内置 Antigravity `2.31.0` 版本更新亮点说明（`source_release_notes.json`），支持在升级确认弹窗中直接预览新版特性。
+
 ## v0.9.1 (Build 80) — 2026-11-10
 
 ### 🎯 官方 Antigravity 2.30.0 正式版适配支持 (Official Antigravity 2.30.0 Support)

@@ -1,5 +1,13 @@
 [
   {
+    "version": "2.31.0",
+    "highlights": [
+      "内置浏览器安全再加固：在 Agent 托管期间新增拦截 pointerLock 与 keyboardLock 权限请求，防止恶意网页隐藏真实光标或吞噬系统快捷键。",
+      "引入 Agent 下载审批门禁（webview:resolve-download）、33 跳重定向链路审查与 60 秒托管墓碑隔离（AgentControlTombstone），杜绝延迟下载意外落入默认目录。",
+      "升级多子代理集群协同引擎（Native Swarm /swarm 共享看板）、Plan-Execute 阶段门控与 OAuth 授权码手动回退登录（SwitchLoginToAuthCode），全面对齐 Gemini 4 Carbon 模型路由。"
+    ]
+  },
+  {
     "version": "2.30.0",
     "highlights": [
       "新增无端口管道式 Chromium 引擎（PipeChromiumEngine）与独立浏览器 Profile 沙箱隔离，支持高分屏（Retina/HiDPI）像素比对齐。",

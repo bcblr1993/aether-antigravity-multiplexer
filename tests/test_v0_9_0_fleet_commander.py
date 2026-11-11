@@ -18,8 +18,8 @@ class TestV090FleetCommander(unittest.TestCase):
         self.combined = self.main_content + "\n" + self.fleet_content
 
     def test_v0_9_0_version_and_modular_architecture(self):
-        # Must bump version to 0.9.1 and split v0.9.x Fleet Commander modules into Sources/FleetCommander.swift
-        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.9.1"', self.main_content)
+        # Must bump version to 0.9.2 and split v0.9.x Fleet Commander modules into Sources/FleetCommander.swift
+        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.9.2"', self.main_content)
         self.assertTrue(os.path.exists(self.fleet_path), "Sources/FleetCommander.swift must exist for v0.9.0 modular architecture")
         self.assertIn("struct TranscriptStepPreview: Identifiable, Equatable", self.fleet_content)
         self.assertIn("struct ProfileSyncReport: Equatable", self.fleet_content)
