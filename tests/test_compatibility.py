@@ -51,12 +51,13 @@ class CompatibilityTests(unittest.TestCase):
         self.assertIn("2.29.0", KNOWN)
         self.assertIn("2.30.0", KNOWN)
         self.assertIn("2.31.0", KNOWN)
-        entry = KNOWN["2.31.0"]
+        self.assertIn("2.31.2", KNOWN)
+        entry = KNOWN["2.31.2"]
         self.assertEqual(len(entry["asar"]), 64)
         self.assertEqual(len(entry["language_server"]), 64)
-        self.assertEqual(entry["keyring_bypass_offset"], 31009120)
+        self.assertEqual(entry["keyring_bypass_offset"], 31016912)
         notes = json.loads((pathlib.Path(__file__).resolve().parents[1] / "Resources/source_release_notes.json").read_text(encoding="utf-8"))
-        self.assertTrue(any(item.get("version") == "2.31.0" and len(item.get("highlights", [])) >= 3 for item in notes))
+        self.assertTrue(any(item.get("version") == "2.31.2" and len(item.get("highlights", [])) >= 3 for item in notes))
 
     def test_patch_asar_enforces_single_window(self):
         import pathlib

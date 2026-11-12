@@ -121,9 +121,9 @@ class TestUIPolishAndPerformance(unittest.TestCase):
         self.assertIn("func liquidGlassSheet(radius: CGFloat = 16) -> some View", self.content)
         self.assertIn(".liquidGlassSheet(radius: 16)", self.content)
 
-    def test_version_bump_0_9_2(self):
-        # Fallback version string in AntigravityMultiplexer.swift must be 0.9.2
-        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.9.2"', self.content)
+    def test_version_bump_0_9_3(self):
+        # Fallback version string in AntigravityMultiplexer.swift must be 0.9.3
+        self.assertIn('Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.9.3"', self.content)
         self.assertIn("ensureCloneLocalNetworkIsolation(for: items)", self.content)
 
     def test_upgrade_defaults_to_no_backup(self):

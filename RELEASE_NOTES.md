@@ -1,3 +1,11 @@
+## v0.9.3 (Build 82) — 2026-11-12
+
+### 🎯 官方 Antigravity 2.31.2 维护版适配支持 (Official Antigravity 2.31.2 Support)
+- **新增 Antigravity `2.31.2` 多开创建与一键无损升级适配**：
+  - 完成官方 Antigravity `2.31.2` (Apple Silicon `arm64`) 的 `app.asar` 完整性哈希（`94452cf0...`）、`language_server` 二进制哈希（`a0b891ef...`）及 `shouldBypassKeyring` 偏移量（`keyring_bypass_offset: 31016912`）精准定位与入口指令验证。
+  - 保持各多开分身的独立 `.gemini-N` 配置、凭据命名空间、OAuth 登录回调协议与本地网络 `LC_UUID` 隔离，支持从官方 `2.31.2` 创建新分身或无损升级现有分身。
+  - 同步内置 Antigravity `2.31.2` 维护更新说明，支持在升级确认弹窗中直接预览适配信息。
+
 ## v0.9.2 (Build 81) — 2026-11-11
 
 ### 🎯 官方 Antigravity 2.31.0 正式版适配支持 (Official Antigravity 2.31.0 Support)
