@@ -1,5 +1,13 @@
 [
   {
+    "version": "2.32.1",
+    "highlights": [
+      "官方 2.32 系列维护更新；管理器已验证本机 Google 签名及公证票据。",
+      "已重新核对 app.asar 与 language_server 指纹，并适配凭据隔离函数的新位置。",
+      "支持从官方 2.32.1 创建独立分身，或升级现有分身并保留各自配置目录与 OAuth 回调。"
+    ]
+  },
+  {
     "version": "2.32.0",
     "highlights": [
       "新增 Dynamic Workflows：使用应用内置 Python 运行时编排并行子代理与多步骤任务。",

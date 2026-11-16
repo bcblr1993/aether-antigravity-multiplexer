@@ -1,3 +1,10 @@
+## v0.9.5 (Build 84) — 2026-11-16
+
+### 官方 Antigravity 2.32.1 Apple Silicon 适配
+- 支持从本机官方 2.32.1 创建独立多开实例，以及将旧版分身升级到 2.32.1。
+- 验证 Google Developer ID 签名、公证、`app.asar` 与 `language_server` 完整性，并更新凭据隔离函数位置（`keyring_bypass_offset: 35589808`）。
+- 延续 2.32 系列的独立配置目录、凭据命名空间与 OAuth 回调隔离。
+
 ## v0.9.4 (Build 83) — 2026-11-16
 
 ### 官方 Antigravity 2.32.0 Apple Silicon 适配
