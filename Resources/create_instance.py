@@ -186,9 +186,17 @@ def patch_asar(source, target, name, data_dir, scheme):
             content = replace_once(content, "await (0, ideInstall_1.maybeShowIdeInstallWizard)(storageManager);",
                                    "// Skip migration into this fresh profile.", "migration")
         elif path == "dist/languageServer.js":
-            content = replace_once(content, "'--standalone',",
-                                   f"'--standalone',\n            '--gemini_dir',\n            path_1.default.join(require('os').homedir(), {json.dumps(data_dir)}),",
-                                   "gemini argument")
+            gemini_argument = (f"'--gemini_dir',\n            "
+                               f"path_1.default.join(require('os').homedir(), {json.dumps(data_dir)}),")
+            if "'--standalone'," in content:
+                content = replace_once(content, "'--standalone',",
+                                       f"'--standalone',\n            {gemini_argument}",
+                                       "gemini argument")
+            else:
+                content = replace_once(content, "const args = [\n            ...(0, lsDefaults_1.baseLsArgs)({",
+                                       "const args = [\n            " + gemini_argument +
+                                       "\n            ...(0, lsDefaults_1.baseLsArgs)({",
+                                       "gemini argument")
             anchor = "const env = { ...process.env, ...loginShellEnv };"
             if anchor not in content:
                 anchor = "const env = { ...process.env, ...(0, shell_env_1.shellEnvSync)() };"

@@ -1,3 +1,10 @@
+## v0.9.4 (Build 83) — 2026-11-16
+
+### 官方 Antigravity 2.32.0 Apple Silicon 适配
+- 支持从官方 2.32.0 创建独立多开实例，以及将旧版分身升级到 2.32.0。
+- 验证 Google Developer ID 签名、公证、`app.asar` 与 `language_server` 完整性，并适配新的凭据隔离入口（`keyring_bypass_offset: 35589040`）。
+- 内置 2.32.0 更新摘要：Dynamic Workflows、Everforest 主题、提示词导航与受控浏览器安全改进。
+
 ## v0.9.3 (Build 82) — 2026-11-12
 
 ### 🎯 官方 Antigravity 2.31.2 维护版适配支持 (Official Antigravity 2.31.2 Support)
