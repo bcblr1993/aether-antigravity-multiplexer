@@ -1,3 +1,10 @@
+## v0.9.6 (Build 85) — 2026-11-18
+
+### 官方 Antigravity 2.32.2 与 2.33.0 Apple Silicon 适配
+- 支持从本机官方 2.32.2 或官网 2.33.0 创建独立多开实例，以及将旧版分身升级至对应版本。
+- 验证 Google Developer ID 签名、公证、`app.asar` 与 `language_server` 完整性，并重新定位 2.33.0 凭据隔离入口（`keyring_bypass_offset: 35783936`）。
+- 内置 2.33.0 更新摘要：SSH 远程主机、GitHub Pull Request 状态、浏览器页内搜索及 Nord 主题。
+
 ## v0.9.5 (Build 84) — 2026-11-16
 
 ### 官方 Antigravity 2.32.1 Apple Silicon 适配
