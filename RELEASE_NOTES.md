@@ -1,3 +1,13 @@
+## v0.9.7 (Build 86) — 2026-11-23
+
+### 🚀 全面适配官方最新 Antigravity 2.34.0 Apple Silicon 版 (Official Antigravity 2.34.0 Compatibility)
+- **核心二进制与凭据隔离入口定位**：
+  - 深度解析官方 2.34.0 `Contents/Resources/bin/language_server` 的 Go 运行时符号表（`__lrodata_gopcln`），精确定位 `codeassistclient.shouldBypassKeyring` 机器指令入口偏移量为 `35487216` (`0x21d7df0`)，严格校验 12 字节 ARM64 栈帧序言（`900b40f9f1c301d13f0210eb`），确保各多开分身独立 OAuth 凭据与 Keychain 隔离机制无缝生效。
+- **ASAR 补丁与官方安全指纹校验**：
+  - 完整验证 Google Developer ID 签名（`TeamIdentifier=EQHXZ8M8AV`）、公证票据、`app.asar`（`8934adef...`）与 `language_server`（`bf66ad9f...`）SHA-256 指纹，确认单窗口强制管线、Dock 常驻/无痕动态策略、托盘净化与独立 OAuth 回调补丁 100% 兼容。
+- **支持一键无损升级与创建新实例**：
+  - 支持从本机官方 `2.34.0` 直接创建新分身，或将现有分身一键无损极速升级（默认跳过备份，保留全部工作空间、会话历史与独立登录态）。
+
 ## v0.9.6 (Build 85) — 2026-11-18
 
 ### 官方 Antigravity 2.32.2 与 2.33.0 Apple Silicon 适配

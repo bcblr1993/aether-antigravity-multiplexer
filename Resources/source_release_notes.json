@@ -1,5 +1,13 @@
 [
   {
+    "version": "2.34.0",
+    "highlights": [
+      "新增内置浏览器文件上传安全校验（webviewUploadValidation）、弹窗安全策略（webviewPopupSecurity）与登录 Shell 环境策略加固（loginShellPolicy）。",
+      "增强远程主机与桌面宿主协同管线（desktopHost / remote / mendelFlagSync），提升多步骤 Agent 任务与内置浏览器的稳定性。",
+      "管理器已验证本机官方 2.34.0 的 Google 签名、公证票据、app.asar 与 language_server 指纹，并重新定位凭据隔离入口（keyring_bypass_offset: 35487216）。"
+    ]
+  },
+  {
     "version": "2.33.0",
     "highlights": [
       "新增 SSH 主机连接，可在远程 Linux 上运行项目、Agent 与终端。",
