@@ -1,3 +1,17 @@
+## v1.0.0 (Build 100) — 2026-11-23
+
+### ✨ 正式版 v1.0.0：Studio Bento 模块化架构重构与实时账号透视 (Major Release)
+- **模块化精简重构，削减 80%+ 冗余代码**：
+  - 将原先单体巨石架构彻底重构为清晰的 `Models` / `Services` / `Views` / `App` 模块化结构，移除 Auto-Pilot 自托管、Fleet Broadcast、WindowTileManager、浮动 HUD 等高耦合冗余功能，大幅降低内存与编译维护负担。
+- **双主题 Studio Bento 工作台 (`Dark Obsidian` / `Light Frost` / `System`)**：
+  - 全新 `StudioTheme` 调色板支持 **🌙 暗曜石深色 (`darkObsidian`)**、**☀️ 纯净浅色 (`lightFrost`)** 与 **跟随系统** 一键切换，搭配 3 段式 **Bento 实例监控卡片**（双行头部 + 实时终端/点阵静态视窗 + 状态页脚）。
+- **零权限实时 Google 账号邮箱检测、隐私脱敏与同号徽章**：
+  - 零权限、零网络开销实时读取本地登录状态（`agy.onboarding.lastLoginUsername` / `jetski.onboarding.lastLoginUsername` / `google_accounts.json`）与 `-standalone-oauth-token` 凭据，支持一键复制邮箱、隐私脱敏开关（`隐藏邮箱` / `显示完整邮箱`）与重复登录 `同号` 标记。
+- **自定义多实例 Dock 常驻策略与原位非破坏性收起**：
+  - 支持多选指定在系统 Dock 栏常驻显示的实例（双向同步 `app_storage.json` 与系统 Dock 持久化列表），自动迁移旧版 `instance_user_metas` 别名至 `instanceAliases`，并保持绝对非破坏性的窗口最小化/隐藏（绝不关闭会话窗口）。
+- **全局快捷键 (`⌥1` ~ `⌥9` / `⌥0`) 与 Antigravity 2.34.0 原生支持**：
+  - 支持全局 `⌥1`~`⌥9` 快速切换/唤醒对应实例与 `⌥0` 一键收起全部窗口，完整适配官方 **Antigravity 2.34.0** 创建与无损极速升级。
+
 ## v0.9.7 (Build 86) — 2026-11-23
 
 ### 🚀 全面适配官方最新 Antigravity 2.34.0 Apple Silicon 版 (Official Antigravity 2.34.0 Compatibility)
