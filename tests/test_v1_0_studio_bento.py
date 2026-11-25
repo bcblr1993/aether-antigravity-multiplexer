@@ -69,22 +69,22 @@ class TestV100StudioBentoContract(unittest.TestCase):
 
     def test_2_version_info_plist_release_notes_and_build_script(self):
         plist_data = plistlib.loads((ROOT / "Info.plist").read_bytes())
-        self.assertEqual(plist_data.get("CFBundleShortVersionString"), "1.0.1")
-        self.assertEqual(plist_data.get("CFBundleVersion"), "101")
+        self.assertEqual(plist_data.get("CFBundleShortVersionString"), "1.0.2")
+        self.assertEqual(plist_data.get("CFBundleVersion"), "102")
 
         release_notes = (ROOT / "RELEASE_NOTES.md").read_text(encoding="utf-8")
         self.assertTrue(
-            release_notes.lstrip().startswith("## v1.0.1 (Build 101) — 2026-11-25"),
-            "RELEASE_NOTES.md must start with v1.0.1 (Build 101) — 2026-11-25 heading",
+            release_notes.lstrip().startswith("## v1.0.2 (Build 102) — 2026-11-26"),
+            "RELEASE_NOTES.md must start with v1.0.2 (Build 102) — 2026-11-26 heading",
         )
-        for keyword in ("2.35.1", "37748304", "Studio Bento", "Dark Obsidian", "Light Frost"):
-            self.assertIn(keyword, release_notes, f"RELEASE_NOTES.md missing key v1.0.1 summary topic: {keyword}")
+        for keyword in ("2.35.2", "37748304", "Studio Bento", "Dark Obsidian", "Light Frost"):
+            self.assertIn(keyword, release_notes, f"RELEASE_NOTES.md missing key v1.0.2 summary topic: {keyword}")
 
         main_view = (SOURCES / "Views/MainView.swift").read_text(encoding="utf-8")
         self.assertIn('CFBundleShortVersionString', main_view)
-        self.assertIn('?? "1.0.1"', main_view)
+        self.assertIn('?? "1.0.2"', main_view)
         for rel_path, content in read_swift_files().items():
-            self.assertNotIn('?? "1.0.0"', content, f"Stale fallback version 1.0.0 in {rel_path}")
+            self.assertNotIn('?? "1.0.1"', content, f"Stale fallback version 1.0.1 in {rel_path}")
 
         build_sh = (ROOT / "build.sh").read_text(encoding="utf-8")
         self.assertNotIn("manage_backups.py", build_sh)

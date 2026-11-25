@@ -118,6 +118,11 @@
     "asar": "9f0aad7274795d7fbde04931d96b348dcfc5f3d81d7373e6b70aeb09307442df",
     "language_server": "c27cb2c84b7fbd7f9bc0aaf824bf77b5ae35744bf541280d1213bee6ce45c8a6",
     "keyring_bypass_offset": 37748304
+  },
+  "2.35.2": {
+    "asar": "e057115571cf5085406d20f2427a5afac272b712ec84332c7157da0113d4b2d0",
+    "language_server": "8b11ecde9d089ebbe4511871e75bd046e04f33865c27b617e29a3c237a2bd575",
+    "keyring_bypass_offset": 37748304
   }
 }
 
