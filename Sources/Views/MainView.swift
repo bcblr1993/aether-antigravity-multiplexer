@@ -42,7 +42,7 @@ struct MainView: View {
     @State private var autoCheckUpdates = true
 
     private var appVersion: String {
-        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.0"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0.1"
     }
 
     private var palette: StudioPalette {

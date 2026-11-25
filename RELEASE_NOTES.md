@@ -1,3 +1,13 @@
+## v1.0.1 (Build 101) — 2026-11-25
+
+### 🚀 全面适配官方最新 Antigravity 2.35.1 Apple Silicon 版 (Official Antigravity 2.35.1 Compatibility)
+- **核心二进制与凭据隔离入口定位**：
+  - 深度解析官方 `2.35.1` `Contents/Resources/bin/language_server`（SHA-256: `c27cb2c84b7fbd7f9bc0aaf824bf77b5ae35744bf541280d1213bee6ce45c8a6`），精确定位 `codeassistclient.shouldBypassKeyring` 机器指令入口偏移量为 `37748304` (`0x23ffe50`)，严格校验 12 字节 ARM64 栈帧序言（`900b40f9f1c301d13f0210eb`），确保各分身独立 OAuth 凭据与 Keychain 隔离机制稳定生效。
+- **ASAR 补丁与官方签名指纹校验**：
+  - 完整记录 `2.35.1` 官方 `app.asar` 指纹（`9f0aad7274795d7fbde04931d96b348dcfc5f3d81d7373e6b70aeb09307442df`）与新增扩展（`appChannel.js`、`customWindowControls.js`），通过 Google 官方签名验证（`TeamIdentifier=EQHXZ8M8AV`）与 `create_instance.patch_asar` 补丁及完整性哈希重算实测。
+- **支持一键无损极速升级与持续体验保障**：
+  - 支持直接基于最新官方 `2.35.1` 克隆新建隔离实例或触发已有实例一键无损极速升级（保持数据目录与登录状态，跳过冗余备份），同时延续 `Studio Bento` 模块化架构与 `Dark Obsidian` / `Light Frost` 双主题工作台体验。
+
 ## v1.0.0 (Build 100) — 2026-11-23
 
 ### ✨ 正式版 v1.0.0：Studio Bento 模块化架构重构与实时账号透视 (Major Release)
